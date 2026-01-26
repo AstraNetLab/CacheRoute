@@ -1,0 +1,43 @@
+
+[project]
+name = "cacheroute"
+version = "0.1.0"
+description = "LLM scheduling pipeline with client-scheduler-proxy-instance, including vLLM adapter."
+authors = [
+  { name = "Heyao Zhang, Zhenghao Hu, Lile Liu, Sihan Yang", email = "23111018@bjtu.edu.cn" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn",
+    "jupyter_client",
+    "aiohttp>=3.9.0",
+    "pydantic>=2.6.0",
+    "pyyaml>=6.0.0",
+    "jinja2>=3.1.0",
+
+    # 其他依赖按需加
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "httpx>=0.27.0",
+  "black>=24.0.0",
+  "isort>=5.13.0",
+  "mypy>=1.11.0",
+]
+
+[tool.setuptools]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests*", "docs*", "examples*"]
+
