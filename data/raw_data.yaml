@@ -1,0 +1,73 @@
+#一个由文本组成的原始知识库
+
+knowledge_items:
+  - id: 1               # 可选，不填就自动从1开始递增
+    text: Apple phone info1
+    content: |          # 必填：完整知识块文本（可多行）
+      Recent updates of Apple mobile phones show that the iPhone 17 Pro series has launched an official price reduction promotion since December 8th, and its global sales have continued to rise.
+    length: 180         # 可选，不填就用 len(content)
+    llm_systems: ["10.0.0.11:7000"]
+    kdn_servers: ["10.0.1.21:8000"]
+
+  - id: 2
+    text: Apple phone info2
+    content: |
+      The entire series of iPhone 17 Pro and Pro Max are discounted by 300 yuan. After adding local subsidies, you can save up to 500 yuan. The promotion lasts until December 14th.
+    llm_systems: ["10.0.0.12:7000"]
+    kdn_servers: ["10.0.1.22:8000"]
+
+  - id: 3
+    text: Apple phone info3
+    content: |
+      In 2007, Steve Jobs, then CEO of Apple, showcased the first iPhone at a MacWorld event.
+    llm_systems: [ "10.0.0.12:7000" ]
+    kdn_servers: [ "10.0.1.22:8000" ]
+
+  - id: 4
+    text: Deepseek info1
+    content: |
+      Deepseek, a Chinese artificial intelligence startup, offers web-based, mobile App and API services. Its latest model, DeepSeek-V3.2, has been launched and discounted.
+    llm_systems: [ "10.0.0.12:7000" ]
+    kdn_servers: [ "10.0.1.22:8000" ]
+
+  - id: 5
+    text: Deepseek info2
+    content: |
+      DeepSeek, founded in 2023, is dedicated to researching the world's leading underlying models and technologies of general artificial intelligence and challenging the cutting-edge challenges of artificial intelligence.
+    llm_systems: [ "10.0.0.12:7000" ]
+    kdn_servers: [ "10.0.1.22:8000" ]
+
+  - id: 6
+    text: Deepseek info3
+    content: |
+      In December 2025, the DeepSeek-V3.2 model will be launched, adopting the Sparse Attention Architecture (DSA), with the API price reduced by 30% to 70%.
+    llm_systems: [ "10.0.0.12:7000" ]
+    kdn_servers: [ "10.0.1.22:8000" ]
+
+  - id: 7
+    text: Hotpot info1
+    content: |
+      Hot Pot, also known as "guo zi", "huan lu" or "da bian lu". Anciently known as "Antique Soup", it is a characteristic delicacy that combines traditional Chinese dining utensils with cooking methods. Ingredients are boiled in boiling water or soup base and eaten immediately after cooking. It includes copper pot hot pot with meat, spicy hot pot, and yin-yang hot pot, etc. Common ingredients cover meat, seafood, vegetables and bean products.
+    llm_systems: [ "10.0.0.12:7000" ]
+    kdn_servers: [ "10.0.1.22:8000" ]
+
+  - id: 8
+    text: Hotpot info2
+    content: |
+      Hot pot is classified by quality into copper, aluminum, pottery, enamel, etc. According to the fuel used, they can be classified into charcoal hot pot, alcohol hot pot, gas hot pot and electric hot pot, etc.
+    llm_systems: [ "10.0.0.12:7000" ]
+    kdn_servers: [ "10.0.1.22:8000" ]
+
+  - id: 9
+    text: Hotpot info3
+    content: |
+      The convenient and fast popular characteristics of hot pot catering have been accepted and loved by consumers. Especially in the cold and dry weather of northern regions, the potential of the hot pot market is huge, and the business models of hot pot types are also constantly innovating.
+    llm_systems: [ "10.0.0.12:7000" ]
+    kdn_servers: [ "10.0.1.22:8000" ]
+
+  - id: 10
+    text: Internet
+    content: |
+      The Internet, also known as the International Network, is a global network infrastructure composed of numerous computer networks interconnected, linked by a set of common protocols (such as TCP/IP) to form a logically single network.
+    llm_systems: [ "10.0.0.12:7000" ]
+    kdn_servers: [ "10.0.1.22:8000" ]

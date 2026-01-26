@@ -1,0 +1,46 @@
+# yaml文件，记录多模型参数
+# 以后再加其他模型，直接追加：
+# 没有的参数补0
+# AnotherModel:
+#   heads: ...
+#   ...
+
+
+DeepseekV3:
+  model_type: MLA
+  model_layer: 61
+  heads: 128
+  qk_head_dim: 128
+  kv_lora_rank: 512
+  hidden_dim: 7168      # 标准多头注意力（MHA）的输出维度为hidden_dim = heads * v_head_dim = 16384，但DeepSeek-V3 使用的是MLA通过低秩映射（LoRA）+ 压缩投影将高维的注意力输出压缩到更小维度
+  q_lora_rank: 1536
+  qk_rope_head_dim: 64
+  v_head_dim: 128
+  n_heads: 128
+  causal_mask_cof: 2   # 开=2, 关=1（你图里注释的语义）
+  n_shared_experts: 1
+  n_routed_experts: 256
+  moe_inter_dim: 2048
+  n_activated_experts: 8
+
+
+DeepSeek-R1-Distill-Qwen-1.5B:
+  model_type: MLA
+  model_layer: 61
+  heads: 128
+  qk_head_dim: 128
+  kv_lora_rank: 512
+  hidden_dim: 7168      # 标准多头注意力（MHA）的输出维度为hidden_dim = heads * v_head_dim = 16384，但DeepSeek-V3 使用的是MLA通过低秩映射（LoRA）+ 压缩投影将高维的注意力输出压缩到更小维度
+  q_lora_rank: 1536
+  qk_rope_head_dim: 64
+  v_head_dim: 128
+  n_heads: 128
+  causal_mask_cof: 2   # 开=2, 关=1（你图里注释的语义）
+  n_shared_experts: 1
+  n_routed_experts: 256
+  moe_inter_dim: 2048
+  n_activated_experts: 8
+
+
+
+
