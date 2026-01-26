@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>{{ page_title }}</title>
+
+  <!-- Tailwind CSS (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <link rel="stylesheet" href="/ui/static/style.css" />
+</head>
+
+<body class="bg-slate-950 text-slate-100">
+  <div class="max-w-6xl mx-auto px-6 py-8">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h1 class="text-2xl font-semibold tracking-tight">🛰️ CacheRoute Client UI</h1>
+        <p class="text-slate-400 mt-1">向 Scheduler 发送 OpenAI 风格请求，并展示校验与响应结果</p>
+      </div>
+      <div class="text-sm text-slate-400">
+        <span class="px-3 py-1 rounded-full bg-slate-900 border border-slate-800">UI / Client</span>
+      </div>
+    </div>
+
+    <!-- Layout -->
+    <div class="grid grid-cols-12 gap-6">
+      <!-- Left: Request -->
+      <div class="col-span-12 lg:col-span-7">
+        <div class="card">
+          <div class="card-hd">
+            <div class="font-medium">请求编辑</div>
+            <div class="text-xs text-slate-400">支持 chat/completions 与 completions</div>
+          </div>
+
+          <div class="card-bd space-y-4">
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="label">模式</label>
+                <select id="mode" class="input">
+                  <option value="chat">chat/completions</option>
+                  <option value="completions">completions</option>
+                </select>
+              </div>
+              <div>
+                <label class="label">Timeout (s)</label>
+                <input id="timeout" class="input" type="number" value="60" min="1" max="600" />
+              </div>
+            </div>
+
+            <div>
+              <label class="label">Scheduler URL</label>
+              <input id="url" class="input" value="{{ default_scheduler_url }}" />
+            </div>
+
+            <div>
+              <label class="label">Headers (JSON)</label>
+              <textarea id="headers" class="textarea" rows="4">{ "Content-Type": "application/json" }</textarea>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between">
+                <label class="label">Body (JSON)</label>
+                <button id="btn-load-example" class="btn btn-ghost">加载示例</button>
+              </div>
+              <textarea id="body" class="textarea font-mono" rows="12"></textarea>
+            </div>
+
+            <div class="flex gap-3">
+              <button id="btn-validate" class="btn btn-secondary">校验</button>
+              <button id="btn-send" class="btn btn-primary">发送请求</button>
+            </div>
+
+            <div id="validation" class="hidden"></div>
+          </div>
+        </div>
+
+        <div class="card mt-6">
+          <div class="card-hd">
+            <div class="font-medium">类 curl 一行命令</div>
+            <div class="text-xs text-slate-400">粘贴后解析到表单（复用 client.parse_cli_line）</div>
+          </div>
+          <div class="card-bd space-y-3">
+            <textarea id="curlLine" class="textarea font-mono" rows="4"
+              placeholder='http://127.0.0.1:7001/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"...\",\"messages\":[...]}"'></textarea>
+            <button id="btn-parse-curl" class="btn btn-ghost">解析</button>
+            <div id="curlParseMsg" class="text-sm text-slate-400"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Response -->
+      <div class="col-span-12 lg:col-span-5">
+        <div class="card">
+          <div class="card-hd">
+            <div class="font-medium">响应</div>
+            <div class="text-xs text-slate-400">状态码 / headers / body</div>
+          </div>
+          <div class="card-bd space-y-3">
+            <div id="respMeta" class="text-sm text-slate-400">尚未发送请求</div>
+
+            <div>
+              <div class="label">Headers</div>
+              <pre id="respHeaders" class="codebox"></pre>
+            </div>
+
+            <div>
+              <div class="label">Body</div>
+              <pre id="respBody" class="codebox"></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt-6">
+          <div class="card-hd">
+            <div class="font-medium">提示</div>
+            <div class="text-xs text-slate-400">字段白名单由 client.py 控制</div>
+          </div>
+          <div class="card-bd text-sm text-slate-300 space-y-2">
+            <div>• UI 不绕开校验：发送前会再次调用 validate_openai_like_request。</div>
+            <div>• 如果你扩展允许字段，只需要更新 core.config 的 ALLOWED_OPTION_FIELDS。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/ui/static/app.js"></script>
+</body>
+</html>
