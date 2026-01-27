@@ -1,11 +1,23 @@
-### 260127 说明性文件更新
+### 260127 说明性文件更新，scheduler控制平面接口部署，一些接口整理
 
 (1)更新env/README.md: 构建新版本的vllm+LMcache镜像的操作步骤<br>
+(2)新增启动脚本，支持容器容器和多开窗口，提升测试效率<br>
+(3)抽离demo_scheduler.py本地配置参数，统一送入core/config文件<br>
+(4)调整了scheduler内目录结构，按功能新增knowledge（用于维护知识清单）和resource（维护可用proxy及其计算网络资源）
+(5)新增scheduler的控制平面接口，它在scheduler初始化时被自动拉起监听，用于与proxy交互进行proxy注册以及后续的资源同步。
 
 涉及修改文件:<br>
 `env/README.md`<br>
+`core/config.py`<br>
+`test/demo_scheduler.py`<br>
+`scheduler/scheduler.py`<br>
 
-维护者：chen
+涉及新增文件:<br>
+`test/quick_start_docker.sh`<br>
+`scheduler/resource/control_plane.py`<br>
+
+
+维护者：chen, heyao
 
 ---
 
