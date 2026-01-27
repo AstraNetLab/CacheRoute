@@ -5,8 +5,15 @@
 - 所有默认值集中管理
 - 为生产环境提供清晰的配置参考
 """
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
 # 默认模型型号
-DEFAULT_MODEL = "/workspace/workspace/models/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+DEFAULT_MODEL = "/workspace/llm-stack/models/LLM-Research/Meta-Llama-3-70B-Instruct"
 DEFAULT_MODEL_SHORTNAME = "llama3-70b"
 DEFAULT_EMBED_MODEL = "intfloat/multilingual-e5-large-instruct"
 
@@ -28,15 +35,24 @@ ALLOWED_OPTION_FIELDS = {
 #                             Scheduler                               #
 # ====================================================================#
 SCHEDULER_BASE_URL = "http://127.0.0.1:7001"
+EMBEDDING_MODEL = "/workspace/llm-stack/CacheRoute/model/embedder/intfloat__multilingual-e5-large-instruct"
+KNOWLEDGE_YAML_PATH = ROOT_DIR / "data" / "knowledge_base.yaml"
+
 # 超时配置
 AIOHTTP_TIMEOUT = 6 * 60 * 60  # 6小时
 SCHEDULER_KDN_AUTO_REFRESH_DEFAULT = True                       # scheduler会自动触发KDN更新
 SCHEDULER_KDN_REFRESH_INTERVAL_S_DEFAULT = 30                   # scheduler自动触发KDN知识更新的频率（秒）
+
+# 知识匹配参数
 SCHEDULER_RETRIEVAL_TOP_K = 3
 SCHEDULER_RETRIEVAL_MIN_SCORE = 0.25                            # embedding得分阈值下限，筛选空值，cosine 下常见起点：0.2~0.35
 SCHEDULER_RETRIEVAL_MIN_RATIO = 0.75                            # embedding相似度门限，只保留 >= best*0.75，减轻检索知识污染
 
+# 控制平面
+CONTROL_PLANE_TTL_S = 30                                        # 控制平面TTL（s）
+HEARTBEAT_INTERVAL_S = 10                                       # 心跳包间隔时间（s）
 
+SCHEDULER_CP_PORT = 7002                                        # 控制平面监听端口
 # ====================================================================#
 #                               Proxy                                 #
 # ====================================================================#
