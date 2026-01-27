@@ -30,6 +30,7 @@ import asyncio
 import os, logging
 import time
 
+import uvicorn
 # import aiohttp
 # import httpx
 from typing import Any, Dict, List
@@ -44,13 +45,14 @@ from core import Request as SchedulerRequest
 from core import forward_request
 
 from model import EmbeddingEngine
-from .kdn_client import fetch_kdn_snapshot
+from .knowledge.kdn_client import fetch_kdn_snapshot
 
-from .kdn_sync import (
+from .knowledge.kdn_sync import (
     build_table_from_kdn_items,
     kdn_auto_refresh_loop,
     kdn_refresh_once
 )
+from .resource.control_plane import control_plane
 
 from store import (
     # DummyEmbeddingModel,
@@ -62,7 +64,7 @@ from store import (
 from util import timing
 
 # 如果外部没给，就用一个保底默认值（方便本地直接跑）
-from core.config import DEFAULT_MODEL, DEFAULT_EMBED_MODEL
+from core.config import DEFAULT_MODEL, DEFAULT_EMBED_MODEL, SCHEDULER_CP_PORT
 
 
 # ======================= 请求 ID 分配器 与 payload说明=======================
@@ -96,7 +98,7 @@ class PeekPayload(BaseModel):
 
 # ======================= Scheduler初始化 =======================
 @asynccontextmanager
-async def lifespan(api: FastAPI):
+async def lifespan(app: FastAPI):
     """
     FastAPI 生命周期管理：
       - startup: 预热分词器
@@ -124,7 +126,7 @@ async def lifespan(api: FastAPI):
 
     try:
         embedder = EmbeddingEngine(model_name=embedding_model_name)
-        scheduler.state.embedding_engine = embedder # type: ignore
+        app.state.embedding_engine = embedder # type: ignore
 
         try:
             _ = embedder.encode_vector(["__warm_up__"])[0]
@@ -138,16 +140,15 @@ async def lifespan(api: FastAPI):
 
     except Exception as e:
         logger.exception(f"[Scheduler] 预热 Embedding 模型失败: {e}")
-        scheduler.state.embedding_engine = None  # type: ignore
+        app.state.embedding_engine = None  # type: ignore
 
     # ------------------------------------------
     # 尝试初始化知识库
     # ------------------------------------------
-    yaml_path = os.getenv("SCHEDULER_KNOWLEDGE_YAML", "").strip()
     kdn_base_url = os.getenv("SCHEDULER_KDN_BASE_URL", "").strip()
 
     # 复用已预热的 embedder（维度校验用）
-    kb_embedder = getattr(scheduler.state, "embedding_engine", None)  # type: ignore
+    kb_embedder = getattr(app.state, "embedding_engine", None)  # type: ignore
 
     if kdn_base_url:
         try:
@@ -162,7 +163,7 @@ async def lifespan(api: FastAPI):
 
             if not items:
                 logger.warning(f"[Scheduler] KDN snapshot empty: {kdn_base_url!r}")
-                scheduler.state.knowledge_table = None  # type: ignore
+                app.state.knowledge_table = None  # type: ignore
             else:
                 # 维度：优先用 embedder.dim（最稳），否则用 snapshot embed_dim
                 dim = int(getattr(kb_embedder, "dim", 0) or int(items[0].get("embed_dim") or 0))
@@ -172,10 +173,10 @@ async def lifespan(api: FastAPI):
                 # 构表函数
                 table = build_table_from_kdn_items(items, dim=dim, kdn_base_url=kdn_base_url)
 
-                scheduler.state.knowledge_table = table  # type: ignore
-                scheduler.state.kdn_base_url = kdn_base_url  # type: ignore
-                scheduler.state._kdn_refresh_lock = asyncio.Lock()  # type: ignore
-                scheduler.state.last_refresh_ts = int(time.time())  # type: ignore
+                app.state.knowledge_table = table  # type: ignore
+                app.state.kdn_base_url = kdn_base_url  # type: ignore
+                app.state._kdn_refresh_lock = asyncio.Lock()  # type: ignore
+                app.state.last_refresh_ts = int(time.time())  # type: ignore
 
                 logger.info(
                     f"[Scheduler] Knowledge base loaded from KDN {kdn_base_url!r}, "
@@ -183,14 +184,14 @@ async def lifespan(api: FastAPI):
                 )
 
                 # 启动后台 refresh程序，定期刷新knowledge_list
-                scheduler.state._kdn_stop_event = asyncio.Event()   # type: ignore
-                scheduler.state._kdn_refresh_task = asyncio.create_task(        # type: ignore
-                    kdn_auto_refresh_loop(scheduler, scheduler.state._kdn_stop_event)   # type: ignore
+                app.state._kdn_stop_event = asyncio.Event()   # type: ignore
+                app.state._kdn_refresh_task = asyncio.create_task(        # type: ignore
+                    kdn_auto_refresh_loop(app, app.state._kdn_stop_event)   # type: ignore
                 )
 
         except Exception as e:
             logger.exception(f"[Scheduler] Failed to init knowledge base from KDN {kdn_base_url!r}: {e}")
-            scheduler.state.knowledge_table = None  # type: ignore
+            app.state.knowledge_table = None  # type: ignore
 
     else:
         # ---- fallback: YAML (keep your original behavior) ----
@@ -201,7 +202,7 @@ async def lifespan(api: FastAPI):
                     yaml_path=yaml_path,
                     embedder=kb_embedder,
                 )
-                scheduler.state.knowledge_table = knowledge_table  # type: ignore
+                app.state.knowledge_table = knowledge_table  # type: ignore
                 units = getattr(knowledge_table, "_units", {})
                 logger.info(
                     f"[Scheduler] Knowledge base loaded from {yaml_path!r}, "
@@ -209,18 +210,62 @@ async def lifespan(api: FastAPI):
                 )
             except Exception as e:
                 logger.exception(f"[Scheduler] Failed to init knowledge base from {yaml_path!r}: {e}")
-                scheduler.state.knowledge_table = None  # type: ignore
+                app.state.knowledge_table = None  # type: ignore
         else:
             logger.warning(
                 "[Scheduler] Env SCHEDULER_KNOWLEDGE_YAML not set, "
                 "knowledge base will NOT be initialized."
             )
-            scheduler.state.knowledge_table = None  # type: ignore
+            app.state.knowledge_table = None  # type: ignore
+
+    # ------------------------------------------
+    # 尝试启动控制平面
+    # ------------------------------------------
+    async def _run_control_plane(app):
+        host = os.environ.get("SCHEDULER_CP_HOST", "0.0.0.0")
+        port = int(os.environ.get("SCHEDULER_CP_PORT", SCHEDULER_CP_PORT))
+
+        config = uvicorn.Config(
+            control_plane,
+            host=host,
+            port=port,
+            log_level=os.environ.get("SCHEDULER_CP_LOG_LEVEL", "info"),
+            loop="asyncio",
+            lifespan="on",
+            access_log=False,
+        )
+        server = uvicorn.Server(config)
+        app.state._cp_server = server
+        await server.serve()
+
+    app.state._cp_task = asyncio.create_task(_run_control_plane(app)) # type: ignore
 
     # 这里 yield 之后是正常服务期
     logger.info("[Scheduler] startup: 初始化完成，监听服务中")
-    yield
+    try:
+        yield
+    finally:
+        # ---------- shutdown ----------
+        cp_server = getattr(app.state, "_cp_server", None) # type: ignore
+        cp_task = getattr(app.state, "_cp_task", None) # type: ignore
 
+        if cp_server is not None:
+            cp_server.should_exit = True
+        if cp_task is not None:
+            try:
+                await cp_task
+            except Exception:
+                pass
+
+        stop_ev = getattr(app.state, "_kdn_stop_event", None) # type: ignore
+        task = getattr(app.state, "_kdn_refresh_task", None) # type: ignore
+        if stop_ev is not None:
+            stop_ev.set()
+        if task is not None:
+            try:
+                await task
+            except Exception:
+                pass
     # shutdown 阶段，如果后面有资源要清理，可以写在这里
     logger.info("[Scheduler] shutdown: 结束服务")
 
@@ -237,6 +282,7 @@ scheduler = FastAPI(
 # ======================= 公共内部处理函数 =======================
 @timing
 def _handle_client(
+    app: FastAPI,
     url_path: str,
     payload: Dict[str, Any],
     client_ip: str,
@@ -264,8 +310,8 @@ def _handle_client(
         payload=payload,
         user_addr=client_ip,
         request_id=request_id,
-        embedder=getattr(scheduler.state, "embedding_engine", None), # type: ignore
-        knowledge_table=getattr(scheduler.state, "knowledge_table", None), # type: ignore
+        embedder=getattr(app.state, "embedding_engine", None), # type: ignore
+        knowledge_table=getattr(app.state, "knowledge_table", None), # type: ignore
     )
 
     print(f"[Scheduler] 构建内部 Request 成功: Request_ID={req_obj.Request_ID}, "
@@ -311,7 +357,7 @@ async def create_chat_completions(request: FastAPIRequest):
     raw_headers = {k.lower(): v for k, v in request.headers.items()}
 
     # 构建内部 Request（包含 Prompt/Service/Task 等）
-    req_obj = _handle_client(url_path, payload, client_ip)
+    req_obj = _handle_client(request.app, url_path, payload, client_ip)
 
     # 根据调度结果选择下游 URL
     host = req_obj.Task.P_proxy_addr
@@ -380,7 +426,7 @@ async def create_completions(request: FastAPIRequest):
     raw_headers = {k.lower(): v for k, v in request.headers.items()}
 
     # 构建内部 Request（包含 Prompt/Service/Task 等）
-    req_obj = _handle_client(url_path, payload, client_ip)
+    req_obj = _handle_client(request.app, url_path, payload, client_ip)
 
     # 根据调度结果选择下游 URL
     host = req_obj.Task.P_proxy_addr
@@ -551,5 +597,3 @@ async def admin_refresh_knowledge():
 #     client_ip = request.client.host if request.client else "unknown"
 #     ...
 #     return JSONResponse(content={"status": "ok"})
-
-
