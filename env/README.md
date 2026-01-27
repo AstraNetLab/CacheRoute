@@ -42,11 +42,11 @@ lsb_release -a
 ### 二、构建新版本的vLLM+LMCache镜像
 
 基础环境：<br>
-    system`Ubuntu22.04.5 Jammy`<br>
-    docker`Docker version 28.2.2, build 28.2.2-0ubuntu1~22.04.1`<br>
-    CUDA_version `13.0`<br> 
-    NVIDIA_driver `580.95.05`<br>
-    Pytorch `2.9.1`<br>
+    System_version: `Ubuntu22.04.5 Jammy`<br>
+    Docker_version: `Docker version 28.2.2, build 28.2.2-0ubuntu1~22.04.1`<br>
+    CUDA_version: `13.0`<br> 
+    NVIDIA_driver: `580.95.05`<br>
+    Pytorch_version: `2.9.1`<br>
 
 挂载工作区在根目录下（取决于大片空闲空间在哪，教程中为根目录/，后续需要大量空间存放模型数据）
 ```commandline
