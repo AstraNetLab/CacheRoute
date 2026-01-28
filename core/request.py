@@ -256,14 +256,6 @@ class Task:
     User_url_path: str
 
 
-    # TODO：调度算法，输出最佳LLM系统地址。
-
-    # def Scheduler(cls) -> Dict[str, Any]:
-
-
-    # TODO：LLM系统和知识服务器的配对选择，输入知识需求，输出最佳服务器和最佳LLM系统
-
-
 # ========================================================================================================================
 # ------------------------------------------------------Request-----------------------------------------------------------
 # ========================================================================================================================
@@ -293,6 +285,8 @@ class Request:
             request_id: int,
             embedder: Optional[EmbeddingModel] = None,
             knowledge_table: Optional[KnowledgeTable] = None,
+            proxies: Optional[List[Dict[str, Any]]] = None,
+            strategy: Optional[Any] = None,
     ) -> "Request":
         """
             将原始用户请求信息payload，以及转换为完整的 Request 对象。
@@ -490,6 +484,20 @@ class Request:
             batch_order = 0,
             User_url_path=url_path
         )
+        p_addr, p_port = "127.0.0.1", 8001
+        # 若 scheduler 提供了策略和 proxy 列表，则在 build_request 内做选择
+        try:
+            if proxies and strategy is not None:
+                # 统一策略接口：要求策略提供 select(proxies, request_obj_like) 或 select(proxies, payload)
+                # 这里为了避免 build_request 依赖 scheduler 的 Request 类型，我们先把最小上下文传给策略：
+                chosen = strategy.select(proxies=proxies, payload=payload, url_path=url_path, user_addr=user_addr)
+                if chosen:
+                    p_addr, p_port = chosen["host"], int(chosen["port"])
+        except Exception as e:
+            # 不要让调度失败影响原功能：失败就继续用 8001
+            print(f"[Scheduler-Strategy]: select failed, fallback to default. err={e}")
+
+        task_obj.P_proxy_addr, task_obj.P_proxy_port = p_addr, p_port
 
         # =========================
         # ---- 拼装最终 Request ----
