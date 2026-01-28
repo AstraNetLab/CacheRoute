@@ -1,8 +1,20 @@
-# scheduler/control_plane.py
+# scheduler/resource/control_plane.py
+# -*- coding: utf-8 -*-
 """
-调度器的控制平面，用于资源信息收集
-注册、心跳、注销、列表、健康检查。后续调度策略用它来拿可用 proxy 集合。
-它不会单独启动，而是伴随scheduler lifespan启动接受处理。
+Scheduler 控制平面（Control Plane）：
+
+职责：
+- 对外提供 proxy 注册 / 心跳 / 注销 / 查询 API
+- 将状态写入 ProxyPool（资源池）
+- 不包含调度策略、不与 7001 数据平面耦合
+
+运行方式：
+- 你当前的架构：7001 scheduler 启动时，在 lifespan 里额外起一个 uvicorn Server 监听 7002
+- control_plane 这个 FastAPI app 会在同进程运行，因此天然共享内存（同一个 ProxyPool 实例）
+
+注意：
+- 如果使用多 worker，会出现“每个进程一份 ProxyPool”，且 7002 会端口冲突。
+  因此该设计默认 scheduler 单进程单 worker。
 """
 from __future__ import annotations
 
@@ -19,14 +31,27 @@ from typing import Any, Dict, List, Optional, cast
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from .proxy_pool import ProxyInfo, ProxyLoad, ProxyPool
 from core import config
 
 
 CONTROL_PLANE_TTL_S = int(os.environ.get("SCHEDULER_PROXY_TTL_S", config.CONTROL_PLANE_TTL_S))
 HEARTBEAT_INTERVAL_S = int(os.environ.get("SCHEDULER_PROXY_HEARTBEAT_S", config.HEARTBEAT_INTERVAL_S))
 
+# ----------------------------
+# Pydantic 请求/响应模型
+# ----------------------------
 
 class ProxyRegisterRequest(BaseModel):
+    """
+    Proxy 注册请求。
+
+    说明：
+    - proxy_id 可选：不传则由控制平面生成
+    - host/port：Scheduler 能访问到 proxy 的地址
+    - endpoints：proxy 支持的转发端点（OpenAI 风格 path 片段）
+    - tags/weight/meta：先存起来，后续调度策略可用
+    """
     proxy_id: Optional[str] = Field(default=None)
     host: str
     port: int = Field(..., ge=1, le=65535)
@@ -37,20 +62,39 @@ class ProxyRegisterRequest(BaseModel):
 
 
 class ProxyRegisterResponse(BaseModel):
+    """
+    注册响应：
+    - proxy_id：控制平面确认的唯一 ID
+    - heartbeat_interval_s：建议心跳周期
+    - ttl_s：失活阈值
+    """
     proxy_id: str
     heartbeat_interval_s: int
     ttl_s: int
 
 
 class ProxyHeartbeatRequest(BaseModel):
+    """
+    心跳请求：目前只需要 proxy_id
+    未来扩展：可以在这里新增 load 字段，上报 inflight/gpu_util 等。
+    """
     proxy_id: str
+
+    # 未来可扩展负载上报（你准备好时打开）
+    inflight: Optional[int] = None
+    qps_1m: Optional[float] = None
+    gpu_util: Optional[float] = None
 
 
 class ProxyUnregisterRequest(BaseModel):
     proxy_id: str
 
 
-class ProxyInfo(BaseModel):
+class ProxyInfoResponse(BaseModel):
+    """
+    对外查询返回的 proxy 信息。
+    用 Pydantic 模型是为了接口稳定，且避免直接暴露内部 dataclass 对象。
+    """
     proxy_id: str
     host: str
     port: int
@@ -58,100 +102,83 @@ class ProxyInfo(BaseModel):
     tags: List[str]
     weight: float
     meta: Dict[str, Any]
+
+    # load 展开为普通字段（也可以用嵌套模型，看你偏好）
+    inflight: int
+    qps_1m: float
+    gpu_util: float
+
     registered_at: float
     last_seen_at: float
     is_alive: bool
 
 
-class ProxyRegistry:
-    def __init__(self, ttl_s: int):
-        self.ttl_s = ttl_s
-        self._lock = asyncio.Lock()
-        self._data: Dict[str, Dict[str, Any]] = {}
-
-    def _now(self) -> float:
-        return time.time()
-
-    def _is_alive(self, rec: Dict[str, Any], now: Optional[float] = None) -> bool:
-        now = now or self._now()
-        return (now - float(rec["last_seen_at"])) <= self.ttl_s
-
-    async def register(self, req: ProxyRegisterRequest) -> str:
-        async with self._lock:
-            now = self._now()
-            proxy_id = req.proxy_id or f"pxy_{uuid.uuid4().hex[:12]}"
-
-            rec = self._data.get(proxy_id)
-            if rec is None:
-                rec = {"proxy_id": proxy_id, "registered_at": now}
-
-            rec = cast(Dict[str, Any], rec)
-
-            rec.update(
-                host=req.host,
-                port=req.port,
-                endpoints=list(req.endpoints or []),
-                tags=list(req.tags or []),
-                weight=float(req.weight),
-                meta=dict(req.meta or {}),
-                last_seen_at=now,
-            )
-            self._data[proxy_id] = rec
-            return proxy_id
-
-    async def heartbeat(self, proxy_id: str) -> None:
-        async with self._lock:
-            rec = self._data.get(proxy_id)
-            if not rec:
-                raise KeyError(proxy_id)
-            rec["last_seen_at"] = self._now()
-
-    async def unregister(self, proxy_id: str) -> None:
-        async with self._lock:
-            self._data.pop(proxy_id, None)
-
-    async def list(self, include_dead: bool = False) -> List[ProxyInfo]:
-        async with self._lock:
-            now = self._now()
-            out: List[ProxyInfo] = []
-            for rec in self._data.values():
-                alive = self._is_alive(rec, now=now)
-                if (not include_dead) and (not alive):
-                    continue
-                out.append(
-                    ProxyInfo(
-                        proxy_id=rec["proxy_id"],
-                        host=rec["host"],
-                        port=rec["port"],
-                        endpoints=list(rec.get("endpoints") or []),
-                        tags=list(rec.get("tags") or []),
-                        weight=float(rec.get("weight", 1.0)),
-                        meta=dict(rec.get("meta") or {}),
-                        registered_at=float(rec.get("registered_at", now)),
-                        last_seen_at=float(rec.get("last_seen_at", 0.0)),
-                        is_alive=alive,
-                    )
-                )
-            out.sort(key=lambda x: x.last_seen_at, reverse=True)
-            return out
-
+# ----------------------------
+# FastAPI app + 资源池实例
+# ----------------------------
 
 control_plane = FastAPI(title="CacheRoute Scheduler Control Plane v1")
-_registry = ProxyRegistry(ttl_s=CONTROL_PLANE_TTL_S)
+
+# 单进程共享资源池：控制平面 API 写入；未来调度策略从同一个 pool 读取
+_pool = ProxyPool(ttl_s=CONTROL_PLANE_TTL_S)
+
+
+def _to_response(info: ProxyInfo) -> ProxyInfoResponse:
+    """内部 dataclass -> 对外响应模型的转换。"""
+    return ProxyInfoResponse(
+        proxy_id=info.proxy_id,
+        host=info.host,
+        port=info.port,
+        endpoints=list(info.endpoints),
+        tags=list(info.tags),
+        weight=float(info.weight),
+        meta=dict(info.meta),
+
+        inflight=int(info.load.inflight),
+        qps_1m=float(info.load.qps_1m),
+        gpu_util=float(info.load.gpu_util),
+
+        registered_at=float(info.registered_at),
+        last_seen_at=float(info.last_seen_at),
+        is_alive=info.is_alive(_pool.ttl_s),
+    )
 
 
 @control_plane.get("/healthz")
 async def healthz():
+    """
+    健康检查：用于验证 7002 是否成功启动、路由可达。
+    """
     return {"ok": True}
 
 
 @control_plane.post("/v1/proxy/register", response_model=ProxyRegisterResponse)
 async def proxy_register(req: ProxyRegisterRequest):
-    proxy_id = await _registry.register(req)
-    logger.info(
-        "[Scheduler] proxy.register proxy_id=%s host=%s port=%s endpoints=%s tags=%s weight=%s",
-        proxy_id, req.host, req.port, req.endpoints, req.tags, req.weight
+    """
+    注册/更新 proxy（幂等）。
+    - 如果 proxy_id 不传：生成一个新的
+    - 如果 proxy_id 已存在：更新 host/port/endpoints 等，并刷新 last_seen
+    """
+    proxy_id = req.proxy_id or f"pxy_{uuid.uuid4().hex[:12]}"
+
+    info = ProxyInfo(
+        proxy_id=proxy_id,
+        host=req.host,
+        port=req.port,
+        endpoints=list(req.endpoints or []),
+        tags=list(req.tags or []),
+        weight=float(req.weight),
+        meta=dict(req.meta or {}),
+        load=ProxyLoad(),  # 注册阶段先给空负载，后续由心跳更新
     )
+    # 注册本质是 upsert
+    await _pool.upsert(info)
+
+    logger.info(
+        "proxy.register proxy_id=%s host=%s port=%s endpoints=%s",
+        proxy_id, req.host, req.port, req.endpoints
+    )
+
     return ProxyRegisterResponse(
         proxy_id=proxy_id,
         heartbeat_interval_s=HEARTBEAT_INTERVAL_S,
@@ -161,21 +188,43 @@ async def proxy_register(req: ProxyRegisterRequest):
 
 @control_plane.post("/v1/proxy/heartbeat")
 async def proxy_heartbeat(req: ProxyHeartbeatRequest):
-    try:
-        await _registry.heartbeat(req.proxy_id)
-    except KeyError:
+    """
+    心跳：
+    - 刷新 last_seen_at
+    - 如果请求里携带负载字段，则更新 load（保持可扩展）
+    """
+    load: Optional[ProxyLoad] = None
+    # 只要有任一字段给了，就更新 load（没给的不改，默认 0）
+    if req.inflight is not None or req.qps_1m is not None or req.gpu_util is not None:
+        # 注意：这里简单处理为“全量覆盖”，你也可以改成“只更新不为 None 的字段”
+        load = ProxyLoad(
+            inflight=int(req.inflight or 0),
+            qps_1m=float(req.qps_1m or 0.0),
+            gpu_util=float(req.gpu_util or 0.0),
+        )
+
+    ok = await _pool.heartbeat(req.proxy_id, load=load)
+    if not ok:
         raise HTTPException(status_code=404, detail="proxy_id not registered")
-    logger.info("[Scheduler] proxy.heartbeat proxy_id=%s", req.proxy_id)
+
+    logger.info("proxy.heartbeat proxy_id=%s", req.proxy_id)
     return {"ok": True}
 
 
 @control_plane.post("/v1/proxy/unregister")
 async def proxy_unregister(req: ProxyUnregisterRequest):
-    await _registry.unregister(req.proxy_id)
-    logger.info("[Scheduler] proxy.unregister proxy_id=%s", req.proxy_id)
+    """注销：从池中移除 proxy。"""
+    await _pool.remove(req.proxy_id)
+    logger.info("proxy.unregister proxy_id=%s", req.proxy_id)
     return {"ok": True}
 
 
-@control_plane.get("/v1/proxy/list", response_model=List[ProxyInfo])
+@control_plane.get("/v1/proxy/list", response_model=List[ProxyInfoResponse])
 async def proxy_list(include_dead: bool = False):
-    return await _registry.list(include_dead=include_dead)
+    """
+    查询 proxy 列表：
+    - include_dead=False：只返回存活 proxy（默认）
+    - include_dead=True：返回全部（含失活）
+    """
+    infos = await _pool.list(include_dead=include_dead)
+    return [_to_response(x) for x in infos]
