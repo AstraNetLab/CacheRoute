@@ -1,3 +1,17 @@
+### 260128 scheduler控制平面维护结构构建，proxy对接接口构建
+
+(1)新增维护proxy信息的结构体，包含静态信息（如注册时携带的信息`proxy_id/host/port/endpoints/tags/weight/meta`），和动态信息（如`load`，`last_seen`）<br>
+
+涉及修改文件:<br>
+`scheduler/resource/control_plane.py`<br>
+
+涉及新增文件:<br>
+`scheduler/resource/proxy_pool.py`<br>
+
+维护者：heyao
+
+---
+
 ### 260127 说明性文件更新，scheduler控制平面接口部署，一些接口整理
 
 (1)更新env/README.md: 构建新版本的vllm+LMcache镜像的操作步骤<br>
