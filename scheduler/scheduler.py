@@ -52,13 +52,15 @@ from .knowledge.kdn_sync import (
     kdn_auto_refresh_loop,
     kdn_refresh_once
 )
-from .resource.control_plane import control_plane
+from .resource.control_plane import control_plane, set_pool, get_pool
+from .resource.proxy_pool import ProxyPool
+from .strategy import create_strategy
 
 from store import (
     # DummyEmbeddingModel,
     init_knowledge_table,
-    KnowledgeTable,
-    KnowledgeUnit
+    # KnowledgeTable,
+    # KnowledgeUnit
 )
 
 from util import timing
@@ -221,6 +223,11 @@ async def lifespan(app: FastAPI):
     # ------------------------------------------
     # 尝试启动控制平面
     # ------------------------------------------
+    #先构建Proxy池实例
+    ttl = int(os.environ.get("SCHEDULER_PROXY_TTL_S", "30"))
+    app.state.proxy_pool = ProxyPool(ttl_s=ttl)  # type: ignore
+    set_pool(app.state.proxy_pool)  # type: ignore 让 7002 复用这份池
+
     async def _run_control_plane(app):
         host = os.environ.get("SCHEDULER_CP_HOST", "0.0.0.0")
         port = int(os.environ.get("SCHEDULER_CP_PORT", SCHEDULER_CP_PORT))
@@ -239,6 +246,13 @@ async def lifespan(app: FastAPI):
         await server.serve()
 
     app.state._cp_task = asyncio.create_task(_run_control_plane(app)) # type: ignore
+
+    # ------------------------------------------
+    # 调用具体scheduler策略
+    # ------------------------------------------
+    strategy_name = os.environ.get("SCHEDULER_STRATEGY", "round_robin")
+    app.state.proxy_strategy = create_strategy(strategy_name)  # type: ignore
+    logger.info("[Scheduler] scheduler strategy=%s", strategy_name)
 
     # 这里 yield 之后是正常服务期
     logger.info("[Scheduler] startup: 初始化完成，监听服务中")
@@ -286,6 +300,8 @@ def _handle_client(
     url_path: str,
     payload: Dict[str, Any],
     client_ip: str,
+    proxies: List[Dict[str, Any]] | None = None,
+    strategy: Any | None = None,
 ) -> SchedulerRequest:
     """
     根据 HTTP 请求信息
@@ -312,6 +328,8 @@ def _handle_client(
         request_id=request_id,
         embedder=getattr(app.state, "embedding_engine", None), # type: ignore
         knowledge_table=getattr(app.state, "knowledge_table", None), # type: ignore
+        proxies=proxies,
+        strategy=strategy,
     )
 
     print(f"[Scheduler] 构建内部 Request 成功: Request_ID={req_obj.Request_ID}, "
@@ -320,7 +338,6 @@ def _handle_client(
           )
 
     return req_obj
-
 
 
 # ======================= 调度器方法路由 =======================
@@ -357,7 +374,14 @@ async def create_chat_completions(request: FastAPIRequest):
     raw_headers = {k.lower(): v for k, v in request.headers.items()}
 
     # 构建内部 Request（包含 Prompt/Service/Task 等）
-    req_obj = _handle_client(request.app, url_path, payload, client_ip)
+    pool = get_pool()
+    proxy_infos = await pool.list(include_dead=False)
+
+    proxies = [{"proxy_id": p.proxy_id, "host": p.host, "port": p.port} for p in proxy_infos]
+
+    strategy = getattr(request.app.state, "proxy_strategy", None)
+
+    req_obj = _handle_client(request.app, url_path, payload, client_ip, proxies=proxies, strategy=strategy,)
 
     # 根据调度结果选择下游 URL
     host = req_obj.Task.P_proxy_addr
@@ -426,7 +450,13 @@ async def create_completions(request: FastAPIRequest):
     raw_headers = {k.lower(): v for k, v in request.headers.items()}
 
     # 构建内部 Request（包含 Prompt/Service/Task 等）
-    req_obj = _handle_client(request.app, url_path, payload, client_ip)
+    pool = get_pool()
+    proxy_infos = await pool.list(include_dead=False)
+
+    proxies = [{"proxy_id": p.proxy_id, "host": p.host, "port": p.port} for p in proxy_infos]
+
+    strategy = getattr(request.app.state, "proxy_strategy", None)
+    req_obj = _handle_client(request.app, url_path, payload, client_ip, proxies=proxies, strategy=strategy,)
 
     # 根据调度结果选择下游 URL
     host = req_obj.Task.P_proxy_addr
@@ -597,3 +627,5 @@ async def admin_refresh_knowledge():
 #     client_ip = request.client.host if request.client else "unknown"
 #     ...
 #     return JSONResponse(content={"status": "ok"})
+
+
