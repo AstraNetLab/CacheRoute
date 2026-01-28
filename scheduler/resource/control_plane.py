@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from .proxy_pool import ProxyInfo, ProxyLoad, ProxyPool
 from core import config
 
-
+_pool: Optional[ProxyPool] = None
 CONTROL_PLANE_TTL_S = int(os.environ.get("SCHEDULER_PROXY_TTL_S", config.CONTROL_PLANE_TTL_S))
 HEARTBEAT_INTERVAL_S = int(os.environ.get("SCHEDULER_PROXY_HEARTBEAT_S", config.HEARTBEAT_INTERVAL_S))
 
@@ -112,6 +112,22 @@ class ProxyInfoResponse(BaseModel):
     last_seen_at: float
     is_alive: bool
 
+# ----------------------------
+# 对外调用池方法
+# ----------------------------
+def set_pool(pool: ProxyPool) -> None:
+    """由 scheduler(7001) 在 startup 时注入共享的 ProxyPool 实例。"""
+    global _pool
+    _pool = pool
+
+
+def get_pool() -> ProxyPool:
+    """控制平面与数据平面都通过它拿到同一份池。"""
+    if _pool is None:
+        raise RuntimeError("ProxyPool is not initialized. Call set_pool() at scheduler startup.")
+    return _pool
+
+
 
 # ----------------------------
 # FastAPI app + 资源池实例
@@ -120,11 +136,12 @@ class ProxyInfoResponse(BaseModel):
 control_plane = FastAPI(title="CacheRoute Scheduler Control Plane v1")
 
 # 单进程共享资源池：控制平面 API 写入；未来调度策略从同一个 pool 读取
-_pool = ProxyPool(ttl_s=CONTROL_PLANE_TTL_S)
+# _pool = ProxyPool(ttl_s=CONTROL_PLANE_TTL_S)
 
 
 def _to_response(info: ProxyInfo) -> ProxyInfoResponse:
     """内部 dataclass -> 对外响应模型的转换。"""
+    pool = get_pool()
     return ProxyInfoResponse(
         proxy_id=info.proxy_id,
         host=info.host,
@@ -140,7 +157,7 @@ def _to_response(info: ProxyInfo) -> ProxyInfoResponse:
 
         registered_at=float(info.registered_at),
         last_seen_at=float(info.last_seen_at),
-        is_alive=info.is_alive(_pool.ttl_s),
+        is_alive=info.is_alive(pool.ttl_s),
     )
 
 
@@ -172,7 +189,8 @@ async def proxy_register(req: ProxyRegisterRequest):
         load=ProxyLoad(),  # 注册阶段先给空负载，后续由心跳更新
     )
     # 注册本质是 upsert
-    await _pool.upsert(info)
+    pool = get_pool()
+    await pool.upsert(info)
 
     logger.info(
         "proxy.register proxy_id=%s host=%s port=%s endpoints=%s",
@@ -203,7 +221,8 @@ async def proxy_heartbeat(req: ProxyHeartbeatRequest):
             gpu_util=float(req.gpu_util or 0.0),
         )
 
-    ok = await _pool.heartbeat(req.proxy_id, load=load)
+    pool = get_pool()
+    ok = await pool.heartbeat(req.proxy_id, load=load)
     if not ok:
         raise HTTPException(status_code=404, detail="proxy_id not registered")
 
@@ -214,7 +233,8 @@ async def proxy_heartbeat(req: ProxyHeartbeatRequest):
 @control_plane.post("/v1/proxy/unregister")
 async def proxy_unregister(req: ProxyUnregisterRequest):
     """注销：从池中移除 proxy。"""
-    await _pool.remove(req.proxy_id)
+    pool = get_pool()
+    await pool.remove(req.proxy_id)
     logger.info("proxy.unregister proxy_id=%s", req.proxy_id)
     return {"ok": True}
 
@@ -226,5 +246,6 @@ async def proxy_list(include_dead: bool = False):
     - include_dead=False：只返回存活 proxy（默认）
     - include_dead=True：返回全部（含失活）
     """
-    infos = await _pool.list(include_dead=include_dead)
+    pool = get_pool()
+    infos = await pool.list(include_dead=include_dead)
     return [_to_response(x) for x in infos]
