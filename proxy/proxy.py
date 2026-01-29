@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import os
 import json
+import asyncio
 import logging
+
+from contextlib import asynccontextmanager
 from dataclasses import fields
 from typing import Any, Dict, List, Tuple
 
@@ -27,15 +30,94 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from core import Request as SchedulerRequest, Prompt, Service, Task
 # from core.config import INSTANCE_BASE_URL
 from core import forward_request
+from core import config
 
+from proxy.sclient.scheduler_client import SchedulerControlClient
 
-KDN_BASE_URL = os.environ.get("KDN_BASE_URL", "http://127.0.0.1:9101").rstrip("/")
+SCHEDULER_CP_URL = os.environ.get("SCHEDULER_CP_URL", config.SCHEDULER_CP_URL).rstrip("/")
+KDN_BASE_URL = os.environ.get("KDN_BASE_URL", config.DEFAULT_BASE_URL).rstrip("/")
+
+PROXY_PORT = int(os.environ.get("PROXY_PORT", "8002"))
+PROXY_ADVERTISE_HOST = os.environ.get("PROXY_ADVERTISE_HOST", config.PROXY_CP_HOST)
+PROXY_ADVERTISE_PORT = int(os.environ.get("PROXY_ADVERTISE_PORT", str(config.PROXY_CP_PORT)))
+PROXY_ID = os.environ.get("PROXY_ID", f"hp_{PROXY_ADVERTISE_HOST}:{PROXY_ADVERTISE_PORT}")
+PROXY_HEARTBEAT_S = float(os.environ.get("PROXY_HEARTBEAT_S", config.HEARTBEAT_INTERVAL_S))
+
 INSTANCE_PORT = int(os.environ.get("INSTANCE_PORT", "9001"))
 
 logger = logging.getLogger("proxy")
 logging.basicConfig(level=logging.INFO)
 
-proxy = FastAPI(title="CacheRoute Proxy v1")
+
+# ======================= Proxy初始化 =======================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Proxy 生命周期：
+      - startup: 向 scheduler(control plane) 注册
+      - running: 周期心跳，保证 proxy_pool 不过期
+      - shutdown: 优雅注销（非强依赖，kill -9 情况靠 TTL 清理）
+    """
+    client = SchedulerControlClient(SCHEDULER_CP_URL, timeout_s=5.0)
+    app.state._sched_client = client  # type: ignore
+    app.state._proxy_id = PROXY_ID    # type: ignore
+    app.state._hb_stop = asyncio.Event()  # type: ignore
+
+    # 1) register（失败不应阻塞业务启动：允许 proxy 单独跑）
+    try:
+        reg = await client.register(
+            proxy_id=PROXY_ID,
+            host=PROXY_ADVERTISE_HOST,
+            port=PROXY_ADVERTISE_PORT,
+            endpoints=["chat/completions", "completions"],
+            meta={"version": "proxy_v1"},
+        )
+        # 用 scheduler 建议的心跳周期覆盖本地默认
+        interval = float(reg.heartbeat_interval_s) if reg.heartbeat_interval_s else PROXY_HEARTBEAT_S
+        app.state._hb_interval = interval  # type: ignore
+        logger.info("[Proxy] registered to scheduler: cp=%s proxy_id=%s advertise=%s:%s hb=%ss",
+                    SCHEDULER_CP_URL, reg.proxy_id, PROXY_ADVERTISE_HOST, PROXY_ADVERTISE_PORT, interval)
+    except Exception as e:
+        # 不阻塞业务面：注册失败时 proxy 仍可本地转发（只是 scheduler 看不到它）
+        app.state._hb_interval = PROXY_HEARTBEAT_S  # type: ignore
+        logger.warning("[Proxy] register failed (non-fatal): cp=%s err=%s", SCHEDULER_CP_URL, str(e))
+
+    # 2) heartbeat loop
+    async def _hb_loop():
+        while not app.state._hb_stop.is_set():  # type: ignore
+            try:
+                # 先不做 load 上报，后续你扩展 inflight/gpu_util 时再接入
+                await client.heartbeat(proxy_id=PROXY_ID)
+            except Exception as e:
+                logger.warning("[Proxy] heartbeat failed: err=%s", str(e))
+            await asyncio.sleep(float(getattr(app.state, "_hb_interval", PROXY_HEARTBEAT_S)))  # type: ignore
+
+    app.state._hb_task = asyncio.create_task(_hb_loop())  # type: ignore
+
+    try:
+        yield
+    finally:
+        # 3) shutdown: stop heartbeat + unregister
+        try:
+            app.state._hb_stop.set()  # type: ignore
+            task = getattr(app.state, "_hb_task", None)  # type: ignore
+            if task:
+                task.cancel()
+        except Exception:
+            pass
+
+        try:
+            await client.unregister(proxy_id=PROXY_ID)
+            logger.info("[Proxy] unregistered from scheduler: proxy_id=%s", PROXY_ID)
+        except Exception as e:
+            logger.warning("[Proxy] unregister failed (ignore): err=%s", str(e))
+
+        try:
+            await client.close()
+        except Exception:
+            pass
+
+proxy = FastAPI(title="CacheRoute Proxy v1", lifespan=lifespan)
 
 
 # ======================= 公共内部处理函数 =======================
