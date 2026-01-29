@@ -35,6 +35,7 @@ ALLOWED_OPTION_FIELDS = {
 #                             Scheduler                               #
 # ====================================================================#
 SCHEDULER_BASE_URL = "http://127.0.0.1:7001"
+SCHEDULER_CP_URL = "http://127.0.0.1:7002"
 EMBEDDING_MODEL = "/workspace/llm-stack/CacheRoute/model/embedder/intfloat__multilingual-e5-large-instruct"
 KNOWLEDGE_YAML_PATH = ROOT_DIR / "data" / "knowledge_base.yaml"
 
@@ -60,7 +61,8 @@ SCHEDULER_CP_HOST = "127.0.0.1"                                 # 控制平面�
 #                               Proxy                                 #
 # ====================================================================#
 PROXY_BASE_URL = "http://127.0.0.1:8001"
-
+PROXY_CP_HOST = "127.0.0.1"
+PROXY_CP_PORT = 8002
 
 # ====================================================================#
 #                              Instance                               #
@@ -123,4 +125,3 @@ SYN_TIMEOUT = 3
 MOONCAKE_PROTOCOL = "tcp"
 # RDMA配置 设备名 可选 "" or "mlx5_0"
 MOONCAKE_DEVICE_NAME = ""
-
