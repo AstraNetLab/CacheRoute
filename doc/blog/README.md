@@ -1,4 +1,4 @@
-### 260129 Proxy对接接口构建
+### 260129 一些有关Proxy的功能完善
 
 (1)构建与scheduler对接的proxy交互方法，使得proxy在启动时自动注册，然后动态发心跳包保活，退出后自动注销<br>
 (2)新增`proxy/sclient`目录，用于维护与scheduler交互的client方法<br>
