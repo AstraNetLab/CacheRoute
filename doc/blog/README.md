@@ -1,4 +1,4 @@
-### 260130 Proxy与Instance之间的接口功能完善
+### 260130 (v0.1.1) Proxy与Instance之间的接口功能完善
 
 (1)实现proxy控制平面逻辑Fastapi(8002)，供Instance调用register/heartbeat/unregister/list<br>
 (2)构建描述Instance状态的结构体`InstancePool`，描述Instance池ID，Instance负载信息等状态<br>
