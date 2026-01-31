@@ -1,3 +1,31 @@
+### 260130 Proxy与Instance之间的接口功能完善
+
+(1)实现proxy控制平面逻辑Fastapi(8002)，供Instance调用register/heartbeat/unregister/list<br>
+(2)构建描述Instance状态的结构体`InstancePool`，描述Instance池ID，Instance负载信息等状态<br>
+(3)支持proxy在lifespan启动时构建InstancePool，注入控制平面并启动控制平面。支持proxy在注销时在注销时退出控制平面并上报scheduler。<br>
+(4)支持Instance与proxy控制平面之间的交互，register/heartbeat/unregister<br>
+
+涉及修改文件:<br>
+`proxy/proxy.py`<br>
+`core/config.py`<br>
+`instance/instance_api.py`<br>
+`test/demo_instance.py`<br>
+
+涉及新增文件:<br>
+`proxy/resource/instance_pool.py`<br>
+`proxy/resource/p_control_plane.py`<br>
+`instance/pclient/proxy_client.py`<br>
+
+一些提上日程的工作：<br>
+(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
+(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
+(3)scheduler对池级业务流状态维护(_TODO. heyao_)<br>
+(4)proxy调度策略接入Instance池<br>
+
+维护者：heyao
+
+---
+
 ### 260129 一些有关Proxy的功能完善
 
 (1)构建与scheduler对接的proxy交互方法，使得proxy在启动时自动注册，然后动态发心跳包保活，退出后自动注销<br>
@@ -40,9 +68,9 @@
 
 涉及新增文件:<br>
 `scheduler/resource/proxy_pool.py`<br>
-`scheduler/stategy/base.py`<br>
-`scheduler/stategy/factory.py`<br>
-`scheduler/stategy/round_robin.py`<br>
+`scheduler/strategy/base.py`<br>
+`scheduler/strategy/factory.py`<br>
+`scheduler/strategy/round_robin.py`<br>
 
 维护者：heyao
 
