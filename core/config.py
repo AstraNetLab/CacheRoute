@@ -90,6 +90,8 @@ DEFAULT_DECODE = ["172.18.0.169:8082"]
 #                             KDN Server                              #
 # ====================================================================#
 KDN_BASE_URL = "http://127.0.0.1:9101"                      # KDN服务器URL
+KDN_HOST = "127.0.0.1"
+KDN_PORT = 9101
 DEFAULT_WARN_LEN = 4000                                         # 注册文本超过该长度则会警告，建议通过文件路径方式注册
 # build_kv 的默认值（与你服务端默认保持一致）
 DEFAULT_API_URL = "http://127.0.0.1:8000/v1/chat/completions"   # 构建KVCache块时送入的vllm服务url
