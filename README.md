@@ -8,6 +8,7 @@
   1. Scheduler启动->维护构建proxy_pool和kdn_pool，构建控制平面监听端口（7002），处理来自proxy和kdn的注册、心跳包和注销
   2. KDN && Proxy启动->向Scheduler的控制平面发起注册请求，随后向Scheduler上报资源情况，后续执行个性化资源维护
   3. Instance启动->绑定具体vllm实例，探测资源，向本地proxy注册并上报负载情况
+  ```
 
 一些提上日程的工作：<br>
 (1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
