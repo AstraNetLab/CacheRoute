@@ -32,9 +32,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .proxy_pool import ProxyInfo, ProxyLoad, ProxyPool
+from .kdn_pool import KDNInfo, KDNLoad, KDNPool
 from core import config
 
 _pool: Optional[ProxyPool] = None
+_kdn_pool: Optional[KDNPool] = None
+
 CONTROL_PLANE_TTL_S = int(os.environ.get("SCHEDULER_PROXY_TTL_S", config.CONTROL_PLANE_TTL_S))
 HEARTBEAT_INTERVAL_S = int(os.environ.get("SCHEDULER_PROXY_HEARTBEAT_S", config.HEARTBEAT_INTERVAL_S))
 
@@ -112,6 +115,43 @@ class ProxyInfoResponse(BaseModel):
     last_seen_at: float
     is_alive: bool
 
+
+class KDNRegisterRequest(BaseModel):
+    kdn_id: str
+    host: str
+    port: int = Field(..., ge=1, le=65535)
+    endpoints: List[str] = Field(default_factory=lambda: ["knowledge/snapshot", "knowledge/search/text"])
+    tags: List[str] = Field(default_factory=list)
+    weight: float = Field(default=1.0, ge=0.0)
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class KDNRegisterResponse(BaseModel):
+    kdn_id: str
+    heartbeat_interval_s: int
+    ttl_s: int
+
+class KDNHeartbeatRequest(BaseModel):
+    kdn_id: str
+    items: Optional[int] = None
+    qps_1m: Optional[float] = None
+
+class KDNUnregisterRequest(BaseModel):
+    kdn_id: str
+
+class KDNInfoResponse(BaseModel):
+    kdn_id: str
+    host: str
+    port: int
+    endpoints: List[str]
+    tags: List[str]
+    weight: float
+    meta: Dict[str, Any]
+    items: int
+    qps_1m: float
+    registered_at: float
+    last_seen_at: float
+    is_alive: bool
+
 # ----------------------------
 # 对外调用池方法
 # ----------------------------
@@ -120,25 +160,34 @@ def set_pool(pool: ProxyPool) -> None:
     global _pool
     _pool = pool
 
-
 def get_pool() -> ProxyPool:
     """控制平面与数据平面都通过它拿到同一份池。"""
     if _pool is None:
         raise RuntimeError("ProxyPool is not initialized. Call set_pool() at scheduler startup.")
     return _pool
 
+def set_kdn_pool(pool: KDNPool) -> None:
+    global _kdn_pool
+    _kdn_pool = pool
 
+def get_kdn_pool() -> KDNPool:
+    if _kdn_pool is None:
+        raise RuntimeError("KDNPool is not initialized. Call set_kdn_pool() at scheduler startup.")
+    return _kdn_pool
 
 # ----------------------------
 # FastAPI app + 资源池实例
 # ----------------------------
+
 
 control_plane = FastAPI(title="CacheRoute Scheduler Control Plane v1")
 
 # 单进程共享资源池：控制平面 API 写入；未来调度策略从同一个 pool 读取
 # _pool = ProxyPool(ttl_s=CONTROL_PLANE_TTL_S)
 
-
+# -------------------
+# --- Proxy 侧方法 ---
+# -------------------
 def _to_response(info: ProxyInfo) -> ProxyInfoResponse:
     """内部 dataclass -> 对外响应模型的转换。"""
     pool = get_pool()
@@ -249,3 +298,71 @@ async def proxy_list(include_dead: bool = False):
     pool = get_pool()
     infos = await pool.list(include_dead=include_dead)
     return [_to_response(x) for x in infos]
+
+# -------------------
+# --- KDN 侧方法 ---
+# -------------------
+def _kdn_to_response(info: KDNInfo) -> KDNInfoResponse:
+    pool = get_kdn_pool()
+    return KDNInfoResponse(
+        kdn_id=info.kdn_id,
+        host=info.host,
+        port=info.port,
+        endpoints=list(info.endpoints),
+        tags=list(info.tags),
+        weight=float(info.weight),
+        meta=dict(info.meta),
+        items=int(info.load.items),
+        qps_1m=float(info.load.qps_1m),
+        registered_at=float(info.registered_at),
+        last_seen_at=float(info.last_seen_at),
+        is_alive=info.is_alive(pool.ttl_s),
+    )
+
+@control_plane.post("/v1/kdn/register", response_model=KDNRegisterResponse)
+async def kdn_register(req: KDNRegisterRequest):
+    pool = get_kdn_pool()
+    info = KDNInfo(
+        kdn_id=req.kdn_id,
+        host=req.host,
+        port=req.port,
+        endpoints=list(req.endpoints or []),
+        tags=list(req.tags or []),
+        weight=float(req.weight),
+        meta=dict(req.meta or {}),
+        load=KDNLoad(),
+    )
+    await pool.upsert(info)
+    logger.info("kdn.register kdn_id=%s host=%s port=%s endpoints=%s", req.kdn_id, req.host, req.port, req.endpoints)
+    return KDNRegisterResponse(
+        kdn_id=req.kdn_id,
+        heartbeat_interval_s=HEARTBEAT_INTERVAL_S,
+        ttl_s=CONTROL_PLANE_TTL_S,
+    )
+
+@control_plane.post("/v1/kdn/heartbeat")
+async def kdn_heartbeat(req: KDNHeartbeatRequest):
+    load = None
+    if req.items is not None or req.qps_1m is not None:
+        load = KDNLoad(items=int(req.items or 0), qps_1m=float(req.qps_1m or 0.0))
+
+    pool = get_kdn_pool()
+    ok = await pool.heartbeat(req.kdn_id, load=load)
+    if not ok:
+        raise HTTPException(status_code=404, detail="kdn_id not registered")
+
+    logger.info("kdn.heartbeat kdn_id=%s", req.kdn_id)
+    return {"ok": True}
+
+@control_plane.post("/v1/kdn/unregister")
+async def kdn_unregister(req: KDNUnregisterRequest):
+    pool = get_kdn_pool()
+    await pool.remove(req.kdn_id)
+    logger.info("kdn.unregister kdn_id=%s", req.kdn_id)
+    return {"ok": True}
+
+@control_plane.get("/v1/kdn/list", response_model=List[KDNInfoResponse])
+async def kdn_list(include_dead: bool = False):
+    pool = get_kdn_pool()
+    infos = await pool.list(include_dead=include_dead)
+    return [_kdn_to_response(x) for x in infos]
