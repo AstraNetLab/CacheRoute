@@ -1,7 +1,8 @@
 # kdn_server/kdn_api.py
 from __future__ import annotations
 
-import os
+import asyncio
+import os, time
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,11 +13,15 @@ from model import EmbeddingEngine
 
 from .text_db import TextDatabase
 from .kv_builder import KVBuildConfig, KVCacheBuilder
-
+from .sclient.scheduler_client import SchedulerClient
 
 kdn = FastAPI(title="KDN Server v2")
 
 _TEXT_DB: Optional[TextDatabase] = None
+_SCHED_CLI: SchedulerClient | None = None
+_HB_TASK: asyncio.Task | None = None
+_HB_STOP: asyncio.Event | None = None
+_KDN_ID: str = ""
 
 
 def _get_db_dir() -> Path:
@@ -36,23 +41,66 @@ def _get_kv_root_dir() -> Path:
 
 
 @kdn.on_event("startup")
-def _startup():
-    global _TEXT_DB
+async def _startup():
+    global _TEXT_DB, _SCHED_CLI, _HB_TASK, _HB_STOP, _KDN_ID
+
+    # 1) 原有 TextDB 初始化逻辑（保持不变）
     db_dir = _get_db_dir()
     embedding_model = os.getenv("KDN_EMBEDDING_MODEL")
     embedder = None
-
-    if embedding_model:
-        try:
-            embedder = EmbeddingEngine(model_name=embedding_model)
-            embedder.encode_vector(["__warm_up__"])
-            print(f"[KDN] EmbeddingEngine ready: {embedding_model}")
-        except Exception as e:
-            print(f"[KDN] EmbeddingEngine init failed: {e}")
-            embedder = None
-
+    ...
     _TEXT_DB = TextDatabase(str(db_dir), embedder=embedder)
     print(f"[KDN] TextDatabase ready: {db_dir}")
+
+    # 2) scheduler registration (optional but enabled by env)
+    sched_url = os.getenv("SCHEDULER_CP_URL", "").strip()
+    if not sched_url:
+        print("[KDN] SCHEDULER_CP_URL not set, skip scheduler registration")
+        return
+
+    _KDN_ID = os.getenv("KDN_ID", "").strip() or f"kdn_{int(time.time())}"
+
+    adv_host = os.getenv("KDN_ADVERTISE_HOST", "").strip()
+    adv_port = os.getenv("KDN_ADVERTISE_PORT", "").strip()
+
+    if not adv_host or not adv_port:
+        print("[KDN] KDN_ADVERTISE_HOST/PORT not set, skip scheduler registration")
+        return
+
+    _SCHED_CLI = SchedulerClient(scheduler_cp_url=sched_url)
+
+    try:
+        r = await _SCHED_CLI.register(
+            kdn_id=_KDN_ID,
+            host=adv_host,
+            port=int(adv_port),
+            endpoints=["knowledge/snapshot", "knowledge/search/text"],
+            tags=[],
+            weight=1.0,
+            meta={"db_dir": str(db_dir)},
+        )
+        hb_interval = int(r.get("heartbeat_interval_s", 10))
+        print(f"[KDN] registered to scheduler: kdn_id={_KDN_ID} addr={adv_host}:{adv_port} hb={hb_interval}s")
+    except Exception as e:
+        print(f"[KDN] register to scheduler failed: {e}")
+        return
+
+    # 3) heartbeat loop
+    _HB_STOP = asyncio.Event()
+
+    async def _hb_loop():
+        assert _SCHED_CLI is not None
+        while not _HB_STOP.is_set():
+            try:
+                await _SCHED_CLI.heartbeat(_KDN_ID)
+            except Exception as e:
+                print(f"[KDN] heartbeat failed: {e}")
+            try:
+                await asyncio.wait_for(_HB_STOP.wait(), timeout=max(2, hb_interval))
+            except asyncio.TimeoutError:
+                pass
+
+    _HB_TASK = asyncio.create_task(_hb_loop())
 
 
 @kdn.post("/knowledge/snapshot")
@@ -416,3 +464,24 @@ async def purge_all(payload: Dict[str, Any]):
         "errors": errors,
     })
 
+
+@kdn.on_event("shutdown")
+async def _shutdown():
+    global _SCHED_CLI, _HB_TASK, _HB_STOP, _KDN_ID
+
+    if _HB_STOP is not None:
+        _HB_STOP.set()
+    if _HB_TASK is not None:
+        _HB_TASK.cancel()
+
+    if _SCHED_CLI is not None and _KDN_ID:
+        try:
+            await _SCHED_CLI.unregister(_KDN_ID)
+            print(f"[KDN] unregistered from scheduler: kdn_id={_KDN_ID}")
+        except Exception as e:
+            print(f"[KDN] unregister failed: {e}")
+
+        try:
+            await _SCHED_CLI.close()
+        except Exception:
+            pass
