@@ -1,9 +1,13 @@
-### 260130 (v0.1.1) Proxy与Instance之间的接口功能完善
+### 260202 Proxy、Scheduler池资源结构优化
 
-(1)实现proxy控制平面逻辑Fastapi(8002)，供Instance调用register/heartbeat/unregister/list<br>
-(2)构建描述Instance状态的结构体`InstancePool`，描述Instance池ID，Instance负载信息等状态<br>
-(3)支持proxy在lifespan启动时构建InstancePool，注入控制平面并启动控制平面。支持proxy在注销时在注销时退出控制平面并上报scheduler。<br>
-(4)支持Instance与proxy控制平面之间的交互，register/heartbeat/unregister<br>
+(1)支持proxy的策略接入Instance池，实现基于池的proxy策略选择，而非默认<br>
+(2)优化proxy，在初始化时支持加载策略，不再依赖Scheduler中build_request赋值<br>
+(3)更新Scheduler获取知识清单的方式，为其构建KDN池，并在初始化时控制平面构建，由KDN服务器在启动时主动向Scheduler的kdn_pool注册，随后触发snapshot拉取知识清单<br>
+(4)CacheRoute中资源获取关系与启动顺序更新：
+  ```
+  1. Scheduler启动->维护构建proxy_pool和kdn_pool，构建控制平面监听端口（7002），处理来自proxy和kdn的注册、心跳包和注销
+  2. KDN && Proxy启动->向Scheduler的控制平面发起注册请求，随后向Scheduler上报资源情况，后续执行个性化资源维护
+  3. Instance启动->绑定具体vllm实例，探测资源，向本地proxy注册并上报负载情况
 
 一些提上日程的工作：<br>
 (1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
