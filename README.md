@@ -134,24 +134,26 @@ Python版本：3.12.11<br>
     numa_mode: null
     ```
     
-6. 进行准备工作，检查运行环境、预热调度器知识清单。首先，安装requirements.txt内的依赖库`python -m pip install -r requirements.txt`。
-7. 测试vLLM服务正常启动，新建容器命令行(注意此处url与启动的vLLM实例的监听端口和监听网卡有关)
+6. 测试vLLM服务正常启动，新建容器命令行(注意此处url与启动的vLLM实例的监听端口和监听网卡有关)
     ```
     curl http://127.0.0.1:8000/v1/models
     ```
-8. 预热KDN服务器，运行`demo_kdn.py`，启动通过`kdn_api`KDN服务器。启用新终端运行kdn_server下`kdn_register_cli.py`，这是一个封装好的交互式接口，通过送入知识块文本完成文本以及KVCache块的注册，形成知识库。具体方法见`kdn_server/README.md`
-9. 在完成KDN预热后，依次启动调度器（调度器在初始化时会向KDN抓取可用知识信息）、代理、客户端和实例demo(在本地IDE调试可以直接用demo_run)
-    **注意**：启动存在先后顺序，scheduler的启动需要向KDN服务器抓取知识清单，proxy启动会向scheduler注册，Instance对proxy同理。错误的执行顺序可能导致资源池的不稳定。
+7. 进行准备工作，检查运行环境、预热调度器知识清单。首先，安装requirements.txt内的依赖库`python -m pip install -r requirements.txt`。
+8. 首先启动CacheRoute调度器
     ```
-   cd test
-   ./quick_start_docker.sh
-   python3 demo_scheduler.py
-   python3 demo_proxy.py
+    cd test
+    ./quick_start_docker.sh
+    python3 demo_scheduler.py --strategy <option,round_robin>
+    ```
+9. 预热KDN服务器，运行`demo_kdn.py`，启动通过`kdn_api`KDN服务器。启用新终端运行kdn_server下`kdn_register_cli.py`，这是一个封装好的交互式接口，通过送入知识块文本完成文本以及KVCache块的注册，形成知识库。具体方法见`kdn_server/README.md`
+10. 在完成KDN预热后，依次启动、代理、客户端和实例demo(在本地IDE调试可以直接用demo_run) **注意**：启动存在先后顺序，KDN，proxy启动会向scheduler注册，随后才会交互资源信息。Instance对proxy同理。错误的执行顺序可能导致资源池的不稳定。最为稳妥的启动顺序为：[Scheduler]-[KDN_Server]-[Proxy]-[Instance]
+   ```
+   python3 demo_proxy.py --strategy <option,round_robin>
    python3 demo_instance.py --port <default 9001> --host <xxx>
    python3 demo_client.py 或 demo_client.py --with-ui（推荐，启动有UI界面的版本，支持自动校验报文）
    ```
    **注意**：如果执行时出现import报错，为容器添加关于项目的工作路径：
-   ```
+    ```
     echo 'export PYTHONPATH=/workspace/llm-stack/CacheRoute' >> ~/.bashrc
     ```
 11. 此时scheduler/proxy/instance待完成启动后会发布INFO并等待请求接收，待都启动完毕后，进入client，发现显示<client>，输入http请求即可实现快速示例。
@@ -176,5 +178,8 @@ Python版本：3.12.11<br>
 `max_tokens`:可选项，最大生成token数<br>
 `stream`:可选项，是否启用流式回复。注意，completion模式只能使用非流式<br>
 `RAG`:可选项，是否启用知识注入，False调度器将屏蔽该任务的知识检索
+  
+
+
   
 
