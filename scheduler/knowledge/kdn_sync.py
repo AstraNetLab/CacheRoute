@@ -51,6 +51,11 @@ async def select_kdn_base_url(app) -> tuple[str | None, list[str]]:
 
     base_url = f"http://{chosen.host}:{int(chosen.port)}"
     alive_addrs = [_format_kdn_addr(x.host, x.port) for x in alive]
+    app.state.kdn_alive = len(alive)
+    app.state.kdn_alive_addrs = alive_addrs  # ["kdn://h:p", ...]
+    app.state.kdn_last_selected = base_url  # "http://h:p"
+    app.state.kdn_last_selected_id = getattr(chosen, "kdn_id", "")
+
     return base_url, alive_addrs
 
 
@@ -108,20 +113,26 @@ def build_table_from_kdn_items(
 
 async def kdn_refresh_once(app) -> dict:
     """
-        Refresh knowledge_table once from KDN snapshot.
-        Protected by a global lock to avoid concurrent refresh.
+    Refresh knowledge_table once from KDN snapshot.
+    Atomic-swap design:
+      - NEVER mutate old_table in-place
+      - Build / apply changes on new_table
+      - Rebuild FAISS on new_table
+      - Swap app.state.knowledge_table at the end
     """
     lock = getattr(app.state, "_kdn_refresh_lock", None)
     if lock is None:
-        # 防御式：说明 scheduler 启动时没初始化 lock
         raise RuntimeError("scheduler.state._kdn_refresh_lock is not initialized")
 
     async with lock:
         kdn_base_url, alive_addrs = await select_kdn_base_url(app)
         if not kdn_base_url:
+            app.state.kdn_last_refresh_ok = False
+            app.state.kdn_last_refresh_reason = "no alive kdn in pool"
+            app.state.kdn_last_refresh_ts = int(time.time())
             return {"ok": False, "reason": "no alive kdn in pool"}
 
-        # A) 拉轻量 meta snapshot
+        # A) meta snapshot
         meta_items = await fetch_kdn_snapshot(
             base_url=kdn_base_url,
             need_fields=["kid", "embed_dim", "length",
@@ -130,33 +141,33 @@ async def kdn_refresh_once(app) -> dict:
 
         added, updated, removed = diff_kdn_meta(meta_items)
 
-        table = getattr(app.state, "knowledge_table", None)
-        if table is None:
-            # 首次构建：使用 scheduler embedder 的 dim（最可靠）
+        old_table = getattr(app.state, "knowledge_table", None)
+
+        # ---- Build new_table (either first build or clone from old) ----
+        if old_table is None:
             embedder = getattr(app.state, "embedding_engine", None)
             if embedder is None:
                 raise RuntimeError("embedding_engine is not initialized; cannot build KnowledgeTable")
-
-            table = KnowledgeTable(dim=int(embedder.dim))
-            app.state.knowledge_table = table
+            new_table = KnowledgeTable(dim=embedder.dim)
             logger.info("[Scheduler] KnowledgeTable initialized (first build), dim=%s", embedder.dim)
+        else:
+            new_table = old_table.clone_without_index()
 
         changed = False
 
-        # B) 新增 / 更新
+        # B) upsert on new_table
         need_fetch = added + updated
         if need_fetch:
             full_items = await fetch_kdn_items_by_kids(kdn_base_url, need_fetch)
 
             for it in full_items:
-                kid_raw = it.get("kid") or it.get("id")  # KDN /knowledge/search/text uses "id"
+                kid_raw = it.get("kid") or it.get("id")  # compatibility
                 kid = str(kid_raw or "").strip().lower()
                 if not kid:
                     continue
 
                 emb = it.get("embedding")
                 if emb is None:
-                    # 没 embedding 就跳过（不应发生，但要防御）
                     continue
 
                 unit = KnowledgeUnit(
@@ -168,25 +179,33 @@ async def kdn_refresh_once(app) -> dict:
                     kv_dumped_keys=it.get("kv_dumped_keys"),
                     kv_updated_at=it.get("kv_updated_at"),
                 )
-                table.upsert_kid(kid, unit)
+                new_table.upsert_kid(kid, unit)
                 changed = True
 
-        # C) 删除
+        # C) delete on new_table
         if removed:
-            table.delete_kids(removed)
+            new_table.delete_kids(removed)
             changed = True
 
-        # D) 只在有变化时 rebuild FAISS
-        if changed:
-            table.build_faiss_index()
+        # D) build FAISS on new_table (always build for first build; otherwise only if changed)
+        if old_table is None or changed:
+            new_table.build_faiss_index()
 
+        # E) atomic swap
+        app.state.knowledge_table = new_table
+
+        # status
         app.state.last_refresh_ts = int(time.time())
+        app.state.kdn_last_refresh_ok = True
+        app.state.kdn_last_refresh_reason = ""
+        app.state.kdn_last_refresh_ts = int(time.time())
+
         return {
             "ok": True,
             "added": len(added),
             "updated": len(updated),
             "removed": len(removed),
-            "entries": len(getattr(table, "_units", {})),
+            "entries": len(getattr(new_table, "_units", {})),
         }
 
 
@@ -215,6 +234,9 @@ async def kdn_auto_refresh_loop(app, stop_event: asyncio.Event):
                 logger.warning(f"[Scheduler] KDN auto-refresh skipped: {r}")
         except Exception as e:
             logger.exception(f"[Scheduler] KDN auto-refresh FAILED: {e}")
+            app.state.kdn_last_refresh_ok = False
+            app.state.kdn_last_refresh_reason = f"exception: {type(e).__name__}"
+            app.state.kdn_last_refresh_ts = int(time.time())
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
