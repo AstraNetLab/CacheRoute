@@ -10,7 +10,6 @@
   - 解析 URL / payload / 客户端 IP
   - 分配 1~65535 循环的 request_id
   - 调用 Request.build_request(...) 构建内部 Request 对象，构建Request时调用策略选择最优kdn和proxy
-  
 
 调度器Workflow：
   调度层：
@@ -30,7 +29,7 @@ from __future__ import annotations
 import asyncio
 
 import os, logging
-import time
+# import time
 
 import uvicorn
 # import aiohttp
@@ -48,24 +47,24 @@ from core import forward_request
 from core import config
 
 from model import EmbeddingEngine
-from .knowledge.kdn_client import fetch_kdn_snapshot
+# from .knowledge.kdn_client import fetch_kdn_snapshot
 
 from .knowledge.kdn_sync import (
-    build_table_from_kdn_items,
+    # build_table_from_kdn_items,
     kdn_auto_refresh_loop,
     kdn_refresh_once
 )
-from .resource.control_plane import control_plane, set_pool, get_pool, set_kdn_pool
+from .resource.control_plane import control_plane, set_pool, get_pool, set_kdn_pool, get_kdn_pool, set_on_kdn_register
 from .resource.proxy_pool import ProxyPool
 from .resource.kdn_pool import KDNPool
 from .strategy import create_strategy
 
-from store import (
-    # DummyEmbeddingModel,
-    init_knowledge_table,
-    # KnowledgeTable,
-    # KnowledgeUnit
-)
+# from store import (
+#     # DummyEmbeddingModel,
+#     init_knowledge_table,
+#     # KnowledgeTable,
+#     # KnowledgeUnit
+# )
 
 from util import timing
 
@@ -172,11 +171,26 @@ async def lifespan(app: FastAPI):
 
     logger.info("[Scheduler] KDN refresh loop started (pool-based).")
 
+    async def _trigger_refresh_once() -> None:
+        # 如果 refresh 正在跑，就直接跳过（复用你的锁）
+        lock = getattr(app.state, "_kdn_refresh_lock", None) # type: ignore
+        if lock is None:
+            return
+        if lock.locked():
+            return
+        try:
+            await kdn_refresh_once(app)
+        except Exception:
+            logger.exception("[Scheduler] kdn_refresh_once failed when triggered by kdn_register")
+
+    set_on_kdn_register(_trigger_refresh_once)
+    logger.info("[Scheduler] on_kdn_register callback installed")
+
     async def _run_control_plane(app):
         host = os.environ.get("SCHEDULER_CP_HOST", "0.0.0.0")
         port = int(os.environ.get("SCHEDULER_CP_PORT", SCHEDULER_CP_PORT))
 
-        config = uvicorn.Config(
+        uv_cfg = uvicorn.Config(
             control_plane,
             host=host,
             port=port,
@@ -185,7 +199,7 @@ async def lifespan(app: FastAPI):
             lifespan="on",
             access_log=False,
         )
-        server = uvicorn.Server(config)
+        server = uvicorn.Server(uv_cfg)
         app.state._cp_server = server
         await server.serve()
 
@@ -244,6 +258,7 @@ def _handle_client(
     payload: Dict[str, Any],
     client_ip: str,
     proxies: List[Dict[str, Any]] | None = None,
+    kdns: List[Dict[str, Any]] | None = None,
     strategy: Any | None = None,
 ) -> SchedulerRequest:
     """
@@ -272,12 +287,14 @@ def _handle_client(
         embedder=getattr(app.state, "embedding_engine", None), # type: ignore
         knowledge_table=getattr(app.state, "knowledge_table", None), # type: ignore
         proxies=proxies,
+        kdns=kdns,
         strategy=strategy,
     )
 
-    print(f"[Scheduler] 构建内部 Request 成功: Request_ID={req_obj.Request_ID}, "
-          f"Endpoint_type={getattr(req_obj.Service, 'Endpoint_type', None)}"
-          f"[Scheduler] Knowledge_List={req_obj.Service.Knowledge_List}"
+    print(f"[Scheduler] 构建内部 Request 成功: Request_ID={req_obj.Request_ID},\n"
+          f"[Scheduler] Endpoint_type={getattr(req_obj.Service, 'Endpoint_type', None)},\n"
+          f"[Scheduler] Knowledge_List={req_obj.Service.Knowledge_List},\n"
+          f"[Scheduler] Selected KDN={req_obj.Task.KDN_server_addr}, Proxy={req_obj.Task.P_proxy_addr}:{req_obj.Task.P_proxy_port}"
           )
 
     return req_obj
@@ -319,12 +336,17 @@ async def create_chat_completions(request: FastAPIRequest):
     # 构建内部 Request（包含 Prompt/Service/Task 等）
     pool = get_pool()
     proxy_infos = await pool.list(include_dead=False)
-
     proxies = [{"proxy_id": p.proxy_id, "host": p.host, "port": p.port} for p in proxy_infos]
 
-    strategy = getattr(request.app.state, "proxy_strategy", None)
+    kdn_pool = get_kdn_pool()
+    kdn_infos = await kdn_pool.list(include_dead=False)
+    kdns = [{"kdn_id": k.kdn_id, "host": k.host, "port": k.port} for k in kdn_infos]
 
-    req_obj = _handle_client(request.app, url_path, payload, client_ip, proxies=proxies, strategy=strategy,)
+    strategy = getattr(request.app.state, "proxy_strategy", None)
+    req_obj = _handle_client(request.app, url_path, payload, client_ip, proxies=proxies, kdns=kdns, strategy=strategy,)
+
+    if not req_obj.Task.KDN_server_addr or not req_obj.Task.P_proxy_addr or req_obj.Task.P_proxy_port <= 0:
+        raise RuntimeError("Routing failed: missing KDN or Proxy selection")
 
     # 根据调度结果选择下游 URL
     host = req_obj.Task.P_proxy_addr
@@ -395,11 +417,17 @@ async def create_completions(request: FastAPIRequest):
     # 构建内部 Request（包含 Prompt/Service/Task 等）
     pool = get_pool()
     proxy_infos = await pool.list(include_dead=False)
-
     proxies = [{"proxy_id": p.proxy_id, "host": p.host, "port": p.port} for p in proxy_infos]
 
+    kdn_pool = get_kdn_pool()
+    kdn_infos = await kdn_pool.list(include_dead=False)
+    kdns = [{"kdn_id": k.kdn_id, "host": k.host, "port": k.port} for k in kdn_infos]
+
     strategy = getattr(request.app.state, "proxy_strategy", None)
-    req_obj = _handle_client(request.app, url_path, payload, client_ip, proxies=proxies, strategy=strategy,)
+    req_obj = _handle_client(request.app, url_path, payload, client_ip, proxies=proxies, kdns=kdns, strategy=strategy,)
+
+    if not req_obj.Task.KDN_server_addr or not req_obj.Task.P_proxy_addr or req_obj.Task.P_proxy_port <= 0:
+        raise RuntimeError("Routing failed: missing KDN or Proxy selection")
 
     # 根据调度结果选择下游 URL
     host = req_obj.Task.P_proxy_addr
@@ -454,6 +482,13 @@ async def debug_status() -> Dict[str, Any]:
     table = getattr(scheduler.state, "knowledge_table", None)   # type: ignore
     kdn_base_url = getattr(scheduler.state, "kdn_base_url", None)   # type: ignore
     last_refresh_ts = getattr(scheduler.state, "last_refresh_ts", None) # type: ignore
+    kdn_alive = int(getattr(scheduler.state, "kdn_alive", 0) or 0) # type: ignore
+    kdn_alive_addrs = list(getattr(scheduler.state, "kdn_alive_addrs", []) or []) # type: ignore
+    kdn_last_selected = getattr(scheduler.state, "kdn_last_selected", None) # type: ignore
+    kdn_last_selected_id = getattr(scheduler.state, "kdn_last_selected_id", None) # type: ignore
+    kdn_last_refresh_ok = bool(getattr(scheduler.state, "kdn_last_refresh_ok", False)) # type: ignore
+    kdn_last_refresh_reason = getattr(scheduler.state, "kdn_last_refresh_reason", "") # type: ignore
+    kdn_last_refresh_ts = int(getattr(scheduler.state, "kdn_last_refresh_ts", 0) or 0) # type: ignore
 
     if table is None:
         return {
@@ -465,6 +500,13 @@ async def debug_status() -> Dict[str, Any]:
             "last_refresh_ts": last_refresh_ts,
             "unit_fields": [],
             "sample_kids": [],
+            "kdn_alive": 0,
+            "kdn_alive_addrs": [],
+            "kdn_last_selected": None,
+            "kdn_last_selected_id": None,
+            "kdn_last_refresh_ok": False,
+            "kdn_last_refresh_reason": "",
+            "kdn_last_refresh_ts": 0,
         }
 
     units = getattr(table, "_units", {})
@@ -503,6 +545,13 @@ async def debug_status() -> Dict[str, Any]:
         "last_refresh_ts": last_refresh_ts,
         "unit_fields": unit_fields,
         "sample_kids": kids_sorted,
+        "kdn_alive": kdn_alive,
+        "kdn_alive_addrs": kdn_alive_addrs,
+        "kdn_last_selected": kdn_last_selected,
+        "kdn_last_selected_id": kdn_last_selected_id,
+        "kdn_last_refresh_ok": kdn_last_refresh_ok,
+        "kdn_last_refresh_reason": kdn_last_refresh_reason,
+        "kdn_last_refresh_ts": kdn_last_refresh_ts,
     }
 
 
