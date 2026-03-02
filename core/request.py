@@ -286,6 +286,7 @@ class Request:
             embedder: Optional[EmbeddingModel] = None,
             knowledge_table: Optional[KnowledgeTable] = None,
             proxies: Optional[List[Dict[str, Any]]] = None,
+            kdns: Optional[List[Dict[str, Any]]] = None,
             strategy: Optional[Any] = None,
     ) -> "Request":
         """
@@ -487,15 +488,26 @@ class Request:
 
         # 若 scheduler 提供了策略和 proxy 列表，则在 build_request 内做选择
         try:
-            if proxies and hasattr(strategy, "select"):
+            if strategy and hasattr(strategy, "select"):
                 # 统一策略接口：要求策略提供 select(proxies, request_obj_like) 或 select(proxies, payload)
                 # 这里为了避免 build_request 依赖 scheduler 的 Request 类型，我们先把最小上下文传给策略：
-                chosen = strategy.select(proxies=proxies, payload=payload, url_path=url_path, user_addr=user_addr)
-                if chosen:
-                    p_addr, p_port = chosen["host"], int(chosen["port"])
-                    task_obj.P_proxy_addr, task_obj.P_proxy_port = p_addr, p_port
+                chosen_kdn, chosen_proxy = strategy.select(
+                    kdns=kdns or [],
+                    proxies=proxies or [],
+                    payload=payload,
+                    url_path=url_path,
+                    user_addr=user_addr,
+                )
+
+                if chosen_kdn:
+                    # 推荐统一成 http base_url，后面 KDN client 直接用
+                    task_obj.KDN_server_addr = f"http://{chosen_kdn['host']}:{int(chosen_kdn['port'])}"
+
+                if chosen_proxy:
+                    task_obj.P_proxy_addr = chosen_proxy["host"]
+                    task_obj.P_proxy_port = int(chosen_proxy["port"])
+
         except Exception as e:
-            # 不要让调度失败影响原功能：失败就继续用 8001
             print(f"[Scheduler-Strategy]: select failed, fallback to default. err={e}")
 
 
