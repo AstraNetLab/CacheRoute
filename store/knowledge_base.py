@@ -1,5 +1,5 @@
 """
-Scheduler/knowledge_base.py
+store/knowledge_base.py
 =======================
 定义知识库维护单元数据结构
 定义知识库单元维护基本方法
@@ -79,6 +79,7 @@ class KnowledgeTable:
         self.dim = dim
         # 外部：kid(str) -> KnowledgeUnit
         self._units: Dict[str, KnowledgeUnit] = {}
+        self._next_id = 0
 
         # 全局默认的文本注入服务器，对所有知识单元都可用
         self._default_servers : List[str] =list(default_servers or [])
@@ -166,6 +167,27 @@ class KnowledgeTable:
         self._kid_to_i64[kid] = i64
         self._i64_to_kid[i64] = kid
         return i64
+
+    def clone_without_index(self) -> "KnowledgeTable":
+        """
+        Clone KnowledgeTable structure WITHOUT FAISS index.
+        Used for atomic-swap refresh.
+        """
+        new_table = KnowledgeTable(dim=self.dim, default_servers=list(self._default_servers))
+
+        # 1) deep copy units
+        from copy import deepcopy
+        new_table._units = deepcopy(self._units)
+        new_table._next_id = self._next_id
+
+        # 2) copy kid<->int64 mapping
+        new_table._kid_to_i64 = dict(self._kid_to_i64)
+        new_table._i64_to_kid = dict(self._i64_to_kid)
+
+        # 3) FAISS index intentionally NOT copied
+        new_table._faiss_index = None
+
+        return new_table
 
     # --------------------------------------------------
     # ------------------- 知识管理接口 -------------------
