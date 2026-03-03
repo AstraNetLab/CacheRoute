@@ -63,7 +63,10 @@ class ProxyRegisterRequest(BaseModel):
     tags: List[str] = Field(default_factory=list)
     weight: float = Field(default=1.0, ge=0.0)
     meta: Dict[str, Any] = Field(default_factory=dict)
-
+    max_capacity: int = Field(default=0, ge=0)
+    instance_count: int = Field(default=0, ge=0)
+    kv_mem_per_instance_gb: float = Field(default=0.0, ge=0.0)
+    kv_cache_update_policy: str = Field(default="lru")
 
 class ProxyRegisterResponse(BaseModel):
     """
@@ -107,7 +110,12 @@ class ProxyInfoResponse(BaseModel):
     weight: float
     meta: Dict[str, Any]
 
-    # load 展开为普通字段（也可以用嵌套模型，看你偏好）
+    max_capacity: int
+    instance_count: int
+    kv_mem_per_instance_gb: float
+    kv_cache_pool_gb: float
+    kv_cache_update_policy: str
+
     inflight: int
     qps_1m: float
     gpu_util: float
@@ -206,6 +214,12 @@ def _to_response(info: ProxyInfo) -> ProxyInfoResponse:
         weight=float(info.weight),
         meta=dict(info.meta),
 
+        max_capacity=int(info.load.max_capacity),
+        instance_count=int(info.load.instance_count),
+        kv_mem_per_instance_gb=float(info.load.kv_mem_per_instance_gb),
+        kv_cache_pool_gb=float(info.load.kv_cache_pool_gb),
+        kv_cache_update_policy=str(info.kv_cache_update_policy),
+
         inflight=int(info.load.inflight),
         qps_1m=float(info.load.qps_1m),
         gpu_util=float(info.load.gpu_util),
@@ -232,6 +246,8 @@ async def proxy_register(req: ProxyRegisterRequest):
     - 如果 proxy_id 已存在：更新 host/port/endpoints 等，并刷新 last_seen
     """
     proxy_id = req.proxy_id or f"pxy_{uuid.uuid4().hex[:12]}"
+    inst_cnt = int(req.instance_count or 0)
+    kv_gb = float(req.kv_mem_per_instance_gb or 0.0)
 
     info = ProxyInfo(
         proxy_id=proxy_id,
@@ -241,7 +257,12 @@ async def proxy_register(req: ProxyRegisterRequest):
         tags=list(req.tags or []),
         weight=float(req.weight),
         meta=dict(req.meta or {}),
-        load=ProxyLoad(),  # 注册阶段先给空负载，后续由心跳更新
+        kv_cache_update_policy=str(req.kv_cache_update_policy or "lru"),
+        load=ProxyLoad(max_capacity=int(req.max_capacity),
+                       instance_count=int(req.instance_count or 0),
+                       kv_mem_per_instance_gb=float(req.kv_mem_per_instance_gb or 0.0),
+                       kv_cache_pool_gb=float(inst_cnt) * float(kv_gb),
+                       ),  # 注册阶段先给空负载，后续由心跳更新
     )
     # 注册本质是 upsert
     pool = get_pool()
@@ -269,11 +290,11 @@ async def proxy_heartbeat(req: ProxyHeartbeatRequest):
     load: Optional[ProxyLoad] = None
     # 只要有任一字段给了，就更新 load（没给的不改，默认 0）
     if req.inflight is not None or req.qps_1m is not None or req.gpu_util is not None:
-        # 注意：这里简单处理为“全量覆盖”，你也可以改成“只更新不为 None 的字段”
+        # 仅更新动态字段
         load = ProxyLoad(
-            inflight=int(req.inflight or 0),
-            qps_1m=float(req.qps_1m or 0.0),
-            gpu_util=float(req.gpu_util or 0.0),
+            inflight=int(req.inflight) if req.inflight is not None else 0,
+            qps_1m=float(req.qps_1m) if req.qps_1m is not None else 0.0,
+            gpu_util=float(req.gpu_util) if req.gpu_util is not None else 0.0,
         )
 
     pool = get_pool()

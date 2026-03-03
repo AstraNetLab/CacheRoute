@@ -31,6 +31,14 @@ class ProxyLoad:
     - 后续如果 proxy 可以周期性上报统计信息（如 inflight/qps/gpu_util/kv_hit），
       只需要在这里加字段，再在 control_plane 的 heartbeat 更新即可。
     """
+    # ---- static capability (register-time) ----
+    max_capacity: int = 0      # 最大处理能力（注册时上报，生命周期内不变）
+
+    instance_count: int = 0     # proxy管理的实例数量（注册上报）
+    kv_mem_per_instance_gb: float = 0.0  # 单实例KV内存大小（GB）（注册上报）
+    kv_cache_pool_gb: float = 0.0  # instance_count * kv_mem_per_instance_gb（scheduler计算）
+
+    # ---- dynamic load (heartbeat) ----
     inflight: int = 0          # 正在处理的请求数（或 decode session 数）
     qps_1m: float = 0.0        # 最近 1 分钟 QPS（proxy 上报值）
     gpu_util: float = 0.0      # GPU 利用率（0-100 或 0-1，由你统一约定）
@@ -59,6 +67,7 @@ class ProxyInfo:
     tags: List[str] = field(default_factory=list)
     weight: float = 1.0
     meta: Dict[str, Any] = field(default_factory=dict)
+    kv_cache_update_policy: str = "lru"
 
     # 负载信息，后续调度策略会用
     load: ProxyLoad = field(default_factory=ProxyLoad)
@@ -130,7 +139,9 @@ class ProxyPool:
 
             p.touch()
             if load is not None:
-                p.load = load
+                p.load.inflight = int(load.inflight)
+                p.load.qps_1m = float(load.qps_1m)
+                p.load.gpu_util = float(load.gpu_util)
             return True
 
     async def remove(self, proxy_id: str) -> None:
@@ -161,3 +172,14 @@ class ProxyPool:
             # 输出顺序稳定：按最近心跳时间排序（最新的在前）
             out.sort(key=lambda x: x.last_seen_at, reverse=True)
             return out
+
+    async def inflight_delta(self, proxy_id: str, delta: int) -> bool:
+        async with self._lock:
+            p = self._data.get(proxy_id)
+            if not p:
+                return False
+            v = int(p.load.inflight) + int(delta)
+            if v < 0:
+                v = 0
+            p.load.inflight = v
+            return True
