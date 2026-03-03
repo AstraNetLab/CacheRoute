@@ -68,6 +68,11 @@ PROXY_CP_HOST = "127.0.0.1"
 PROXY_CP_PORT = 8002
 
 INSTANCE_ALIVE_TTL_S = 30
+
+PROXY_MAX_CAPACITY = 8                                          # Proxy管理实例池支持的最大并发任务数，衡量排队情况
+PROXY_INSTANCE_COUNT = 1                                        # Proxy管理实例设备数量
+PROXY_KV_MEM_PER_INSTANCE_GB = 128                              # Proxy管理实例设备的KVCache缓存大小
+PROXY_KV_CACHE_UPDATE_POLICY = "lru"                            # Proxy管理实例的KVCache更新策略
 # ====================================================================#
 #                              Instance                               #
 # ====================================================================#
