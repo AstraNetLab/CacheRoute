@@ -210,19 +210,51 @@ def cmd_proxies(cp_url: str, include_dead: bool = False):
         alive = p.get("is_alive")
         last_seen = p.get("last_seen_at")
 
-        # 兼容两种结构：平铺字段或 load 子对象
+        # ---- dynamic (兼容平铺或 load 子对象) ----
         inflight = p.get("inflight")
+        qps_1m = p.get("qps_1m")
         gpu_util = p.get("gpu_util")
-        if inflight is None and isinstance(p.get("load"), dict):
-            inflight = p["load"].get("inflight")
-        if gpu_util is None and isinstance(p.get("load"), dict):
-            gpu_util = p["load"].get("gpu_util")
+        if isinstance(p.get("load"), dict):
+            load = p["load"]
+            if inflight is None:
+                inflight = load.get("inflight")
+            if qps_1m is None:
+                qps_1m = load.get("qps_1m")
+            if gpu_util is None:
+                gpu_util = load.get("gpu_util")
+
+        # ---- static capability (注册时上报/或由scheduler计算) ----
+        max_capacity = p.get("max_capacity")
+        instance_count = p.get("instance_count")
+        kv_mem_per_instance_gb = p.get("kv_mem_per_instance_gb")
+        kv_cache_pool_gb = p.get("kv_cache_pool_gb")
+        if isinstance(p.get("load"), dict):
+            load = p["load"]
+            if max_capacity is None:
+                max_capacity = load.get("max_capacity")
+            if instance_count is None:
+                instance_count = load.get("instance_count")
+            if kv_mem_per_instance_gb is None:
+                kv_mem_per_instance_gb = load.get("kv_mem_per_instance_gb")
+            if kv_cache_pool_gb is None:
+                kv_cache_pool_gb = load.get("kv_cache_pool_gb")
+
+        # policy（你要求放在 proxyinfo 内；如果后端做成平铺字段就直接读，否则 fallback meta）
+        kv_policy = p.get("kv_cache_update_policy")
+        if kv_policy is None and isinstance(p.get("meta"), dict):
+            kv_policy = p["meta"].get("kv_cache_update_policy")
 
         ls = "-"
         if isinstance(last_seen, (int, float)):
             ls = time.strftime("%H:%M:%S", time.localtime(int(last_seen)))
 
-        print(f"  - {pid}  {host}:{port}  alive={alive}  last_seen={ls}  inflight={inflight}  gpu_util={gpu_util}")
+        print(
+            f"  - {pid}  {host}:{port}  alive={alive}  last_seen={ls}  "
+            f"inflight={inflight}  qps_1m={qps_1m}  gpu_util={gpu_util}  "
+            f"max_cap={max_capacity}  inst={instance_count}  "
+            f"kv_per_inst_gb={kv_mem_per_instance_gb}  kv_pool_gb={kv_cache_pool_gb}  "
+            f"kv_policy={kv_policy}"
+        )
 
 
 def cmd_strategy(base_url: str):
