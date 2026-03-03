@@ -46,6 +46,10 @@ PROXY_ADVERTISE_HOST = os.environ.get("PROXY_ADVERTISE_HOST", config.PROXY_DP_HO
 PROXY_ADVERTISE_PORT = int(os.environ.get("PROXY_ADVERTISE_PORT", str(config.PROXY_DP_PORT)))
 PROXY_ID = os.environ.get("PROXY_ID", f"hp_{PROXY_ADVERTISE_HOST}:{PROXY_ADVERTISE_PORT}")
 PROXY_HEARTBEAT_S = float(os.environ.get("PROXY_HEARTBEAT_S", config.HEARTBEAT_INTERVAL_S))
+PROXY_MAX_CAPACITY = int(os.environ.get("PROXY_MAX_CAPACITY", config.PROXY_MAX_CAPACITY))
+PROXY_INSTANCE_COUNT = int(os.environ.get("PROXY_INSTANCE_COUNT", config.PROXY_INSTANCE_COUNT))
+PROXY_KV_MEM_PER_INSTANCE_GB = float(os.environ.get("PROXY_KV_MEM_PER_INSTANCE_GB", config.PROXY_KV_MEM_PER_INSTANCE_GB))
+PROXY_KV_CACHE_UPDATE_POLICY = os.environ.get("PROXY_KV_CACHE_UPDATE_POLICY", config.PROXY_KV_CACHE_UPDATE_POLICY)
 
 # NOTE:
 # This is a TEMPORARY fallback for legacy request path.
@@ -114,6 +118,10 @@ async def lifespan(app: FastAPI):
             port=PROXY_ADVERTISE_PORT,
             endpoints=["chat/completions", "completions"],
             meta={"version": "proxy_v1"},
+            max_capacity=PROXY_MAX_CAPACITY,
+            instance_count=PROXY_INSTANCE_COUNT,
+            kv_mem_per_instance_gb=PROXY_KV_MEM_PER_INSTANCE_GB,
+            kv_cache_update_policy=PROXY_KV_CACHE_UPDATE_POLICY,
         )
         # 用 scheduler 建议的心跳周期覆盖本地默认
         interval = float(reg.heartbeat_interval_s) if reg.heartbeat_interval_s else PROXY_HEARTBEAT_S
