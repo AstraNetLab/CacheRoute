@@ -29,6 +29,15 @@ python3 scheduler_cli.py
 查看知识状态：
 <img width="1200" height="476" alt="image" src="https://github.com/user-attachments/assets/7f1e1d81-c599-4ae2-9e76-83f66030d4fa" />
 
+查看KDN资源池状态：
+<img width="1200" height="87" alt="image" src="https://github.com/user-attachments/assets/d02024c0-64ae-4c8b-a639-772003247b3f" />
+
+查看代理池状态：
+<img width="1200" height="107" alt="image" src="https://github.com/user-attachments/assets/3ecdcc5f-f238-4443-888a-b8635811254a" />
+
+查看scheduler策略信息：
+<img width="1200" height="127" alt="image" src="https://github.com/user-attachments/assets/508b5447-ce8b-49fc-b530-2e176868965b" />
+
 ---
 
 ### Workflow
