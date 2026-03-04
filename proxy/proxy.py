@@ -36,6 +36,7 @@ from core import config
 from proxy.sclient.scheduler_client import SchedulerControlClient
 from proxy.resource.instance_pool import InstancePool
 from proxy.resource import p_control_plane
+from proxy.resource.hb_log import HeartbeatReporter, hb_report_loop
 from proxy.strategy.factory import build_instance_strategy
 
 SCHEDULER_CP_URL = os.environ.get("SCHEDULER_CP_URL", config.SCHEDULER_CP_URL).rstrip("/")
@@ -59,6 +60,17 @@ INSTANCE_PORT = int(os.environ.get("INSTANCE_PORT", "9001"))
 logger = logging.getLogger("proxy")
 logging.basicConfig(level=logging.INFO)
 
+def _squelch_noisy_loggers():
+    # http client
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # uvicorn access log（可选，避免每次请求一行）
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+    # 如果你用了 asyncio/anyio 也很吵，再加：
+    # logging.getLogger("asyncio").setLevel(logging.WARNING)
+    # logging.getLogger("anyio").setLevel(logging.WARNING)
 
 # ======================= Proxy初始化 =======================
 @asynccontextmanager
@@ -69,6 +81,7 @@ async def lifespan(app: FastAPI):
       - running: 周期心跳，保证 proxy_pool 不过期
       - shutdown: 优雅注销（非强依赖，kill -9 情况靠 TTL 清理）
     """
+    _squelch_noisy_loggers()
     # --- 初始化实例池，并注入proxy控制平面 ---
     ttl_s = int(os.environ.get("PROXY_INSTANCE_TTL_S", config.INSTANCE_ALIVE_TTL_S))
     app.state.instance_pool = InstancePool(ttl_s=ttl_s)  # type: ignore
@@ -110,6 +123,17 @@ async def lifespan(app: FastAPI):
     app.state._proxy_id = PROXY_ID    # type: ignore
     app.state._hb_stop = asyncio.Event()  # type: ignore
 
+    # --- 心跳日志聚合（输出层）---
+    app.state._hb_reporter = HeartbeatReporter(interval_s=30.0)  # type: ignore
+    app.state._hb_report_task = asyncio.create_task(  # type: ignore
+        hb_report_loop(
+            reporter=app.state._hb_reporter,  # type: ignore
+            logger=logger,
+            proxy_id=PROXY_ID,
+            stop_event=app.state._hb_stop,  # type: ignore
+        )
+    )
+
     # 1) register（失败不应阻塞业务启动：允许 proxy 单独跑）
     try:
         reg = await client.register(
@@ -135,12 +159,17 @@ async def lifespan(app: FastAPI):
 
     # 2) heartbeat loop
     async def _hb_loop():
+        reporter: HeartbeatReporter = app.state._hb_reporter  # type: ignore
         while not app.state._hb_stop.is_set():  # type: ignore
             try:
-                # 先不做 load 上报，后续你扩展 inflight/gpu_util 时再接入
-                await client.heartbeat(proxy_id=PROXY_ID)
+                await client.heartbeat(proxy_id=PROXY_ID)  # 原功能不变 :contentReference[oaicite:3]{index=3}
+                await reporter.record(ok=True)
             except Exception as e:
-                logger.warning("[Proxy] heartbeat failed: err=%s", str(e))
+                # 不逐条 warning，避免刷屏；只记录窗口统计
+                await reporter.record(ok=False, err=str(e))
+                # 真要立即看到异常堆栈：你可以改成 logger.debug(..., exc_info=True)
+                logger.debug("[Proxy] heartbeat failed", exc_info=True)
+
             await asyncio.sleep(float(getattr(app.state, "_hb_interval", PROXY_HEARTBEAT_S)))  # type: ignore
 
     app.state._hb_task = asyncio.create_task(_hb_loop())  # type: ignore
@@ -170,6 +199,9 @@ async def lifespan(app: FastAPI):
             task = getattr(app.state, "_hb_task", None)  # type: ignore
             if task:
                 task.cancel()
+            rpt = getattr(app.state, "_hb_report_task", None)  # type: ignore
+            if rpt:
+                rpt.cancel()
         except Exception:
             pass
 
