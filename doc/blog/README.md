@@ -1,3 +1,34 @@
+### 260305 构建Proxy内Prepare+Ready双任务队列结构
+
+(1)串通基于文本的知识注入和基于KVCache的知识注入，添加Injection_type变量来标记任务注入策略，在scheduler build_request过程中默认赋值text，后续待proxy结合实际资源进行更新（text or kvcache）。<br>
+(2)引入队列骨架，proxy主handler不再直接调用forward_request(...)，而是决策完成后把任务交给队列模块。队列模块当前仍然“同步drain”（立即出队并转发），所以对外表现不变（待后续开发更多队列行为）。<br>
+(3)释放Proxy功能，将知识注入函数移植到外部queue内，仅保留处理request、策略执行、送入队列以及接收队列结果的流水线工作。Proxy保持对外功能不变。引入per-instance的`prepare/ready`双队列，并把知识注入从proxy handler迁到 prepare-queue worker。<br>
+ - prepare-queue worker仅负责知识注入的任务准备工作，然后把注入完成的任务丢进ready_q。目前仅支持Injection_type =="text"的知识注入。<br>
+ - ready-queue worker：负责真正forward_request到instance，并通过task的response_queue把输出回传给handler。<br>
+
+涉及新增文件：<br>
+`proxy/queue/__init__.py`<br>
+`proxy/queue/task.py`<br>
+`proxy/queue/manager.py`<br>
+`proxy/queue/knowledge.py`<br>
+`proxy/queue/instance_queues.py`<br>
+
+涉及修改文件:<br>
+`core/request.py`<br>
+`scheduler/scheduler.py`<br>
+`proxy/proxy.py`<br>
+
+一些提上日程的工作：<br>
+(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
+(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
+(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
+(4)知识清单中可用LLM系统的状态更新<br>
+(5-key)构建Instance控制平面，以及Proxy-Instance-kdn流程信令，以支持基于KVCache的知识注入<br>
+
+维护者：heyao
+
+---
+
 ### 260304 完善scheduler与proxy的日志输出
 
 (1)优化scheduler输出显示，避免被心跳包淹没，按周期统计资源池信息做数据整理简报，并输出到log/scheduler/scheduler.log中，而非显示在命令行（命令行仅有极少数重要信息）。<br>
@@ -13,12 +44,6 @@
 `scheduler/resource/control_plane.py`<br>
 `scheduler/knowledge/kdn_sync.py`<br>
 `proxy/proxy.py`<br>
-
-一些提上日程的工作：<br>
-(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
-(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
-(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
-(4)知识清单中可用LLM系统的状态更新<br>
 
 维护者：heyao
 
