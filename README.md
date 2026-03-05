@@ -1,19 +1,17 @@
-### 260303 完善scheduler的proxy资源池信息维护
+### 260305 构建Proxy内Prepare+Ready双任务队列结构
 
-(1)新增proxy_pool中proxy对控制LLM系统的静态处理能力描述，作为后续调度变量它由proxy注册时上报，在完整的生命周期内保持不变，具体涉及<br>
- - proxy所支持的最大并发任务数 `PROXY_MAX_CAPACITY`<br>
- - proxy管理实例数 `PROXY_INSTANCE_COUNT`<br>
- - proxy中管理的每个实例的KVCache内存大小 `PROXY_KV_MEM_PER_INSTANCE_GB`<br>
- - proxy管理实例池的KV内存大小 `kv_cache_pool_gb`<br>
- - proxy对KV缓存的更新策略 `PROXY_KV_CACHE_UPDATE_POLICY`<br>
-
-(2)支持scheduler对流事件的追踪，scheduler根据会话维护每个proxy正在执行的任务数，进而作为LLM系统负载的评判依据之一。此外，它还结合proxy心跳包和scheduler基于流的自校正来维护资源动态性。具体的，为减少维护inflight所带来的成本，采用由scheduler事件驱动+proxy低频校准的混合维护机制。scheduler收到新的任务请求，流数就加1。只要scheduler对proxy的这次转发stream结束了（不管对端是正常结束、异常、被取消、下游断开），scheduler都认为这个inflight周期结束；这样容易做到不漏减。此外，通过proxy的周期汇报来校准，避免大规模负载偏差。<br>
+(1)串通基于文本的知识注入和基于KVCache的知识注入，添加Injection_type变量来标记任务注入策略，在scheduler build_request过程中默认赋值text，后续待proxy结合实际资源进行更新（text or kvcache）。<br>
+(2)引入队列骨架，proxy主handler不再直接调用forward_request(...)，而是决策完成后把任务交给队列模块。队列模块当前仍然“同步drain”（立即出队并转发），所以对外表现不变（待后续开发更多队列行为）。<br>
+(3)释放Proxy功能，将知识注入函数移植到外部queue内，仅保留处理request、策略执行、送入队列以及接收队列结果的流水线工作。Proxy保持对外功能不变。引入per-instance的`prepare/ready`双队列，并把知识注入从proxy handler迁到 prepare-queue worker。<br>
+ - prepare-queue worker仅负责知识注入的任务准备工作，然后把注入完成的任务丢进ready_q。目前仅支持Injection_type =="text"的知识注入。<br>
+ - ready-queue worker：负责真正forward_request到instance，并通过task的response_queue把输出回传给handler。<br>
 
 一些提上日程的工作：<br>
 (1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
 (2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
 (3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
 (4)知识清单中可用LLM系统的状态更新<br>
+(5-key)构建Instance控制平面，以及Proxy-Instance-kdn流程信令，以支持基于KVCache的知识注入<br>
 
 更多日志及其修改详情：https://github.com/BJTU-ANT/CacheRoute/tree/main/doc/blog
 
