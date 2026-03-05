@@ -38,9 +38,10 @@ from proxy.resource.instance_pool import InstancePool
 from proxy.resource import p_control_plane
 from proxy.resource.hb_log import HeartbeatReporter, hb_report_loop
 from proxy.strategy.factory import build_instance_strategy
+from proxy.queue import QueueManager, ProxyTask
 
 SCHEDULER_CP_URL = os.environ.get("SCHEDULER_CP_URL", config.SCHEDULER_CP_URL).rstrip("/")
-KDN_BASE_URL = os.environ.get("KDN_BASE_URL", config.KDN_BASE_URL).rstrip("/")
+# KDN_BASE_URL = os.environ.get("KDN_BASE_URL", config.KDN_BASE_URL).rstrip("/")
 
 # PROXY_PORT = int(os.environ.get("PROXY_PORT", "8002"))
 PROXY_ADVERTISE_HOST = os.environ.get("PROXY_ADVERTISE_HOST", config.PROXY_DP_HOST)
@@ -217,9 +218,13 @@ async def lifespan(app: FastAPI):
             pass
 
 proxy = FastAPI(title="CacheRoute Proxy v1", lifespan=lifespan)
+queue_mgr = QueueManager()              #创建任务队列管理器
 
 
+#--------------------------------------------------------------
 # ======================= 公共内部处理函数 =======================
+#--------------------------------------------------------------
+
 def _dataclass_from_dict(dc_cls, data: Dict[str, Any]):
     """
     安全地从 dict 构造 dataclass：
@@ -262,90 +267,6 @@ def recover_request_from_payload(payload: Dict[str, Any]) -> SchedulerRequest:
         req_obj.Prompt.model,
     )
     return req_obj
-
-
-def _format_retrieved_context(items: List[Dict[str, Any]]) -> str:
-    """把 KDN 返回 items 格式化为可注入的检索上下文文本。"""
-    lines = []
-    for idx, it in enumerate(items, start=1):
-        content = (it.get("content") or "").strip()
-        if not content:
-            continue
-        lines.append(f"({idx}) {content}")
-    return "\n".join(lines).strip()
-
-
-async def _fetch_knowledge_from_kdn(knowledge_ids: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """
-    向 KDN 请求知识文本（非流式）。
-    返回：(items, miss)
-    """
-    if not knowledge_ids:
-        return [], []
-
-    url = f"{KDN_BASE_URL}/knowledge/search/text"
-    body = {
-        "knowledge_ids": knowledge_ids,
-        "need_fields": ["content", "length", "rel_path"],
-    }
-
-    content_bytes = b""
-    async for chunk in forward_request(url, data=body, use_chunked=False):
-        if chunk:
-            content_bytes += chunk
-
-    # forward_request 在 4xx/5xx 会抛 HTTPException，这里只处理 2xx 情况
-    try:
-        text = content_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content_bytes.decode("utf-8", errors="ignore")
-
-    try:
-        resp = json.loads(text) if text else {}
-    except json.JSONDecodeError:
-        raise RuntimeError(f"KDN response is not valid JSON: {text[:200]}")
-
-    items = resp.get("items") or []
-    miss = resp.get("miss") or []
-    if not isinstance(items, list):
-        items = []
-    if not isinstance(miss, list):
-        miss = []
-
-    return items, miss
-
-
-def _inject_rag_into_instance_body(
-    instance_body: Dict[str, Any],
-    endpoint_type: str,
-    retrieved_context: str,
-) -> Dict[str, Any]:
-    """
-    将 retrieved_context 注入 instance_body（OpenAI 风格）。
-    返回新的 body（不修改原 dict，避免副作用）。
-    """
-    if not retrieved_context:
-        return instance_body
-
-    new_body = dict(instance_body)
-
-    if endpoint_type == "chat/completions":
-        # messages 头插 system 消息
-        msgs = list(new_body.get("messages") or [])
-        system_prompt = (
-            f"You are a helpful assistant.\n Use the following retrieved context to answer the user. If the context is not relevant, ignore it.\n ### Retrieved Context\n {retrieved_context}\n"
-        )
-        msgs.insert(0, {"role": "system", "content": system_prompt})
-        new_body["messages"] = msgs
-        return new_body
-
-    # completions：前缀 prompt
-    prompt = (new_body.get("prompt") or "")
-    rag_prefix = (
-        f"You are a helpful assistant.\n Use the following retrieved context to answer the user. If the context is not relevant, ignore it.\n ### Retrieved Context\n {retrieved_context}\n ### User Prompt\n"
-    )
-    new_body["prompt"] = rag_prefix + str(prompt)
-    return new_body
 
 
 def build_body_for_instance(req_obj: SchedulerRequest, mode: str) -> Dict[str, Any]:
@@ -413,8 +334,10 @@ def select_instance(app: FastAPI, req_obj: SchedulerRequest):
         return None
 
 
-
+#--------------------------------------------------------------
 # ======================= 本地代理方法路由 =======================
+#--------------------------------------------------------------
+
 @proxy.post("/v1/chat/completions")
 async def proxy_chat_completions(request: FastAPIRequest):
     """
@@ -443,28 +366,6 @@ async def proxy_chat_completions(request: FastAPIRequest):
     # 构造 Instance 请求体
     instance_body = build_body_for_instance(req_obj, mode="chat")
 
-    # 判断是否需要知识注入，若需要则先注入再转发
-    enable_rag = bool(getattr(req_obj.Service, "Enable_know_injection", False))
-    knowledge_ids = getattr(req_obj.Service, "Knowledge_List", []) or []
-    if enable_rag and knowledge_ids:
-        try:
-            logger.info(f"[Proxy] 检测到启用知识注入，向{KDN_BASE_URL}获取知识")
-            items, miss = await _fetch_knowledge_from_kdn([str(x) for x in knowledge_ids])
-            retrieved_context = _format_retrieved_context(items)
-            if miss:
-                logger.info("[Proxy] KDN miss ids=%s", miss)
-
-            # 注入到 instance_body
-            instance_body = _inject_rag_into_instance_body(
-                instance_body=instance_body,
-                endpoint_type="chat/completions",
-                retrieved_context=retrieved_context,
-            )
-            logger.info("[Proxy] RAG injected: ids=%s, ctx_len=%s", knowledge_ids, len(retrieved_context))
-        except Exception as e:
-            # 先跑通：KDN 出错时不阻断推理，退化为不注入直接转发
-            logger.exception("[Proxy] KDN fetch failed, fallback to no-rag. err=%s", str(e))
-
     chosen = select_instance(proxy, req_obj)
     if not chosen:
         return JSONResponse(
@@ -474,13 +375,30 @@ async def proxy_chat_completions(request: FastAPIRequest):
 
     host = chosen.host
     port = int(chosen.port)
-    instance_url = f"http://{host}:{port}/v1/chat/completions"
+    url_path = "/v1/chat/completions"
     logger.info("[Proxy] instance chosen(chat): id=%s addr=%s:%s", getattr(chosen, "instance_id", "?"), host, port)
 
-    # 下游流式：直接把 Instance 的 SSE 往上游透传
+    # ====================================
+    # 送入队列enqueue -> manager -> forward
+    # ====================================
     try:
-        stream_gen = forward_request(instance_url, data=instance_body, use_chunked=True)
+        # 1) 封装任务（注：chosen 来自 RR，具备 instance_id/host/port 字段 :contentReference[oaicite:5]{index=5}）
+        task = ProxyTask(
+            request_id=getattr(req_obj, "Request_ID", None),
+            req_obj=req_obj,
+            instance_body=instance_body,
+            instance_id=chosen.instance_id,
+            instance_host=chosen.host,
+            instance_port=int(chosen.port),
+            kdn_addr=getattr(req_obj.Task, "KDN_server_addr", None),
+            url_path=url_path,
+        )
+
+        await queue_mgr.enqueue_prepare(task)
+
+        stream_gen = queue_mgr.iter_response(task)
         return StreamingResponse(stream_gen, media_type="text/event-stream")
+
     except Exception as e:
         logger.exception("[Proxy] 调用 Worker(chat) 失败")
         return JSONResponse(
@@ -518,22 +436,6 @@ async def proxy_completions(request: FastAPIRequest):
     # 构造 Instance 请求体
     instance_body = build_body_for_instance(req_obj, mode="completions")
 
-    enable_rag = bool(getattr(req_obj.Service, "Enable_know_injection", False))
-    knowledge_ids = getattr(req_obj.Service, "Knowledge_List", []) or []
-    if enable_rag and knowledge_ids:
-        try:
-            logger.info(f"[Proxy] 检测到启用知识注入，向{KDN_BASE_URL}获取知识")
-            items, miss = await _fetch_knowledge_from_kdn([str(x) for x in knowledge_ids])
-            retrieved_context = _format_retrieved_context(items)
-            instance_body = _inject_rag_into_instance_body(
-                instance_body=instance_body,
-                endpoint_type="completions",
-                retrieved_context=retrieved_context,
-            )
-            logger.info("[Proxy] RAG injected: ids=%s, ctx_len=%s", knowledge_ids, len(retrieved_context))
-        except Exception as e:
-            logger.exception("[Proxy] KDN fetch failed, fallback to no-rag. err=%s", str(e))
-
     chosen = select_instance(proxy, req_obj)
     if not chosen:
         return JSONResponse(
@@ -543,36 +445,52 @@ async def proxy_completions(request: FastAPIRequest):
 
     host = chosen.host
     port = int(chosen.port)
-    instance_url = f"http://{host}:{port}/v1/completions"
+    url_path = "/v1/completions"
 
     logger.info("[Proxy] instance chosen(completions): id=%s addr=%s:%s", getattr(chosen, "instance_id", "?"), host, port)
 
-    # 下游非流式：forward_request 仍然返回一个 async 生成器，但只会 yield 一次 bytes
+    # ==================================
+    # 送入队列enqueue -> drain -> forward
+    # ==================================
     try:
+        task = ProxyTask(
+            request_id=getattr(req_obj, "Request_ID", None),
+            req_obj=req_obj,
+            instance_body=instance_body,
+            instance_id=chosen.instance_id,
+            instance_host=chosen.host,
+            instance_port=int(chosen.port),
+            kdn_addr=getattr(req_obj.Task, "KDN_server_addr", None),
+            url_path=url_path,
+        )
+
+        await queue_mgr.enqueue_prepare(task)
+
         content_bytes = b""
-        async for chunk in forward_request(instance_url, data=instance_body, use_chunked=False):
+        async for chunk in queue_mgr.iter_response(task):
             if chunk:
                 content_bytes += chunk
+
+        # completions 是非流式：worker 应该返回一次性 JSON
+        if not content_bytes:
+            return JSONResponse(
+                status_code=502,
+                content={"error": "empty_worker_response", "detail": "instance returned empty body"},
+            )
+
+        # 尝试按 JSON 解析；解析失败就原样返回文本，便于排查
+        try:
+            obj = json.loads(content_bytes.decode("utf-8", errors="replace"))
+            return JSONResponse(status_code=200, content=obj)
+        except Exception:
+            return JSONResponse(
+                status_code=200,
+                content={"raw": content_bytes.decode("utf-8", errors="replace")},
+            )
+
     except Exception as e:
         logger.exception("[Proxy] 调用 Worker(completions) 失败")
         return JSONResponse(
             status_code=502,
             content={"error": "worker_completions_failed", "detail": str(e)},
-        )
-
-    # 解析 Worker 返回内容
-    try:
-        text = content_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        text = ""
-    try:
-        resp_json = json.loads(text) if text else {}
-        return JSONResponse(content=resp_json)
-    except json.JSONDecodeError:
-        # Worker 如果返回的不是 JSON，就直接把文本透传上去
-        return JSONResponse(
-            content={
-                "raw_text": text,
-                "parse_warning": "Worker 返回内容不是合法 JSON，已以文本形式透传。",
-            }
         )
