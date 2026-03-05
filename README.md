@@ -196,10 +196,11 @@ Python版本：3.12.11<br>
 `RAG`:可选项，是否启用知识注入，False调度器将屏蔽该任务的知识检索
   
 scheduler任务调度实例
-<img width="1200" height="315" alt="image" src="https://github.com/user-attachments/assets/c090851d-433c-4d6c-a4ef-6c12b2fd2930" />
+<img width="1200" height="559" alt="image" src="https://github.com/user-attachments/assets/320b5058-04b2-4de3-aa3b-aaa714b69982" />
 
 Proxy任务调度实例
-<img width="1200" height="121" alt="image" src="https://github.com/user-attachments/assets/b2b8a294-1c32-48d8-a6c6-d01d342e8000" />
+<img width="1200" height="186" alt="image" src="https://github.com/user-attachments/assets/c08659b5-e43e-4cc0-9999-d0e88cd58f58" />
+
 
   
 
