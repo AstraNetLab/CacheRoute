@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 
 @dataclass
@@ -43,3 +43,10 @@ class ProxyTask:
 
     # 任务错误（ready_worker/prepare_worker 发生异常时写入）
     error: Optional[str] = None
+
+    kv_ready_kids: List[str] = field(default_factory=list)
+    text_only_kids: List[str] = field(default_factory=list)
+    miss_kids: List[str] = field(default_factory=list)
+    kv_ready_meta: list = field(default_factory=list)
+
+    kv_ack: Dict[str, Any] = field(default_factory=dict)
