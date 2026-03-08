@@ -103,8 +103,9 @@ Python版本：3.12.11<br>
     DEFAULT_EMBED_MODEL:                         Embedding模型名称，用于未配置EMBEDDING_MODEL情况下默认走huggingface下载
     ...
     ```
-   此外，还有许多参数配置，其详细说明可见`core/config.py`,其具体使用方式见`test/demo_***`。
-5. 启动vLLM0.13+LMCache3.11服务(非PD分离)，指令启动的是TP8下运行LLaMA-70B模型，自行根据需求调整，同时确保CacheRoute/core/config.py内 `USE_MOCK = False`
+   此外，还有许多参数配置，其详细说明可见`core/config.py`,其具体使用方式见`test/demo_***`。<br>
+   4.2 为实现跨容器KVCache复用，需要抛弃builtin+SEED的不稳定KEY生成方法，采用sha256_cbor方法，但由于output格式不对齐问题，CacheRoute对`token_database.py`进行了补丁更新。因此需要将lmcache源码中的`lmcache/v1/token_database.py`文件替换为`CacheRoute/env/token_database.py`
+6. 启动vLLM0.13+LMCache3.11服务(非PD分离)，指令启动的是TP8下运行LLaMA-70B模型，自行根据需求调整，同时确保CacheRoute/core/config.py内 `USE_MOCK = False`
     ```
    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
    export PYTORCH_ALLOC_CONF=expandable_segments:True
@@ -134,6 +135,7 @@ Python版本：3.12.11<br>
    (5.1)注意`LMCACHE_CONFIG_FILE`配置对LMCache缓存的影响，CacheRoute需要开启基于Redis服务器KV缓存，当前配置lmcache.yaml文件为:
     ```
     chunk_size: 256
+    pre_caching_hash_algorithm: "sha256_cbor"
 
     local_cpu: true
     max_local_cpu_size: 80.0
@@ -149,19 +151,19 @@ Python版本：3.12.11<br>
     numa_mode: null
     ```
     
-6. 测试vLLM服务正常启动，新建容器命令行(注意此处url与启动的vLLM实例的监听端口和监听网卡有关)
+7. 测试vLLM服务正常启动，新建容器命令行(注意此处url与启动的vLLM实例的监听端口和监听网卡有关)
     ```
     curl http://127.0.0.1:8000/v1/models
     ```
-7. 进行准备工作，检查运行环境、预热调度器知识清单。首先，安装requirements.txt内的依赖库`python -m pip install -r requirements.txt`。
-8. 首先启动CacheRoute调度器
+8. 进行准备工作，检查运行环境、预热调度器知识清单。首先，安装requirements.txt内的依赖库`python -m pip install -r requirements.txt`。
+9. 首先启动CacheRoute调度器
     ```
     cd test
     ./quick_start_docker.sh
     python3 demo_scheduler.py --strategy <option,round_robin>
     ```
-9. 预热KDN服务器，运行`demo_kdn.py`，启动通过`kdn_api`KDN服务器。启用新终端运行kdn_server下`kdn_register_cli.py`，这是一个封装好的交互式接口，通过送入知识块文本完成文本以及KVCache块的注册，形成知识库。具体方法见`kdn_server/README.md`
-10. 在完成KDN预热后，依次启动、代理、客户端和实例demo(在本地IDE调试可以直接用demo_run) **注意**：启动存在先后顺序，KDN，proxy启动会向scheduler注册，随后才会交互资源信息。Instance对proxy同理。错误的执行顺序可能导致资源池的不稳定。最为稳妥的启动顺序为：[Scheduler]-[KDN_Server]-[Proxy]-[Instance]
+10. 预热KDN服务器，运行`demo_kdn.py`，启动通过`kdn_api`KDN服务器。启用新终端运行kdn_server下`kdn_register_cli.py`，这是一个封装好的交互式接口，通过送入知识块文本完成文本以及KVCache块的注册，形成知识库。具体方法见`kdn_server/README.md`
+11. 在完成KDN预热后，依次启动、代理、客户端和实例demo(在本地IDE调试可以直接用demo_run) **注意**：启动存在先后顺序，KDN，proxy启动会向scheduler注册，随后才会交互资源信息。Instance对proxy同理。错误的执行顺序可能导致资源池的不稳定。最为稳妥的启动顺序为：[Scheduler]-[KDN_Server]-[Proxy]-[Instance]
     ```
     python3 demo_proxy.py --strategy <option,round_robin>
     python3 demo_instance.py --port <default 9001> --host <xxx>
