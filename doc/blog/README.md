@@ -1,3 +1,39 @@
+### 260306 实现proxy并行处理任务队列，完善时间戳与client端发包器
+
+(1)支持多任务并行知识注入调度。目前`prepare-ready`处理是串行，同一个Instance只有一个`_prepare_worker_loop()`，它会在循环里等待一次完整的text获取、分类、可能的`kv_ack`，然后才处理下一个任务（串行）。而 instance_queues.py 目前也只有两个队列，没有并发控制器或活动任务计数。增加时间锚点给每个任务记录这些时间点，单位统一为 epoch_ms。<br>
+  (1.1)实现并行队列，现在只有两个队列。把它升级成“队列 + prepare 并发控制 + 活动计数”。<br>
+  (1.2)当前是从队列取一个任务，然后完整跑完的串行。改造增加dispatcher，为每个Instance启用多个worker来动态并发任务。<br>
+  (1.3)chat/completion在结果返回时附带一个_cacheroute_meta字段用于观察性能。新增chat SSE事件函数，用于chat流式结束后回复任务性能记录。<br>
+(2)新增`perf_client.py`，`workload.json`，来支持后续的持续发包压力测试。client在json里随机抓请求，一次发起多个请求，不打印具体生成内容，只打印性能状态和trace计算结果。示例如：<br>
+```
+python3 perf_client.py --base-url http://127.0.0.1:7001 --workload-file workload.json --requests 2 --concurrency 8 --allow-duplicate --seed 7
+```
+其中`--allow-duplicate`：是否允许重复抽样，`--seed`：相同的seed将抽样顺序固定，便于复现。<br>
+(3)透传client字段支持写入Injection_type字段，作为在proxy目前缺少调度策略时的调试控制。<br>
+(4)修改LMCache的keys生成规则，观察是否可以跨容器周期复用（有待观察）<br>
+
+涉及新增文件：<br>
+`client/perf_client.py`<br>
+`client/workload.json`<br>
+
+涉及修改文件:<br>
+`proxy/queue/instance_queues.py`<br>
+`proxy/queue/manager.py`<br>
+`proxy/queue/task.py`<br>
+`core/config.py`<br>
+`core/request.py`<br>
+`client/client.py`<br>
+
+一些提上日程的工作：<br>
+(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
+(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
+(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
+(4)知识清单中可用LLM系统的状态更新<br>
+
+维护者：heyao
+
+---
+
 ### 260306 大更新（v0.1.4）实现基于文本和基于KVCache注入的全流程行为打通
 
 (1)实现基于KVCache的知识注入，当Injection_type=kvcache时，prepare work仍然拉文本并拼接，但会额外通知选中的Instance将这批knowledge_id的KVCache注入到该Instance本地的redis。Instance完成后ACK给Proxy，Proxy待确认ACK后，任务才进入Ready队列。<br>
@@ -16,13 +52,6 @@
 `instance/instance_api.py`<br>
 `core/config.py`
 `kdn_server/kdn_api.py`<br>
-
-一些提上日程的工作：<br>
-(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
-(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
-(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
-(4)知识清单中可用LLM系统的状态更新<br>
-(5)proxy与Instance的任务并行处理问题<br>
 
 维护者：heyao
 
