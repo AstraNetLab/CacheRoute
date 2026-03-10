@@ -617,3 +617,88 @@ async def inject_ready_kv(payload: Dict[str, Any]):
             "detail": "",
         }
     )
+
+
+@kdn.post("/knowledge/pool_status")
+async def knowledge_pool_status(payload: Dict[str, Any]):
+    """
+    KDN 整体资源池状态总览：
+      {
+        "sample_limit": 10   # 可选，返回前N条样本
+      }
+    """
+    if _TEXT_DB is None:
+        return JSONResponse(status_code=500, content={"error": "TextDatabase not initialized"})
+
+    sample_limit = int((payload or {}).get("sample_limit", 10))
+    sample_limit = max(0, sample_limit)
+
+    # 直接复用现有 snapshot 能力
+    rows = _TEXT_DB.snapshot(limit=1000000, offset=0, include_embedding=False)
+
+    total = len(rows)
+    embedding_ready = 0
+    kv_ready = 0
+    text_only = 0
+    total_length = 0
+    total_dumped_keys = 0
+    max_dumped_keys = 0
+
+    sample_items = []
+
+    for r in rows:
+        length = int(r.get("length") or 0)
+        embed_dim = r.get("embed_dim")
+        is_embedding_ready = embed_dim is not None and int(embed_dim) > 0
+        is_kv_ready = int(r.get("kv_ready") or 0) == 1
+        dumped_keys = int(r.get("kv_dumped_keys") or 0)
+
+        total_length += length
+        total_dumped_keys += dumped_keys
+        max_dumped_keys = max(max_dumped_keys, dumped_keys)
+
+        if is_embedding_ready:
+            embedding_ready += 1
+        if is_kv_ready:
+            kv_ready += 1
+        if not is_kv_ready:
+            text_only += 1
+
+        if len(sample_items) < sample_limit:
+            sample_items.append({
+                "kid": r.get("kid"),
+                "length": length,
+                "embed_dim": embed_dim,
+                "kv_ready": int(r.get("kv_ready") or 0),
+                "kv_dumped_keys": r.get("kv_dumped_keys"),
+                "kv_updated_at": r.get("kv_updated_at"),
+                "rel_path": r.get("rel_path"),
+            })
+
+    avg_length = round(total_length / total, 2) if total > 0 else 0.0
+    avg_dumped_keys = round(total_dumped_keys / kv_ready, 2) if kv_ready > 0 else 0.0
+
+    db_dir = str(_get_db_dir())
+    kv_root = str(_get_kv_root_dir())
+
+    scheduler_enabled = _SCHED_CLI is not None
+    scheduler_registered = bool(_KDN_ID)
+
+    return JSONResponse(content={
+        "kdn_id": _KDN_ID or None,
+        "db_dir": db_dir,
+        "kv_root": kv_root,
+        "scheduler_enabled": scheduler_enabled,
+        "scheduler_registered": scheduler_registered,
+
+        "total_blocks": total,
+        "embedding_ready_blocks": embedding_ready,
+        "kv_ready_blocks": kv_ready,
+        "text_only_blocks": text_only,
+
+        "avg_length": avg_length,
+        "avg_dumped_keys_on_ready": avg_dumped_keys,
+        "max_dumped_keys": max_dumped_keys,
+
+        "sample_items": sample_items,
+    })

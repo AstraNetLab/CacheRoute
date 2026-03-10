@@ -3,7 +3,6 @@ import os
 import shlex
 import requests
 from core import config
-
 """
 KDN 统一注册/构建工具（Text + KV）
 --base-url http://127.0.0.1:9101 指定KDN_API
@@ -36,7 +35,7 @@ DEFAULT_BASE_URL = config.KDN_BASE_URL
 DEFAULT_WARN_LEN = config.DEFAULT_WARN_LEN
 
 # build_kv 的默认值（与你服务端默认保持一致）
-DEFAULT_API_URL = config.KDN_BASE_URL
+DEFAULT_API_URL = config.DEFAULT_API_URL
 DEFAULT_MODEL = config.DEFAULT_MODEL_SHORTNAME
 DEFAULT_MAX_TOKENS = config.DEFAULT_MAX_TOKENS
 DEFAULT_TEMPERATURE = config.DEFAULT_TEMPERATURE
@@ -45,6 +44,47 @@ DEFAULT_REDIS_PORT = config.DEFAULT_REDIS_PORT
 DEFAULT_REDIS_DB = config.DEFAULT_REDIS_DB
 DEFAULT_MATCH = config.DEFAULT_MATCH
 DEFAULT_SCAN_COUNT =config. DEFAULT_SCAN_COUNT
+
+
+def query_pool_status(base_url: str, sample_limit: int = 10, timeout_s: int = 30) -> dict:
+    r = requests.post(
+        f"{base_url.rstrip('/')}/knowledge/pool_status",
+        json={"sample_limit": sample_limit},
+        timeout=timeout_s,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def print_pool_status(resp: dict):
+    print(
+        "[POOL STATUS]\n"
+        f"  kdn_id: {resp.get('kdn_id')}\n"
+        f"  db_dir: {resp.get('db_dir')}\n"
+        f"  kv_root: {resp.get('kv_root')}\n"
+        f"  scheduler_enabled: {resp.get('scheduler_enabled')}\n"
+        f"  scheduler_registered: {resp.get('scheduler_registered')}\n"
+        f"  total_blocks: {resp.get('total_blocks')}\n"
+        f"  embedding_ready_blocks: {resp.get('embedding_ready_blocks')}\n"
+        f"  kv_ready_blocks: {resp.get('kv_ready_blocks')}\n"
+        f"  text_only_blocks: {resp.get('text_only_blocks')}\n"
+        f"  avg_length: {resp.get('avg_length')}\n"
+        f"  avg_dumped_keys_on_ready: {resp.get('avg_dumped_keys_on_ready')}\n"
+        f"  max_dumped_keys: {resp.get('max_dumped_keys')}"
+    )
+
+    sample_items = resp.get("sample_items") or []
+    if sample_items:
+        print("\n  sample_items:")
+        for i, it in enumerate(sample_items, start=1):
+            print(
+                f"    [{i}] kid={it.get('kid')} "
+                f"len={it.get('length')} "
+                f"embed_dim={it.get('embed_dim')} "
+                f"kv_ready={it.get('kv_ready')} "
+                f"dumped_keys={it.get('kv_dumped_keys')} "
+                f"rel_path={it.get('rel_path')}"
+            )
 
 
 def register_text(base_url: str, content: str, timeout_s: int = 30) -> dict:
@@ -202,6 +242,7 @@ def parse_kv_cli_tokens(tokens: list[str]) -> dict:
     ap.add_argument("--scan-count", type=int, default=DEFAULT_SCAN_COUNT)
     ap.add_argument("--flushdb", action="store_true")
 
+
     ns = ap.parse_args(tokens)
     return {
         "api_url": ns.api_url,
@@ -246,6 +287,9 @@ def main():
     ap.add_argument("--flushdb", action="store_true")
     ap.add_argument("--delete-kid", help="Delete a kid (text, and optionally kv) then exit")
     ap.add_argument("--delete-kv", action="store_true", help="When deleting, also delete KV_database/<kid>/")
+
+    ap.add_argument("--pool-status", action="store_true", help="Show overall KDN pool status, then exit")
+    ap.add_argument("--sample-limit", type=int, default=10, help="Sample item count for --pool-status or :pool")
 
     args = ap.parse_args()
     base_url = args.base_url.rstrip("/")
@@ -303,6 +347,11 @@ def main():
         print_status(resp, kid)
         return
 
+    if args.pool_status:
+        resp = query_pool_status(base_url, sample_limit=args.sample_limit, timeout_s=min(60, args.timeout))
+        print_pool_status(resp)
+        return
+
     # ========== 非交互模式 5：删除知识块 ==========
     if args.delete_kid:
         kid = args.delete_kid.strip().lower()
@@ -317,6 +366,7 @@ def main():
     print("")
     print("Research commands:")
     print("  :status <kid>               show knowledge block status (text/embedding/kv)")
+    print("  :pool [--sample-limit N]    show overall KDN pool status")
     print("")
     print("Text commands:")
     print("  <one line>                  register_text immediately")
@@ -436,6 +486,23 @@ def main():
                 print(f"[ERROR] status failed: {e}")
             continue
 
+        if line.startswith(":pool"):
+            try:
+                tokens = shlex.split(line)
+                sample_limit = 10
+                if "--sample-limit" in tokens:
+                    idx = tokens.index("--sample-limit")
+                    if idx + 1 >= len(tokens):
+                        print("[ERROR] usage: :pool [--sample-limit N]")
+                        continue
+                    sample_limit = int(tokens[idx + 1])
+
+                resp = query_pool_status(base_url, sample_limit=sample_limit, timeout_s=min(60, args.timeout))
+                print_pool_status(resp)
+            except Exception as e:
+                print(f"[ERROR] pool status failed: {e}")
+            continue
+
         # -------- Text: file --------
         if line.startswith(":file "):
             path = line[len(":file ") :].strip().strip('"').strip("'")
@@ -453,6 +520,7 @@ def main():
             except Exception as e:
                 print(f"[ERROR] register_text failed: {e}")
             continue
+
 
         # -------- Text: single line --------
         content = line
@@ -474,5 +542,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
