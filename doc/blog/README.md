@@ -1,3 +1,26 @@
+### 260311 提升Client显示与发包能力
+
+(1)client增加显示任务时间戳能力。<br>
+(2)扩展perf_client功能，化简workload.json，新增client的taskset/来批量生产任务json。<br>
+(3)perf_client增加rps模式，相比concurrency模式固定并发和任务总数的小规模实验，rps模式用于持续压测和性能曲线实验，来实现定时的rps转发<br>
+
+涉及新增文件：<br>
+`client/taskset/`<br>
+
+涉及修改文件:<br>
+`client/client.py`<br>
+`client/perf_client.py`<br>
+
+一些提上日程的工作：<br>
+(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
+(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
+(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
+(4)知识清单中可用LLM系统的状态更新<br>
+
+维护者：heyao
+
+---
+
 ### 260310 提升KDN批量注册与显示能力
 
 (1)支持KDN批量知识文本注册，读取json文件内的知识文本并依次送入KDN进行注册，初始化可用的KDN知识库，具体使用方法见kdn`README`。<br>
@@ -11,12 +34,6 @@
 `kdn_server/kdn_api.py`<br>
 `kdn_server/kdn_register_cli.py`<br>
 `kdn_server/text_db.py`<br>
-
-一些提上日程的工作：<br>
-(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
-(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
-(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
-(4)知识清单中可用LLM系统的状态更新<br>
 
 维护者：heyao
 
