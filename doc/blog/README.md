@@ -1,3 +1,26 @@
+### 260312 提升Perf_Client能力，修复KEYS失配问题，完善KDN能力
+
+(1)修改LMCache的keys生成规则，观察是否可以跨容器周期复用（有待观察）依旧失败，chunk hash值还在变化导致KEY不一致，依次排查过`NONE_HASH`,`model_name`等变量，最后发现确认是chunk_hash在变化，其根本原因在于chat-template中包含Today-Data信息，导致日期变化KVCache前缀失效。<br>
+(2)完善perf_client功能，支持hybrid模式的Injection-type，用于初步测试混合策略下任务性能的优势。<br>
+(3)完善KDN服务器，构建网络传输模型，采用批次内知识请求并发并均分带宽，批次间请求串行传输的方式，可动态配置批次窗口等变量<br>
+
+涉及修改文件:<br>
+`model/tokenizer_config.json`<br>
+`client/perf_client.py`<br>
+`kdn_server/kv_injector.py`<br>
+`kdn_server/kdn_api.py`<br>
+`test/demo_kdn.py`<br>
+
+一些提上日程的工作：<br>
+(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
+(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
+(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
+(4)知识清单中可用LLM系统的状态更新<br>
+
+维护者：heyao
+
+---
+
 ### 260311 提升Client显示与发包能力
 
 (1)client增加显示任务时间戳能力。<br>
@@ -10,12 +33,6 @@
 涉及修改文件:<br>
 `client/client.py`<br>
 `client/perf_client.py`<br>
-
-一些提上日程的工作：<br>
-(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
-(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
-(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
-(4)知识清单中可用LLM系统的状态更新<br>
 
 维护者：heyao
 
