@@ -180,6 +180,8 @@ print("OK wrote:", cfg)
 print("template chars:", len(tpl))
 EOF
 ```
+！！！但需要注意的是，template可能携带Data日期等内容，这回导致KEYS无法长期存储，随时间而失效。一个最简单的方法是筛查并去除template中的变化内容（如时间），因此需要调整template（26.03.13新增注释），修改后的完整tokenizer_config.json见`env/tokenizer_config.json`
+
 后续的vllm启动命令（前面有GPU worker、内存配置）
 ```commandline
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
