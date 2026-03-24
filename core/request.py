@@ -317,6 +317,7 @@ class Request:
             proxies: Optional[List[Dict[str, Any]]] = None,
             kdns: Optional[List[Dict[str, Any]]] = None,
             strategy: Optional[Any] = None,
+            kdn_knowledge_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     ) -> "Request":
         """
             将原始用户请求信息payload，以及转换为完整的 Request 对象。
@@ -540,7 +541,7 @@ class Request:
                     # 下面两个上下文允许策略复用 scheduler 已维护的数据，
                     # 避免重复做 embedding 或在线拼状态。
                     "knowledge_table": knowledge_table,
-                    "kdn_knowledge_index": payload.get("_scheduler_kdn_knowledge_index") if isinstance(payload, dict) else None,
+                    "kdn_knowledge_index": kdn_knowledge_index or {},
                 }
                 chosen_kdn, chosen_proxy = strategy.select(
                     kdns=kdns or [],

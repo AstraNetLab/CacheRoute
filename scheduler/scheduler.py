@@ -364,6 +364,7 @@ def _handle_client(
     proxies: List[Dict[str, Any]] | None = None,
     kdns: List[Dict[str, Any]] | None = None,
     strategy: Any | None = None,
+    kdn_knowledge_index: Dict[str, Dict[str, Dict[str, Any]]] | None = None,
 ) -> SchedulerRequest:
     """
     根据 HTTP 请求信息
@@ -394,6 +395,7 @@ def _handle_client(
         proxies=proxies,
         kdns=kdns,
         strategy=strategy,
+        kdn_knowledge_index=kdn_knowledge_index,
     )
     if os.environ.get("SCHEDULER_VERBOSE_REQUEST_LOG", config.SCHEDULER_VERBOSE_REQUEST_LOG) == 1:
         print(f"[Scheduler] 构建内部 Request 成功: Request_ID={req_obj.Request_ID},\n"
@@ -469,9 +471,16 @@ async def create_chat_completions(request: FastAPIRequest):
     ]
 
     strategy = getattr(request.app.state, "proxy_strategy", None)
-    payload_for_build = dict(payload)
-    payload_for_build["_scheduler_kdn_knowledge_index"] = getattr(request.app.state, "kdn_knowledge_index", {})
-    req_obj = _handle_client(request.app, url_path, payload_for_build, client_ip, proxies=proxies, kdns=kdns, strategy=strategy,)
+    req_obj = _handle_client(
+        request.app,
+        url_path,
+        payload,
+        client_ip,
+        proxies=proxies,
+        kdns=kdns,
+        strategy=strategy,
+        kdn_knowledge_index=getattr(request.app.state, "kdn_knowledge_index", {}),
+    )
 
     if not req_obj.Task.KDN_server_addr or not req_obj.Task.P_proxy_addr or req_obj.Task.P_proxy_port <= 0:
         raise RuntimeError("Routing failed: missing KDN or Proxy selection")
@@ -582,9 +591,16 @@ async def create_completions(request: FastAPIRequest):
     ]
 
     strategy = getattr(request.app.state, "proxy_strategy", None)
-    payload_for_build = dict(payload)
-    payload_for_build["_scheduler_kdn_knowledge_index"] = getattr(request.app.state, "kdn_knowledge_index", {})
-    req_obj = _handle_client(request.app, url_path, payload_for_build, client_ip, proxies=proxies, kdns=kdns, strategy=strategy,)
+    req_obj = _handle_client(
+        request.app,
+        url_path,
+        payload,
+        client_ip,
+        proxies=proxies,
+        kdns=kdns,
+        strategy=strategy,
+        kdn_knowledge_index=getattr(request.app.state, "kdn_knowledge_index", {}),
+    )
 
     if not req_obj.Task.KDN_server_addr or not req_obj.Task.P_proxy_addr or req_obj.Task.P_proxy_port <= 0:
         raise RuntimeError("Routing failed: missing KDN or Proxy selection")
@@ -818,11 +834,17 @@ async def debug_strategy() -> Dict[str, Any]:
         "is_alive": True,  # list(include_dead=False) 已保证 alive
     } for p in proxy_infos[:10]]
 
-    return {
+    out = {
         "strategy": getattr(strategy, "name", None) or type(strategy).__name__ if strategy else None,
         "proxy_count": len(proxy_infos),
         "proxies_sample": sample,
     }
+    if strategy is not None and hasattr(strategy, "get_debug_snapshot"):
+        try:
+            out["strategy_debug"] = strategy.get_debug_snapshot()  # type: ignore
+        except Exception:
+            out["strategy_debug"] = {"error": "strategy debug snapshot unavailable"}
+    return out
 
 # 预留：/knowledge/update 等路由以后再加
 # @api.post("/knowledge/update")
@@ -831,5 +853,3 @@ async def debug_strategy() -> Dict[str, Any]:
 #     client_ip = request.client.host if request.client else "unknown"
 #     ...
 #     return JSONResponse(content={"status": "ok"})
-
-

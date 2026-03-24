@@ -1,6 +1,7 @@
 # scheduler/strategy/cacheroute.py
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,6 +35,13 @@ class CacheRouteStrategy(ProxySelectionStrategy):
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._proxy_cursor = 0
+        # 第一阶段参数：使用阈值规则（非加权）判断 KDN 过载。
+        # 值为 0 表示不启用对应阈值。
+        self._kdn_qps_overload_th = float(os.environ.get("SCHEDULER_CACHEROUTE_KDN_QPS_OVERLOAD_TH", "0").strip() or 0)
+        self._kdn_items_overload_th = int(os.environ.get("SCHEDULER_CACHEROUTE_KDN_ITEMS_OVERLOAD_TH", "0").strip() or 0)
+        self._kdn_pending_overload_th = int(os.environ.get("SCHEDULER_CACHEROUTE_KDN_PENDING_OVERLOAD_TH", "0").strip() or 0)
+        # 记录最近一次决策快照，供 /debug/strategy 读取。
+        self._last_decision: Dict[str, Any] = {}
 
     @staticmethod
     def _kdn_addr(kdn: Dict[str, Any]) -> str:
@@ -61,13 +69,31 @@ class CacheRouteStrategy(ProxySelectionStrategy):
 
     @staticmethod
     def _is_overloaded(kdn: Dict[str, Any]) -> bool:
-        """
-        第一阶段先只保留钩子，不引入新的 KDN 负载字段。
-        当前没有专门过载指标时，统一视作未过载；如果后续 heartbeat 已经开始上报，
-        可以通过 meta.overloaded 直接覆盖。
-        """
+        """向后兼容：保留 meta.overloaded 显式覆盖。"""
         meta = kdn.get('meta') or {}
         return bool(meta.get('overloaded', False))
+
+    def _is_overloaded_by_threshold(self, kdn: Dict[str, Any]) -> bool:
+        """
+        第一阶段过载判定（非加权）：
+        1) meta.overloaded 显式为 True -> 过载；
+        2) 若配置了阈值，按 qps/items/meta.pending_transfers 逐条判定。
+        """
+        if self._is_overloaded(kdn):
+            return True
+
+        if self._kdn_qps_overload_th > 0 and self._kdn_qps(kdn) >= self._kdn_qps_overload_th:
+            return True
+
+        if self._kdn_items_overload_th > 0 and self._kdn_items(kdn) >= self._kdn_items_overload_th:
+            return True
+
+        meta = kdn.get("meta") or {}
+        pending = int(meta.get("pending_transfers", 0) or 0)
+        if self._kdn_pending_overload_th > 0 and pending >= self._kdn_pending_overload_th:
+            return True
+
+        return False
 
     def _select_kdn(
         self,
@@ -92,6 +118,7 @@ class CacheRouteStrategy(ProxySelectionStrategy):
             return ranked[0] if ranked else None
 
         ranked: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+        decision_rows: List[Dict[str, Any]] = []
         for kdn in kdns:
             kdn_id = str(kdn.get('kdn_id') or '')
             kdn_addr = self._kdn_addr(kdn)
@@ -120,7 +147,7 @@ class CacheRouteStrategy(ProxySelectionStrategy):
             # 6. kdn_id 稳定打破并列
             key = (
                 0 if text_full else 1,
-                0 if not self._is_overloaded(kdn) else 1,
+                0 if not self._is_overloaded_by_threshold(kdn) else 1,
                 -kv_cover_len,
                 missing_count,
                 self._kdn_qps(kdn),
@@ -128,9 +155,24 @@ class CacheRouteStrategy(ProxySelectionStrategy):
                 kdn_id,
             )
             ranked.append((key, kdn))
+            decision_rows.append(
+                {
+                    "kdn_id": kdn_id,
+                    "text_full": text_full,
+                    "overloaded": self._is_overloaded_by_threshold(kdn),
+                    "kv_cover_len": kv_cover_len,
+                    "missing_count": missing_count,
+                    "qps_1m": self._kdn_qps(kdn),
+                    "items": self._kdn_items(kdn),
+                }
+            )
 
         ranked.sort(key=lambda x: x[0])
-        return ranked[0][1] if ranked else None
+        chosen = ranked[0][1] if ranked else None
+        with self._lock:
+            self._last_decision["kdn_candidates"] = decision_rows
+            self._last_decision["chosen_kdn_id"] = str((chosen or {}).get("kdn_id", ""))
+        return chosen
 
     def _select_proxy(self, proxies: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not proxies:
@@ -162,12 +204,38 @@ class CacheRouteStrategy(ProxySelectionStrategy):
         ) == best_key]
 
         if len(tied) == 1:
+            with self._lock:
+                self._last_decision["proxy_candidates"] = [
+                    {
+                        "proxy_id": str(p.get("proxy_id", "")),
+                        "inflight": self._proxy_inflight(p),
+                        "qps_1m": self._proxy_qps(p),
+                        "gpu_util": self._proxy_gpu(p),
+                    }
+                    for p in ranked
+                ]
+                self._last_decision["chosen_proxy_id"] = str(best.get("proxy_id", ""))
             return best
 
         with self._lock:
             idx = self._proxy_cursor % len(tied)
             self._proxy_cursor += 1
-            return tied[idx]
+            chosen = tied[idx]
+            self._last_decision["proxy_candidates"] = [
+                {
+                    "proxy_id": str(p.get("proxy_id", "")),
+                    "inflight": self._proxy_inflight(p),
+                    "qps_1m": self._proxy_qps(p),
+                    "gpu_util": self._proxy_gpu(p),
+                }
+                for p in ranked
+            ]
+            self._last_decision["chosen_proxy_id"] = str(chosen.get("proxy_id", ""))
+            return chosen
+
+    def get_debug_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return dict(self._last_decision)
 
     def select(
         self,
