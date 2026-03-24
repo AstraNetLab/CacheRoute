@@ -314,7 +314,8 @@ async def lifespan(app: FastAPI):
     # ------------------------------------------
     strategy_name = os.environ.get("SCHEDULER_STRATEGY", "round_robin")
     app.state.proxy_strategy = create_strategy(strategy_name)  # type: ignore
-    logger.info("[Scheduler] scheduler strategy=%s", strategy_name)
+    loaded_name = getattr(app.state.proxy_strategy, "name", strategy_name)
+    logger.info("[Scheduler] strategy loaded: %s", loaded_name)
 
     # 这里 yield 之后是正常服务期
     logger.info("[Scheduler] startup: 初始化完成，监听服务中")
@@ -677,6 +678,8 @@ async def debug_status() -> Dict[str, Any]:
 
     pool = get_pool()
     proxy_infos = await pool.list(include_dead=False)
+    strategy = getattr(scheduler.state, "proxy_strategy", None)  # type: ignore
+    strategy_name = getattr(strategy, "name", None) or (type(strategy).__name__ if strategy else None)
 
     proxy_states = []
     for p in proxy_infos:
@@ -697,6 +700,7 @@ async def debug_status() -> Dict[str, Any]:
     if table is None:
 
         return {
+            "strategy": strategy_name,
             "knowledge_loaded": False,
             "entries": 0,
             "dim": None,
@@ -743,6 +747,7 @@ async def debug_status() -> Dict[str, Any]:
             unit_fields = [x for x in dir(u0) if not x.startswith("_")]
 
     return {
+        "strategy": strategy_name,
         "knowledge_loaded": True,
         "entries": len(units),
         "dim": dim,
