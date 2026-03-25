@@ -312,7 +312,7 @@ async def lifespan(app: FastAPI):
     # ------------------------------------------
     # 调用具体scheduler策略
     # ------------------------------------------
-    strategy_name = os.environ.get("SCHEDULER_STRATEGY", "round_robin")
+    strategy_name = os.environ.get("SCHEDULER_STRATEGY", config.SCHEDULER_DEFAULT_STRATEGY)
     app.state.proxy_strategy = create_strategy(strategy_name)  # type: ignore
     loaded_name = getattr(app.state.proxy_strategy, "name", strategy_name)
     logger.info("[Scheduler] strategy loaded: %s", loaded_name)

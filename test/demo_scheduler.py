@@ -28,20 +28,20 @@ def main():
     )
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--strategy", default="round_robin", help="proxy scheduling strategy")
+    parser.add_argument("--strategy", default=config.SCHEDULER_DEFAULT_STRATEGY, help="proxy scheduling strategy")
     parser.add_argument(
         "--cacheroute",
         action="store_true",
         help="shortcut for --strategy cacheroute",
     )
-    parser.add_argument("--kdn-pending-overload-th", type=int, default=None, help="CacheRoute KDN pending overload threshold")
-    parser.add_argument("--kdn-active-overload-th", type=int, default=None, help="CacheRoute KDN active overload threshold")
-    parser.add_argument("--kdn-queue-ms-overload-th", type=float, default=None, help="CacheRoute KDN queue-ms overload threshold")
+    parser.add_argument("--kdn-pending-overload-th", type=int, default=config.SCHEDULER_CACHEROUTE_KDN_PENDING_OVERLOAD_TH, help="CacheRoute KDN pending overload threshold")
+    parser.add_argument("--kdn-active-overload-th", type=int, default=config.SCHEDULER_CACHEROUTE_KDN_ACTIVE_OVERLOAD_TH, help="CacheRoute KDN active overload threshold")
+    parser.add_argument("--kdn-queue-ms-overload-th", type=float, default=config.SCHEDULER_CACHEROUTE_KDN_QUEUE_MS_OVERLOAD_TH, help="CacheRoute KDN queue-ms overload threshold")
     parser.add_argument(
         "--cacheroute-log-decision",
         type=int,
         choices=[0, 1],
-        default=None,
+        default=config.SCHEDULER_CACHEROUTE_LOG_DECISION,
         help="CacheRoute one-line decision log switch: 1=on, 0=off",
     )
     args = parser.parse_args()
@@ -57,14 +57,10 @@ def main():
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ["SCHEDULER_STRATEGY"] = strategy_name
-    if args.kdn_pending_overload_th is not None:
-        os.environ["SCHEDULER_CACHEROUTE_KDN_PENDING_OVERLOAD_TH"] = str(args.kdn_pending_overload_th)
-    if args.kdn_active_overload_th is not None:
-        os.environ["SCHEDULER_CACHEROUTE_KDN_ACTIVE_OVERLOAD_TH"] = str(args.kdn_active_overload_th)
-    if args.kdn_queue_ms_overload_th is not None:
-        os.environ["SCHEDULER_CACHEROUTE_KDN_QUEUE_MS_OVERLOAD_TH"] = str(args.kdn_queue_ms_overload_th)
-    if args.cacheroute_log_decision is not None:
-        os.environ["SCHEDULER_CACHEROUTE_LOG_DECISION"] = str(args.cacheroute_log_decision)
+    os.environ["SCHEDULER_CACHEROUTE_KDN_PENDING_OVERLOAD_TH"] = str(args.kdn_pending_overload_th)
+    os.environ["SCHEDULER_CACHEROUTE_KDN_ACTIVE_OVERLOAD_TH"] = str(args.kdn_active_overload_th)
+    os.environ["SCHEDULER_CACHEROUTE_KDN_QUEUE_MS_OVERLOAD_TH"] = str(args.kdn_queue_ms_overload_th)
+    os.environ["SCHEDULER_CACHEROUTE_LOG_DECISION"] = str(args.cacheroute_log_decision)
 
     # 配置 uvicorn.Server
     config = uvicorn.Config(scheduler, host=dp_host, port=dp_port, reload=False)
