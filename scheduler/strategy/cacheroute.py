@@ -46,6 +46,8 @@ class CacheRouteStrategy(ProxySelectionStrategy):
         self._kdn_qps_overload_th = float(os.environ.get("SCHEDULER_CACHEROUTE_KDN_QPS_OVERLOAD_TH", "0").strip() or 0)
         self._kdn_items_overload_th = int(os.environ.get("SCHEDULER_CACHEROUTE_KDN_ITEMS_OVERLOAD_TH", "0").strip() or 0)
         self._kdn_pending_overload_th = int(os.environ.get("SCHEDULER_CACHEROUTE_KDN_PENDING_OVERLOAD_TH", "0").strip() or 0)
+        self._kdn_active_overload_th = int(os.environ.get("SCHEDULER_CACHEROUTE_KDN_ACTIVE_OVERLOAD_TH", "0").strip() or 0)
+        self._kdn_queue_ms_overload_th = float(os.environ.get("SCHEDULER_CACHEROUTE_KDN_QUEUE_MS_OVERLOAD_TH", "0").strip() or 0.0)
         # Proxy 侧第二阶段参数：负载安全窗口（非加权过滤）
         self._proxy_inflight_delta = int(os.environ.get("SCHEDULER_CACHEROUTE_PROXY_INFLIGHT_DELTA", "2").strip() or 0)
         self._proxy_gpu_delta = float(os.environ.get("SCHEDULER_CACHEROUTE_PROXY_GPU_DELTA", "0").strip() or 0.0)
@@ -59,6 +61,14 @@ class CacheRouteStrategy(ProxySelectionStrategy):
         self._last_decision: Dict[str, Any] = {}
         # 粗粒度知识历史偏好：proxy_id -> kid -> decayed_score
         self._proxy_kid_affinity: Dict[str, Dict[str, float]] = {}
+        # v0.1.7: 策略计数器（便于实验比较，不参与调度）
+        self._counters: Dict[str, int] = {
+            "requests_total": 0,
+            "kdn_overload_filtered": 0,
+            "proxy_topology_hits": 0,
+            "proxy_loadsafe_filtered": 0,
+            "proxy_affinity_hits": 0,
+        }
 
     @staticmethod
     def _kdn_addr(kdn: Dict[str, Any]) -> str:
@@ -128,8 +138,14 @@ class CacheRouteStrategy(ProxySelectionStrategy):
             return True
 
         meta = kdn.get("meta") or {}
-        pending = int(meta.get("pending_transfers", 0) or 0)
+        pending = int(kdn.get("pending_transfers", meta.get("pending_transfers", 0)) or 0)
+        active = int(kdn.get("active_transfers", meta.get("active_transfers", 0)) or 0)
+        queue_ms = float(kdn.get("network_queue_ms_ema", meta.get("network_queue_ms_ema", 0.0)) or 0.0)
         if self._kdn_pending_overload_th > 0 and pending >= self._kdn_pending_overload_th:
+            return True
+        if self._kdn_active_overload_th > 0 and active >= self._kdn_active_overload_th:
+            return True
+        if self._kdn_queue_ms_overload_th > 0 and queue_ms >= self._kdn_queue_ms_overload_th:
             return True
 
         return False
@@ -208,9 +224,11 @@ class CacheRouteStrategy(ProxySelectionStrategy):
 
         ranked.sort(key=lambda x: x[0])
         chosen = ranked[0][1] if ranked else None
+        overload_cnt = sum(1 for d in decision_rows if bool(d.get("overloaded")))
         with self._lock:
             self._last_decision["kdn_candidates"] = decision_rows
             self._last_decision["chosen_kdn_id"] = str((chosen or {}).get("kdn_id", ""))
+            self._counters["kdn_overload_filtered"] += overload_cnt
         return chosen
 
     def _affinity_score(
@@ -246,6 +264,9 @@ class CacheRouteStrategy(ProxySelectionStrategy):
         topology_rows.sort(key=lambda x: x[0])
         best_topo = topology_rows[0][0]
         topo_group = [p for key, p in topology_rows if key == best_topo]
+        if len(topo_group) < len(proxies):
+            with self._lock:
+                self._counters["proxy_topology_hits"] += 1
 
         # Step2: 负载安全窗口过滤（避免把知识亲和性放在过载 proxy 上）
         min_inflight = min(self._proxy_inflight(p) for p in topo_group)
@@ -253,6 +274,9 @@ class CacheRouteStrategy(ProxySelectionStrategy):
             p for p in topo_group
             if self._proxy_inflight(p) <= (min_inflight + max(0, self._proxy_inflight_delta))
         ]
+        if len(safe_group) < len(topo_group):
+            with self._lock:
+                self._counters["proxy_loadsafe_filtered"] += 1
         if self._proxy_gpu_delta > 0 and safe_group:
             min_gpu = min(self._proxy_gpu(p) for p in safe_group)
             safe_group = [
@@ -267,6 +291,9 @@ class CacheRouteStrategy(ProxySelectionStrategy):
             affinity_rows.append((self._affinity_score(pid, knowledge_list, length_by_kid), p))
         max_aff = max((x[0] for x in affinity_rows), default=0.0)
         aff_group = [p for sc, p in affinity_rows if sc == max_aff]
+        if max_aff > 0:
+            with self._lock:
+                self._counters["proxy_affinity_hits"] += 1
 
         # Step4: 按当前负载打破并列，再用 cursor 稳定轮换
         ranked = sorted(
@@ -328,7 +355,9 @@ class CacheRouteStrategy(ProxySelectionStrategy):
 
     def get_debug_snapshot(self) -> Dict[str, Any]:
         with self._lock:
-            return dict(self._last_decision)
+            out = dict(self._last_decision)
+            out["counters"] = dict(self._counters)
+            return out
 
     def select(
         self,
@@ -360,6 +389,8 @@ class CacheRouteStrategy(ProxySelectionStrategy):
             knowledge_list=knowledge_list,
             length_by_kid=length_by_kid,
         )
+        with self._lock:
+            self._counters["requests_total"] += 1
         if self._log_decision:
             try:
                 logger.info(

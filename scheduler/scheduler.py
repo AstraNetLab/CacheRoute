@@ -466,6 +466,9 @@ async def create_chat_completions(request: FastAPIRequest):
             "port": k.port,
             "items": k.load.items,
             "qps_1m": k.load.qps_1m,
+            "pending_transfers": k.load.pending_transfers,
+            "active_transfers": k.load.active_transfers,
+            "network_queue_ms_ema": k.load.network_queue_ms_ema,
             "meta": dict(k.meta or {}),
         }
         for k in kdn_infos
@@ -586,6 +589,9 @@ async def create_completions(request: FastAPIRequest):
             "port": k.port,
             "items": k.load.items,
             "qps_1m": k.load.qps_1m,
+            "pending_transfers": k.load.pending_transfers,
+            "active_transfers": k.load.active_transfers,
+            "network_queue_ms_ema": k.load.network_queue_ms_ema,
             "meta": dict(k.meta or {}),
         }
         for k in kdn_infos
@@ -678,6 +684,8 @@ async def debug_status() -> Dict[str, Any]:
 
     pool = get_pool()
     proxy_infos = await pool.list(include_dead=False)
+    kdn_pool = get_kdn_pool()
+    kdn_infos = await kdn_pool.list(include_dead=False)
     strategy = getattr(scheduler.state, "proxy_strategy", None)  # type: ignore
     strategy_name = getattr(strategy, "name", None) or (type(strategy).__name__ if strategy else None)
 
@@ -695,6 +703,18 @@ async def debug_status() -> Dict[str, Any]:
             "inflight": p.load.inflight,
             "qps_1m": p.load.qps_1m,
             "gpu_util": p.load.gpu_util,
+        })
+    kdn_states = []
+    for k in kdn_infos:
+        kdn_states.append({
+            "kdn_id": k.kdn_id,
+            "host": k.host,
+            "port": k.port,
+            "items": k.load.items,
+            "qps_1m": k.load.qps_1m,
+            "pending_transfers": k.load.pending_transfers,
+            "active_transfers": k.load.active_transfers,
+            "network_queue_ms_ema": k.load.network_queue_ms_ema,
         })
 
     if table is None:
@@ -716,6 +736,7 @@ async def debug_status() -> Dict[str, Any]:
             "kdn_last_refresh_ok": False,
             "kdn_last_refresh_reason": "",
             "kdn_last_refresh_ts": 0,
+            "kdns": kdn_states,
             "proxies": proxy_states,
         }
 
@@ -763,6 +784,7 @@ async def debug_status() -> Dict[str, Any]:
         "kdn_last_refresh_ok": kdn_last_refresh_ok,
         "kdn_last_refresh_reason": kdn_last_refresh_reason,
         "kdn_last_refresh_ts": kdn_last_refresh_ts,
+        "kdns": kdn_states,
         "proxies": proxy_states,
     }
 

@@ -57,7 +57,7 @@ User<br>
 
 1. **KDN 选择**：`text_full -> not_overloaded -> kv_cover_len -> load/tie-break`。<br>
 2. **Proxy 选择**：`topology_best_group -> load_safe_window -> knowledge_affinity -> load/tie-break`。<br>
-3. **观测接口**：`/debug/status` 与 `/debug/strategy` 可用于查看策略与最近决策快照。<br>
+3. **观测接口**：`/debug/status` 与 `/debug/strategy` 可用于查看策略、资源池与最近决策快照。<br>
 
 ---
 
@@ -81,6 +81,7 @@ curl -s http://127.0.0.1:7001/debug/status | python3 -m json.tool
 重点检查字段：
 - `strategy`：应为 `cacheroute`
 - `proxies`：查看 inflight/qps_1m/gpu_util
+- `kdns`：查看 items/pending_transfers/active_transfers/network_queue_ms_ema
 - `kdn_alive` 与 `kdn_alive_addrs`
 
 4) 查看策略最近决策（确认 CacheRoute 规则在执行）：
@@ -92,6 +93,7 @@ curl -s http://127.0.0.1:7001/debug/strategy | python3 -m json.tool
 - `strategy_debug.kdn_candidates`
 - `strategy_debug.proxy_candidates`
 - `strategy_debug.chosen_kdn_id / chosen_proxy_id`
+- `strategy_debug.counters`：请求总数、拓扑命中与负载安全过滤统计
 
 5) 观察简洁日志（每请求一行）：
 - 默认会输出：`[CacheRoute] req=... kdn=... proxy=... kids=...`
