@@ -66,13 +66,18 @@ User<br>
 1) 启动 scheduler（可用快捷参数）：
 ```bash
 cd test
-python3 demo_scheduler.py --cacheroute
+python3 test/demo_scheduler.py \
+  --cacheroute \
+  --kdn-pending-overload-th 8 \
+  --kdn-active-overload-th 4 \
+  --kdn-queue-ms-overload-th 30 \
+  --cacheroute-log-decision 1
 ```
 可选附加参数（便于实验调参）：
-- `--kdn-pending-overload-th <int>`
-- `--kdn-active-overload-th <int>`
-- `--kdn-queue-ms-overload-th <float>`
-- `--cacheroute-log-decision {0|1}`
+- `--kdn-pending-overload-th <int>` KDN为排队任务设置的过载阈值判定，当pending_transfers>阈值时视为过载
+- `--kdn-active-overload-th <int>` KDN为活跃任务数设置的过载阈值判定
+- `--kdn-queue-ms-overload-th <float>` KDN为队列时延设置的过载阈值判定
+- `--cacheroute-log-decision {0|1}` 是否打印每个请求的一行决策日志。
 
 2) 启动 proxy 并注入拓扑 tier（可选，但建议用于验证第二阶段）：
 ```bash
