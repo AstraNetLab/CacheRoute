@@ -149,7 +149,7 @@ Python版本：3.12.11<br>
     ```
     cd test
     ./quick_start_docker.sh
-    python3 demo_scheduler.py --strategy <option,round_robin>
+    python3 demo_scheduler.py --strategy <option,round_robin, **cacheroute**>
     ```
 10. 预热KDN服务器，运行`demo_kdn.py`，启动通过`kdn_api`KDN服务器。启用新终端运行kdn_server下`kdn_register_cli.py`，这是一个封装好的交互式接口，通过送入知识块文本完成文本以及KVCache块的注册，形成知识库。具体方法见`kdn_server/README.md`
 11. 在完成KDN预热后，依次启动、代理、客户端和实例demo(在本地IDE调试可以直接用demo_run) **注意**：启动存在先后顺序，KDN，proxy启动会向scheduler注册，随后才会交互资源信息。Instance对proxy同理。错误的执行顺序可能导致资源池的不稳定。最为稳妥的启动顺序为：[Scheduler]-[KDN_Server]-[Proxy]-[Instance]
