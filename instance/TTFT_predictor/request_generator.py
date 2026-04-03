@@ -94,8 +94,4 @@ async def send_test_request(
             return None
             
     except Exception:
-<<<<<<< codex/analyze-ttft_predictor-code-structure
         return None
-=======
-        return False
->>>>>>> main
