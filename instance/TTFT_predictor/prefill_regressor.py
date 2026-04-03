@@ -154,13 +154,25 @@ class PrefillTimeRegressor:
                                 f"BS={bs}, PL={pl}, repeat={i+1}, max_gap={max_gap_ms:.2f}ms"
                             )
                     
-                    await asyncio.gather(*tasks)
+                    results = await asyncio.gather(*tasks)
+
+                    # 直接采集本轮请求的 TTFT，避免完全依赖外部 /report_prefill 回流
+                    success_count = 0
+                    for ttft in results:
+                        if ttft is not None and ttft > 0:
+                            self.add_data(bs, pl, ttft)
+                            success_count += 1
+                    if success_count == 0:
+                        print(
+                            f"[WARN] No TTFT collected in this repeat: "
+                            f"BS={bs}, PL={pl}, repeat={i+1}"
+                        )
                     
                     # 适当的间隔
                     await asyncio.sleep(0.5) 
         
         print("\n--- 🏁 All Warmup Requests Sent ---")
-        print("[INFO] Waiting for data collection via 'update_prefill_data'...")
+        print("[INFO] Warmup TTFT data collected from request responses.")
 
     def predict(self, batchsize: int, prompt_length: int) -> float:
         if not self._is_fitted: return 0.0

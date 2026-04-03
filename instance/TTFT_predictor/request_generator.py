@@ -1,5 +1,6 @@
 import asyncio
 import aiohttp
+import time
 from transformers import AutoTokenizer
 from typing import Optional
 import hashlib
@@ -60,13 +61,13 @@ async def send_test_request(
     port: int, 
     model: str, 
     prompt: str
-) -> bool:
+) -> Optional[float]:
     """
     向 vLLM 服务器发送单个请求以触发负载。
-    不测量时间，仅确保收到首个 Token (代表 Prefill 完成)。
+    返回从发起请求到收到首个流式 chunk 的耗时（秒）。
     
     Returns:
-        bool: 请求是否成功发送并收到响应。
+        Optional[float]: TTFT 秒数；失败则返回 None。
     """
     api_url = f"http://{host}:{port}/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
@@ -78,20 +79,19 @@ async def send_test_request(
         "temperature": 0.01,
     }
 
+    start_ts = time.perf_counter()
     try:
         async with session.post(api_url, headers=headers, json=payload) as resp:
             if resp.status != 200:
-                # 状态码非 200 视为失败
-                return False
+                return None
             
             # 等待并读取第一个 chunk，确保服务端已经完成了 Prefill
             async for chunk in resp.content.iter_any():
                 if chunk:
-                    # 收到数据即视为成功，无需继续读取
-                    return True
+                    # 收到首个 chunk，计算 TTFT
+                    return time.perf_counter() - start_ts
             
-            # 如果流结束了还没收到数据，视为失败
-            return False
+            return None
             
     except Exception:
-        return False
+        return None
