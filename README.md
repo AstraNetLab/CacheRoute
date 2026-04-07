@@ -117,9 +117,9 @@ Python版本：3.12.11<br>
      --tensor-parallel-size 8 \
      --gpu-memory-utilization 0.75 \
      --dtype auto \
-     --max-model-len 16384 \
+     --max-model-len 4096 \
      --max-num-seqs 8 \
-     --max-num-batched-tokens 4096 \
+     --max-num-batched-tokens 16384 \
      --kv-offloading-backend lmcache \
      --kv-offloading-size 64\
      --disable-hybrid-kv-cache-manager \
