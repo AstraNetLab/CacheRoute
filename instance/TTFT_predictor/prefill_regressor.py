@@ -156,6 +156,17 @@ class PrefillTimeRegressor:
                             )
                     
                     results = await asyncio.gather(*tasks)
+                    for task_idx, ttft in enumerate(results, start=1):
+                        if ttft is None:
+                            print(
+                                f"[TTFT] BS={bs}, PL={pl}, repeat={i+1}, "
+                                f"task={task_idx}/{bs}, ttft=FAILED"
+                            )
+                        else:
+                            print(
+                                f"[TTFT] BS={bs}, PL={pl}, repeat={i+1}, "
+                                f"task={task_idx}/{bs}, ttft={ttft*1000:.2f}ms"
+                            )
 
                     # 记录同一轮内每个请求的 TTFT，并转成相对 round_start 的首 token 到达时刻。
                     # 注意：arrival_offsets 主要用于观测是否出现“伪串行”，训练样本默认用请求 TTFT 的均值。
