@@ -99,7 +99,8 @@ async def perform_detailed_warmup(
             
             # 记录当前缓冲区已有的大小，用于计算本次新增了多少数据
             start_data_count = len(regressor._training_data)
-            expected_new_points = bs * repeats
+            # trigger_warmup_requests 现在按“每个 repeat 一条批次样本”写入数据
+            expected_new_points = repeats
             
             # 2.1 触发当前配置的请求
             # 我们构造一个只包含当前配置的单元素列表
