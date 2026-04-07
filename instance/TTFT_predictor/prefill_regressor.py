@@ -127,6 +127,7 @@ class PrefillTimeRegressor:
                     prompts = [generate_prompt_with_tokens(tokenizer, pl) for _ in range(bs)]
 
                     # 并发发送请求
+                    round_start_ts = time.perf_counter()
                     dispatch_ts = []
                     tasks = []
                     for p in prompts:
@@ -156,15 +157,19 @@ class PrefillTimeRegressor:
                     
                     results = await asyncio.gather(*tasks)
 
-                    # 直接采集本轮请求的 TTFT，避免完全依赖外部 /report_prefill 回流
-                    success_count = 0
-                    for ttft in results:
+                    # 以“批次时间”口径采样：一轮内取最后一个首 token 到达时间（相对 round_start）
+                    # 这样每个 repeat 只落一个样本，避免把同一批次内的排队差异当作多个独立样本
+                    valid_batch_offsets = []
+                    for idx, ttft in enumerate(results):
                         if ttft is not None and ttft > 0:
-                            self.add_data(bs, pl, ttft)
-                            success_count += 1
-                    if success_count == 0:
+                            valid_batch_offsets.append((dispatch_ts[idx] - round_start_ts) + ttft)
+
+                    if valid_batch_offsets:
+                        batch_time = max(valid_batch_offsets)
+                        self.add_data(bs, pl, batch_time)
+                    else:
                         print(
-                            f"[WARN] No TTFT collected in this repeat: "
+                            f"[WARN] No valid TTFT collected in this repeat: "
                             f"BS={bs}, PL={pl}, repeat={i+1}"
                         )
                     
