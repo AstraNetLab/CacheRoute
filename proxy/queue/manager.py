@@ -36,6 +36,8 @@ class QueueManager:
     - KVCache 注入路径（Injection_type="kvcache"）先占位，Step3 再做。
     """
 
+    _PREDICT_HEADER_OVERHEAD_TOKENS = 36
+
     def __init__(self) -> None:
         self._prepare_concurrency_per_instance = int(os.environ.get("PREPARE_CONCURRENCY", config.PREPARE_CONCURRENCY))
         self._ready_concurrency_per_instance = int(os.environ.get("READY_CONCURRENCY", getattr(config, "READY_CONCURRENCY", 8))
@@ -57,14 +59,14 @@ class QueueManager:
     def _estimate_request_length(task: ProxyTask) -> int:
         """
         用于 TTFT 预测的长度口径：
-          total_length = prompt_token_length + knowledge_length
+          total_length = prompt_token_length + knowledge_length + header_overhead(36)
         """
         prompt = getattr(task.req_obj, "Prompt", None)
         service = getattr(task.req_obj, "Service", None)
 
         prompt_len = int(getattr(prompt, "token_length", 0) or 0)
         know_len = int(getattr(service, "Knowledge_length", 0) or 0)
-        total_len = prompt_len + know_len
+        total_len = prompt_len + know_len + QueueManager._PREDICT_HEADER_OVERHEAD_TOKENS
         return max(1, total_len)
 
     async def _predict_and_reserve_slot(self, task: ProxyTask) -> None:
