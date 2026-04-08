@@ -230,7 +230,7 @@ class Service:
                 looks_like_full_content = False
 
             if looks_like_full_content:
-                token_len = Prompt.extract_prompt_info(model_name=model_name, user_prompt=raw_text)
+                token_len = Prompt.extract_prompt_info(model=model_name, user_prompt=raw_text)
                 total_len += int(token_len)
             else:
                 total_len += stored_len
