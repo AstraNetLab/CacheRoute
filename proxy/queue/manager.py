@@ -36,6 +36,8 @@ class QueueManager:
     - KVCache 注入路径（Injection_type="kvcache"）先占位，Step3 再做。
     """
 
+    _PREDICT_HEADER_OVERHEAD_TOKENS = 36
+
     def __init__(self) -> None:
         self._prepare_concurrency_per_instance = int(os.environ.get("PREPARE_CONCURRENCY", config.PREPARE_CONCURRENCY))
         self._ready_concurrency_per_instance = int(os.environ.get("READY_CONCURRENCY", getattr(config, "READY_CONCURRENCY", 8))
@@ -57,14 +59,14 @@ class QueueManager:
     def _estimate_request_length(task: ProxyTask) -> int:
         """
         用于 TTFT 预测的长度口径：
-          total_length = prompt_token_length + knowledge_length
+          total_length = prompt_token_length + knowledge_length + header_overhead(36)
         """
         prompt = getattr(task.req_obj, "Prompt", None)
         service = getattr(task.req_obj, "Service", None)
 
         prompt_len = int(getattr(prompt, "token_length", 0) or 0)
         know_len = int(getattr(service, "Knowledge_length", 0) or 0)
-        total_len = prompt_len + know_len
+        total_len = prompt_len + know_len + QueueManager._PREDICT_HEADER_OVERHEAD_TOKENS
         return max(1, total_len)
 
     async def _predict_and_reserve_slot(self, task: ProxyTask) -> None:
@@ -343,6 +345,33 @@ class QueueManager:
                         if not seen_first_chunk:
                             seen_first_chunk = True
                             task.trace["first_token_ms"] = _now_ms()
+                            # 实测时延拆分（从 proxy 入队时刻开始）：
+                            # actual_total = proxy_enqueue -> first_token
+                            # actual_wait  = proxy_enqueue -> forward_start
+                            # actual_compute = forward_start -> first_token
+                            first_ms = task.trace.get("first_token_ms")
+                            enqueue_ms = task.trace.get("proxy_enqueue_ms")
+                            fwd_start_ms = task.trace.get("forward_start_ms")
+
+                            if isinstance(first_ms, int) and isinstance(enqueue_ms, int):
+                                task.trace["actual_total_ms"] = max(0, first_ms - enqueue_ms)
+                            if isinstance(fwd_start_ms, int) and isinstance(enqueue_ms, int):
+                                task.trace["actual_wait_ms"] = max(0, fwd_start_ms - enqueue_ms)
+                            if isinstance(first_ms, int) and isinstance(fwd_start_ms, int):
+                                task.trace["actual_compute_ms"] = max(0, first_ms - fwd_start_ms)
+
+                            logger.info(
+                                "[Timing] rid=%s instance=%s pred(total/wait/compute)=%s/%s/%s ms "
+                                "actual(total/wait/compute)=%s/%s/%s ms",
+                                task.request_id,
+                                instance_id,
+                                task.trace.get("predict_total_ms"),
+                                task.trace.get("predict_wait_ms"),
+                                task.trace.get("predict_compute_ms"),
+                                task.trace.get("actual_total_ms"),
+                                task.trace.get("actual_wait_ms"),
+                                task.trace.get("actual_compute_ms"),
+                            )
                         await task.response_queue.put(chunk)
 
                 task.trace["forward_end_ms"] = _now_ms()
