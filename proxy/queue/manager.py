@@ -10,6 +10,7 @@ from typing import Dict, Optional, AsyncGenerator, Any
 
 from core import forward_request,config
 from proxy.metrics.queue_predictor import queue_predictor
+from proxy.resource import p_control_plane
 
 from .task import ProxyTask
 from .instance_queues import PerInstanceQueueMap
@@ -37,6 +38,7 @@ class QueueManager:
     """
 
     _PREDICT_HEADER_OVERHEAD_TOKENS = 36
+    _KNOW_PREPARE_FIXED_OVERHEAD_MS = 3.0
 
     def __init__(self) -> None:
         self._prepare_concurrency_per_instance = int(os.environ.get("PREPARE_CONCURRENCY", config.PREPARE_CONCURRENCY))
@@ -69,6 +71,25 @@ class QueueManager:
         total_len = prompt_len + know_len + QueueManager._PREDICT_HEADER_OVERHEAD_TOKENS
         return max(1, total_len)
 
+    async def _estimate_know_prepare_ms(self, task: ProxyTask) -> float:
+        """
+        估算知识准备时间：
+          know_prepare_time = rtt(kdn->instance) + fixed_overhead(3ms)
+        """
+        kdn_addr = str(task.kdn_addr or "").strip()
+        if not kdn_addr:
+            return 0.0
+
+        links = await p_control_plane.get_kdn_links_snapshot()
+        item = (
+            links.get(kdn_addr)
+            or links.get(f"kdn://{kdn_addr}")
+            or links.get(f"http://{kdn_addr}")
+            or {}
+        )
+        rtt_ms = float(item.get("latency_ms", item.get("rtt_ms", 0.0)) or 0.0)
+        return max(0.0, rtt_ms + self._KNOW_PREPARE_FIXED_OVERHEAD_MS)
+
     async def _predict_and_reserve_slot(self, task: ProxyTask) -> None:
         """
         在任务进入队列时做一次时间预测并更新 instance 的预计空闲时间。
@@ -82,52 +103,58 @@ class QueueManager:
         now_s = time.time()
         length = self._estimate_request_length(task)
         bs = 1
+        know_prepare_ms = await self._estimate_know_prepare_ms(task)
+        know_prepare_s = know_prepare_ms / 1000.0
 
         async with self._predict_lock:
             expected_idle_s = self._instance_expected_idle_ts_s.get(task.instance_id, now_s)
-            wait_s = max(0.0, expected_idle_s - now_s)
+            queue_wait_s = max(0.0, expected_idle_s - now_s)
             compute_s = max(0.0, queue_predictor(length=length, bs=bs))
-            total_s = wait_s + compute_s
+            total_s = know_prepare_s + queue_wait_s + compute_s
             new_idle_s = max(expected_idle_s, now_s) + compute_s
             self._instance_expected_idle_ts_s[task.instance_id] = new_idle_s
 
         # 统一放在 trace，便于现有 meta 返回链路直接观测
         task.trace["predict_length_tokens"] = int(length)
         task.trace["predict_bs"] = int(bs)
-        task.trace["predict_wait_ms"] = int(wait_s * 1000)
+        task.trace["predict_know_prepare_ms"] = int(know_prepare_ms)
+        task.trace["predict_queue_wait_ms"] = int(queue_wait_s * 1000)
+        # 兼容旧字段：wait 现在等价于 know_prepare_time
+        task.trace["predict_wait_ms"] = int(know_prepare_ms)
         task.trace["predict_compute_ms"] = int(compute_s * 1000)
         task.trace["predict_total_ms"] = int(total_s * 1000)
         task.trace["predict_expected_idle_before_ms"] = int(expected_idle_s * 1000)
         task.trace["predict_expected_idle_after_ms"] = int(new_idle_s * 1000)
 
         logger.info(
-            "[Predict] rid=%s instance=%s len=%s bs=%s wait=%.2fms compute=%.2fms total=%.2fms",
+            "[Predict] rid=%s instance=%s len=%s bs=%s know_prepare=%.2fms queue_wait=%.2fms compute=%.2fms total=%.2fms",
             task.request_id,
             task.instance_id,
             length,
             bs,
-            wait_s * 1000.0,
+            know_prepare_ms,
+            queue_wait_s * 1000.0,
             compute_s * 1000.0,
             total_s * 1000.0,
         )
 
     async def _apply_idle_correction(self, task: ProxyTask, instance_id: str) -> None:
         """
-        任务首 token 到达后，按“预测完成时延 vs 实际完成时延”纠正 expected_idle 时间戳。
+        任务首 token 到达后，按“预测耗时 vs 实际耗时”纠正 expected_idle 时间戳。
 
         规则：
-        - actual_total > predict_total  -> expected_idle 后移
-        - actual_total < predict_total  -> expected_idle 前移
+        - 默认采用 compute 口径（更贴近 expected_idle 的“计算队列时间轴”）
+        - 若 compute 不可用则回退 total 口径
         """
-        pred_ms = task.trace.get("predict_total_ms")
-        actual_ms = task.trace.get("actual_total_ms")
+        pred_ms = task.trace.get("predict_compute_ms")
+        actual_ms = task.trace.get("actual_compute_ms")
 
-        correction_basis = "total"
-        # 兼容兜底：若 total 不可用，则退回 compute 口径
+        correction_basis = "compute"
+        # 兼容兜底：若 compute 不可用，则退回 total 口径
         if not isinstance(pred_ms, int) or not isinstance(actual_ms, int):
-            pred_ms = task.trace.get("predict_compute_ms")
-            actual_ms = task.trace.get("actual_compute_ms")
-            correction_basis = "compute"
+            pred_ms = task.trace.get("predict_total_ms")
+            actual_ms = task.trace.get("actual_total_ms")
+            correction_basis = "total"
 
         if not isinstance(pred_ms, int) or not isinstance(actual_ms, int):
             return
@@ -412,12 +439,15 @@ class QueueManager:
                             await self._apply_idle_correction(task, instance_id)
 
                             logger.info(
-                                "[Timing] rid=%s instance=%s pred(total/wait/compute)=%s/%s/%s ms "
-                                "actual(total/wait/compute)=%s/%s/%s ms",
+                                "[Timing] rid=%s instance=%s "
+                                "pred(total/know_prepare/queue_wait/compute)=%s/%s/%s/%s ms "
+                                "actual(total/wait/compute)=%s/%s/%s ms "
+                                "(actual_wait≈prepare+queue, actual_compute≈vllm_first_token)",
                                 task.request_id,
                                 instance_id,
                                 task.trace.get("predict_total_ms"),
-                                task.trace.get("predict_wait_ms"),
+                                task.trace.get("predict_know_prepare_ms"),
+                                task.trace.get("predict_queue_wait_ms"),
                                 task.trace.get("predict_compute_ms"),
                                 task.trace.get("actual_total_ms"),
                                 task.trace.get("actual_wait_ms"),
