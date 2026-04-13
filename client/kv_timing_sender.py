@@ -223,13 +223,17 @@ def build_kv_timing_record(
         default=0,
     )
 
-    candidate_kids: List[str] = []
-    candidate_kids.extend(_extract_knowledge_ids(body))
+    body_kids: List[str] = _extract_knowledge_ids(body)
+    meta_kids: List[str] = []
     for key in ("kv_ready_kids", "text_only_kids", "miss_kids"):
         v = meta.get(key, []) if isinstance(meta, dict) else []
         if isinstance(v, list):
-            candidate_kids.extend([str(x).strip().lower() for x in v if str(x).strip()])
-    # 去重保持顺序
+            meta_kids.extend([str(x).strip().lower() for x in v if str(x).strip()])
+
+    # 优先使用请求体显式指定的 kid 计算知识长度；仅在请求体无 kid 时才回退到 meta 候选。
+    candidate_kids: List[str] = body_kids if body_kids else meta_kids
+
+    # 去重保持顺序（用于长度计算）
     seen_kids = set()
     dedup_candidate_kids: List[str] = []
     for k in candidate_kids:
@@ -243,7 +247,6 @@ def build_kv_timing_record(
         knowledge_length_map=knowledge_length_map,
         candidate_kids=dedup_candidate_kids,
     )
-
     # 命中长度必须满足：
     # 1) 256 对齐
     # 2) 以知识长度为上限（不能超过 knowledge_length_tokens）
