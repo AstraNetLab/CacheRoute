@@ -177,7 +177,12 @@ def build_kv_timing_record(req_index: int, req_name: str, body: Dict[str, Any], 
         # 兜底：若 workload 未提供 knowledge_length_tokens，则按 total 估算（会把问题+首部也算进去）
         knowledge_length_tokens = total_length_tokens
 
-    actual_hit_length_tokens = (knowledge_length_tokens // 256) * 256
+    # 命中长度必须满足：
+    # 1) 256 对齐
+    # 2) 以知识长度为上限（不能超过 knowledge_length_tokens）
+    # 3) 同时不超过 total_length_tokens（防止异常元数据）
+    aligned_hit = (knowledge_length_tokens // 256) * 256
+    actual_hit_length_tokens = min(aligned_hit, knowledge_length_tokens, total_length_tokens)
     remaining_compute_tokens = max(0, total_length_tokens - actual_hit_length_tokens)
 
     queue_wait_ms = trace.get("actual_wait_ms")

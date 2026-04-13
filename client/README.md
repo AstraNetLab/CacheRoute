@@ -78,3 +78,4 @@ python3 kv_timing_sender.py \
 说明：
 - 若 workload 每条请求提供 `knowledge_length_tokens`，脚本会按该值计算命中长度；
 - 若未提供，将回退使用 `predict_length_tokens` 估算知识长度（会包含任务与首部，精度较低，建议补齐该字段）。
+- 命中长度始终以知识长度为上限：`actual_hit_length_tokens <= knowledge_length_tokens`。
