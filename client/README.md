@@ -71,6 +71,7 @@ python3 kv_timing_sender.py \
   --requests 30 \
   --rps 1 \
   --seed 118 \
+  --scheduler-tokenizer-map '{"llama3-70b":"/workspace/llm-stack/models/LLM-Research/Meta-Llama-3-70B-Instruct"}' \
   --output-jsonl ./out/kv_timing.jsonl \
   --output-csv ./out/kv_timing.csv \
   --enable-scheduler-knowledge-peek true
@@ -80,6 +81,7 @@ python3 kv_timing_sender.py \
 - 若 workload 每条请求提供 `knowledge_length_tokens`，脚本会按该值计算命中长度；
 - 若未提供，脚本默认会先调用 scheduler 的 `/debug/knowledge/peek` 拉取每个 `kid` 的真实 `length`，再计算命中长度；
 - 注意：scheduler.peek 返回的 `length` 在部分链路里是字符长度。脚本现在会优先对 `text_abstract` 按 `--model` tokenizer 重新估算 token 长度，再用于命中计算；
+- 可通过 `--scheduler-tokenizer-map` 在 client 进程内设置 `SCHEDULER_TOKENIZER_MAP`（与 `demo_scheduler` 一致），优先使用本地 tokenizer 目录，避免从 HuggingFace 拉取；
 - 仅当无法从 workload 与 scheduler 都拿到知识长度时，才回退使用 `predict_length_tokens` 估算（会包含任务与首部，精度较低）。
 - 命中长度始终以知识长度为上限：`actual_hit_length_tokens <= knowledge_length_tokens`。
 - 脚本会先输出 `knowledge_length_tokens_raw`（原始解析值），并裁剪得到 `knowledge_length_tokens <= total_length_tokens`，避免知识长度大于总长度。

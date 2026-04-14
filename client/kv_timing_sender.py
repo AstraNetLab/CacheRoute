@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import csv
 import json
+import os
 import random
 import statistics
 import sys
@@ -20,7 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from proxy.metrics.queue_predictor import queue_predictor
-from core.tokenizer_registry import estimate_tokens
+from core.tokenizer_registry import estimate_tokens, TokenizerRegistry
 
 
 def parse_bool(v: Any) -> bool:
@@ -529,6 +530,14 @@ async def main_async(args: argparse.Namespace) -> None:
     timeout = httpx.Timeout(args.timeout_s)
     interval = 1.0 / float(args.rps)
 
+    # 与 demo_scheduler 对齐：允许在 client 进程内显式设置 tokenizer 映射，避免 HF 在线拉取。
+    if args.scheduler_tokenizer_map:
+        os.environ["SCHEDULER_TOKENIZER_MAP"] = args.scheduler_tokenizer_map
+    try:
+        TokenizerRegistry.warmup_tokenizers(args.model)
+    except Exception:
+        pass
+
     inflight = 0
     peak_inflight = 0
     inflight_lock = asyncio.Lock()
@@ -623,6 +632,11 @@ def main() -> None:
         help="query scheduler /debug/knowledge/peek to get accurate knowledge length when workload lacks knowledge_length_tokens",
     )
     ap.add_argument("--peek-chunk-size", type=int, default=128, help="chunk size for /debug/knowledge/peek")
+    ap.add_argument(
+        "--scheduler-tokenizer-map",
+        default=None,
+        help='optional tokenizer map json string, e.g. \'{"llama3-70b":"/path/to/local/tokenizer"}\'',
+    )
 
     args = ap.parse_args()
     args.enable_scheduler_knowledge_peek = parse_bool(args.enable_scheduler_knowledge_peek)
