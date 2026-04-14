@@ -71,6 +71,12 @@ export KDN_FORCE_REDIS_HOST=172.18.0.169
 这样不管上游传什么 host，都会让 KDN 走该网卡地址连接 Redis。KDN 日志会打印 request_host 与 resolved_host 便于确认。
 默认 `KDN_REDIS_REWRITE_ENABLE=0`（或不设置），此时不会改写任何地址，不影响原有 KVCache 注入路径。
 
+补充：当开启 `KDN_NETWORK_ENABLE=1` 时，KDN 网络模拟器当前采用**单链路串行服务**模型（单服务台排队）：
+- 同一时刻仅服务一个知识传输任务
+- 后续任务进入 pending 队列等待
+- ack 仍按估算网络时延延后返回
+上述参数可在 `core/config.py` 中配置默认值（`KDN_NETWORK_*`），并可通过同名环境变量覆盖。
+
 **1.4 知识块信息查询**<br>
 KDN_api对外暴露need_field接口，可以根据需求请求对应属性信息，目前开放的属性有：`content`,`length`,`rel_path`,`embedding`,`embed_dim`,`kv_ready`,`kv_rel_dir`,`kv_dumped_keys`,`kv_updated_at`,`embedding_head`，具体例如：
 ```
