@@ -37,11 +37,16 @@ def _resolve_redis_target_host(request_host: str) -> str:
       1) KDN_FORCE_REDIS_HOST: 无条件覆盖
       2) KDN_REWRITE_LOOPBACK_TO: 仅在请求是回环地址时重写
     """
-    force_host = os.getenv("KDN_FORCE_REDIS_HOST", "").strip()
+    enabled_raw = os.getenv("KDN_REDIS_REWRITE_ENABLE", str(getattr(config, "KDN_REDIS_REWRITE_ENABLE", False))).strip().lower()
+    enabled = enabled_raw in {"1", "true", "yes", "y", "on"}
+    if not enabled:
+        return request_host
+
+    force_host = os.getenv("KDN_FORCE_REDIS_HOST", str(getattr(config, "KDN_FORCE_REDIS_HOST", ""))).strip()
     if force_host:
         return force_host
 
-    rewrite_host = os.getenv("KDN_REWRITE_LOOPBACK_TO", "").strip()
+    rewrite_host = os.getenv("KDN_REWRITE_LOOPBACK_TO", str(getattr(config, "KDN_REWRITE_LOOPBACK_TO", ""))).strip()
     if rewrite_host and request_host.strip().lower() in {"127.0.0.1", "localhost", "::1"}:
         return rewrite_host
 
