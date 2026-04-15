@@ -39,6 +39,8 @@ class QueueManager:
 
     _PREDICT_HEADER_OVERHEAD_TOKENS = 36
     _KNOW_PREPARE_FIXED_OVERHEAD_MS = 3.0
+    _READY_DEQUEUE_INTERVAL_S = 0.02
+    _DECODE_EWMA_ALPHA = 0.2
 
     def __init__(self) -> None:
         self._prepare_concurrency_per_instance = int(os.environ.get("PREPARE_CONCURRENCY", config.PREPARE_CONCURRENCY))
@@ -55,6 +57,11 @@ class QueueManager:
         self._http_timeout_s = 60.0
         # per-instance 预计空闲时间戳（seconds since epoch）
         self._instance_expected_idle_ts_s: Dict[str, float] = {}
+        # per-instance decode 阶段耗时（seconds）EWMA，用于补偿“worker 释放前必须完成 decode”
+        self._instance_decode_ewma_s: Dict[str, float] = {}
+        # per-instance ready worker 抓取节流（顺序化 + 最小间隔）
+        self._ready_fetch_locks: Dict[str, asyncio.Lock] = {}
+        self._ready_last_fetch_ts_s: Dict[str, float] = {}
         self._predict_lock = asyncio.Lock()
 
     @staticmethod
@@ -98,7 +105,7 @@ class QueueManager:
         - bs 当前固定按 1 预测（后续可扩展）。
         - wait_time = max(0, expected_idle - now)
         - compute_time = queue_predictor(bs=1, length=prompt+knowledge)
-        - total_time = wait_time + compute_time
+        - total_time = wait_time + compute_time + decode_time(ewma)
         """
         now_s = time.time()
         length = self._estimate_request_length(task)
@@ -108,10 +115,12 @@ class QueueManager:
 
         async with self._predict_lock:
             expected_idle_s = self._instance_expected_idle_ts_s.get(task.instance_id, now_s)
+            decode_s = max(0.0, float(self._instance_decode_ewma_s.get(task.instance_id, 0.0)))
             queue_wait_s = max(0.0, expected_idle_s - now_s)
             compute_s = max(0.0, queue_predictor(length=length, bs=bs))
-            total_s = know_prepare_s + queue_wait_s + compute_s
-            new_idle_s = max(expected_idle_s, now_s) + compute_s
+            service_s = compute_s + decode_s
+            total_s = know_prepare_s + queue_wait_s + service_s
+            new_idle_s = max(expected_idle_s, now_s) + service_s
             self._instance_expected_idle_ts_s[task.instance_id] = new_idle_s
 
         # 统一放在 trace，便于现有 meta 返回链路直接观测
@@ -122,12 +131,14 @@ class QueueManager:
         # 兼容旧字段：wait 现在等价于 know_prepare_time
         task.trace["predict_wait_ms"] = int(know_prepare_ms)
         task.trace["predict_compute_ms"] = int(compute_s * 1000)
+        task.trace["predict_decode_ms"] = int(decode_s * 1000)
+        task.trace["predict_service_ms"] = int(service_s * 1000)
         task.trace["predict_total_ms"] = int(total_s * 1000)
         task.trace["predict_expected_idle_before_ms"] = int(expected_idle_s * 1000)
         task.trace["predict_expected_idle_after_ms"] = int(new_idle_s * 1000)
 
         logger.info(
-            "[Predict] rid=%s instance=%s len=%s bs=%s know_prepare=%.2fms queue_wait=%.2fms compute=%.2fms total=%.2fms",
+            "[Predict] rid=%s instance=%s len=%s bs=%s know_prepare=%.2fms queue_wait=%.2fms compute=%.2fms decode=%.2fms service=%.2fms total=%.2fms",
             task.request_id,
             task.instance_id,
             length,
@@ -135,31 +146,34 @@ class QueueManager:
             know_prepare_ms,
             queue_wait_s * 1000.0,
             compute_s * 1000.0,
+            decode_s * 1000.0,
+            service_s * 1000.0,
             total_s * 1000.0,
         )
 
     async def _apply_idle_correction(self, task: ProxyTask, instance_id: str) -> None:
         """
-        任务首 token 到达后，按“预测耗时 vs 实际耗时”纠正 expected_idle 时间戳。
+        任务完整结束后，按“预测 service 耗时 vs 实际 service 耗时”纠正 expected_idle 时间戳。
 
         规则：
-        - 默认采用 total 口径：predict_total 对比 actual_total。
-          这样两侧都从 proxy_enqueue 起算，语义一致。
-        - 若 total 字段不可用，再退回 compute 口径：predict_compute 对比 actual_compute。
+        - 优先 service 口径：predict_service 对比 actual_service。
+        - service 不可用时，退回 compute 口径：predict_compute 对比 actual_compute。
+        - 同步更新 decode EWMA，供后续排队预测补偿使用。
         """
-        pred_total_ms = task.trace.get("predict_total_ms")
-        actual_total_ms = task.trace.get("actual_total_ms")
+        pred_service_ms = task.trace.get("predict_service_ms")
+        actual_service_ms = task.trace.get("actual_service_ms")
         pred_compute_ms = task.trace.get("predict_compute_ms")
         actual_ms = task.trace.get("actual_compute_ms")
+        actual_decode_ms = task.trace.get("actual_decode_ms")
 
-        correction_basis = "total"
-        if isinstance(pred_total_ms, int) and isinstance(actual_total_ms, int):
-            pred_ms = pred_total_ms
-            actual_ms = actual_total_ms
+        correction_basis = "service"
+        if isinstance(pred_service_ms, int) and isinstance(actual_service_ms, int):
+            pred_ms = pred_service_ms
+            actual_ms = actual_service_ms
         else:
             pred_ms = None
 
-        # 兼容兜底：若 total 不可用，则退回 compute 口径
+        # 兼容兜底：若 service 不可用，则退回 compute 口径
         if not isinstance(pred_ms, int) or not isinstance(actual_ms, int):
             if isinstance(pred_compute_ms, int) and isinstance(actual_ms, int):
                 pred_ms = pred_compute_ms
@@ -169,6 +183,13 @@ class QueueManager:
 
         if not isinstance(pred_ms, int) or not isinstance(actual_ms, int):
             return
+
+        if isinstance(actual_decode_ms, int):
+            decode_s = max(0.0, actual_decode_ms / 1000.0)
+            old_decode = max(0.0, float(self._instance_decode_ewma_s.get(instance_id, 0.0)))
+            new_decode = ((1.0 - self._DECODE_EWMA_ALPHA) * old_decode) + (self._DECODE_EWMA_ALPHA * decode_s)
+            self._instance_decode_ewma_s[instance_id] = new_decode
+            task.trace["predict_decode_ewma_ms"] = int(new_decode * 1000)
 
         correction_s = (actual_ms - pred_ms) / 1000.0
         if correction_s == 0:
@@ -196,6 +217,13 @@ class QueueManager:
             old_idle_s * 1000.0,
             new_idle_s * 1000.0,
         )
+
+    def _get_ready_fetch_lock(self, instance_id: str) -> asyncio.Lock:
+        lock = self._ready_fetch_locks.get(instance_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._ready_fetch_locks[instance_id] = lock
+        return lock
 
     def ensure_workers_started(self, instance_ids: Optional[list[str]] = None) -> None:
         """
@@ -401,7 +429,16 @@ class QueueManager:
         """
         q = self._qmap.get(instance_id)
         while True:
-            task = await q.ready_q.get()
+            # 顺序化抓取：避免多个 ready worker 同时抓取引发明显乱序。
+            async with self._get_ready_fetch_lock(instance_id):
+                now_s = time.time()
+                last_fetch_s = self._ready_last_fetch_ts_s.get(instance_id, 0.0)
+                wait_s = self._READY_DEQUEUE_INTERVAL_S - (now_s - last_fetch_s)
+                if wait_s > 0:
+                    await asyncio.sleep(wait_s)
+                task = await q.ready_q.get()
+                self._ready_last_fetch_ts_s[instance_id] = time.time()
+
             q.active_ready += 1
             try:
                 task.trace["ready_dequeue_ms"] = _now_ms()
@@ -448,14 +485,11 @@ class QueueManager:
                                 if isinstance(first_ms, int) and isinstance(fwd_start_ms, int):
                                     task.trace["actual_compute_ms"] = max(0, first_ms - fwd_start_ms)
 
-                                # 依据本次任务的预测-实际误差，动态纠正队列 expected_idle 时间戳
-                                await self._apply_idle_correction(task, instance_id)
-
                                 logger.info(
                                     "[Timing] rid=%s instance=%s "
                                     "pred(total/know_prepare/queue_wait/compute)=%s/%s/%s/%s ms "
                                     "actual(total/wait/compute)=%s/%s/%s ms "
-                                    "(actual_wait≈prepare_queue+ready_queue, actual_compute≈vllm_queue+compute)",
+                                    "(correction delayed until forward_end to include decode phase)",
                                     task.request_id,
                                     instance_id,
                                     task.trace.get("predict_total_ms"),
@@ -468,13 +502,25 @@ class QueueManager:
                                 )
                             else:
                                 logger.info(
-                                    "[Timing] rid=%s instance=%s skip_correction=non_stream_response",
+                                    "[Timing] rid=%s instance=%s non_stream_first_chunk_observed",
                                     task.request_id,
                                     instance_id,
                                 )
                         await task.response_queue.put(chunk)
 
                 task.trace["forward_end_ms"] = _now_ms()
+                if isinstance(task.trace.get("forward_start_ms"), int):
+                    task.trace["actual_service_ms"] = max(
+                        0,
+                        task.trace["forward_end_ms"] - task.trace["forward_start_ms"],
+                    )
+                if isinstance(task.trace.get("first_token_ms"), int):
+                    task.trace["actual_decode_ms"] = max(
+                        0,
+                        task.trace["forward_end_ms"] - task.trace["first_token_ms"],
+                    )
+
+                await self._apply_idle_correction(task, instance_id)
 
                 # 结束符
                 await task.response_queue.put(None)
