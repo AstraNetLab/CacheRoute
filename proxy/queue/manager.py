@@ -6,7 +6,7 @@ import time
 import httpx
 import asyncio
 import logging
-from typing import Dict, Optional, AsyncGenerator, Any
+from typing import Dict, Optional, AsyncGenerator, Any, List
 
 from core import forward_request,config
 from proxy.metrics.queue_predictor import queue_predictor
@@ -54,12 +54,15 @@ class QueueManager:
         self._workers_started = False
         self._worker_tasks: Dict[str, asyncio.Task] = {}
         self._http_timeout_s = 60.0
-        # per-instance 预计空闲时间戳（seconds since epoch）
-        self._instance_expected_idle_ts_s: Dict[str, float] = {}
         # per-instance ready worker 抓取节流（顺序化 + 最小间隔）
         self._ready_fetch_locks: Dict[str, asyncio.Lock] = {}
         self._ready_last_fetch_ts_s: Dict[str, float] = {}
-        self._predict_lock = asyncio.Lock()
+        # reservation shared state: slot layer + shared prefill layer
+        self._instance_slot_free_ts_s: Dict[str, List[float]] = {}
+        self._instance_prefill_free_ts_s: Dict[str, float] = {}
+        self._instance_pending_tasks: Dict[str, List[ProxyTask]] = {}
+        self._instance_next_reservation_seq: Dict[str, int] = {}
+        self._reservation_locks: Dict[str, asyncio.Lock] = {}
 
     @staticmethod
     def _estimate_request_length(task: ProxyTask) -> int:
@@ -94,112 +97,159 @@ class QueueManager:
         rtt_ms = float(item.get("latency_ms", item.get("rtt_ms", 0.0)) or 0.0)
         return max(0.0, rtt_ms + self._KNOW_PREPARE_FIXED_OVERHEAD_MS)
 
-    async def _predict_and_reserve_slot(self, task: ProxyTask) -> None:
-        """
-        在任务进入队列时做一次时间预测并更新 instance 的预计空闲时间。
+    def _get_reservation_lock(self, instance_id: str) -> asyncio.Lock:
+        lock = self._reservation_locks.get(instance_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._reservation_locks[instance_id] = lock
+        return lock
 
-        约定：
-        - bs 当前固定按 1 预测（后续可扩展）。
-        - wait_time = max(0, expected_idle - now)
-        - compute_time = queue_predictor(bs=1, length=prompt+knowledge)
-        - total_time = wait_time + compute_time
-        """
-        now_s = time.time()
+    def _ensure_instance_reservation_state(self, instance_id: str, now_s: Optional[float] = None) -> None:
+        ts_s = time.time() if now_s is None else now_s
+        if instance_id not in self._instance_slot_free_ts_s:
+            self._instance_slot_free_ts_s[instance_id] = [ts_s for _ in range(self._ready_concurrency_per_instance)]
+        if instance_id not in self._instance_prefill_free_ts_s:
+            self._instance_prefill_free_ts_s[instance_id] = ts_s
+        if instance_id not in self._instance_pending_tasks:
+            self._instance_pending_tasks[instance_id] = []
+        if instance_id not in self._instance_next_reservation_seq:
+            self._instance_next_reservation_seq[instance_id] = 1
+
+    async def _reserve_ready_task(self, task: ProxyTask, now_s: Optional[float] = None) -> None:
+        ts_s = time.time() if now_s is None else now_s
         length = self._estimate_request_length(task)
         bs = 1
-        know_prepare_ms = await self._estimate_know_prepare_ms(task)
+        compute_s = max(0.0, queue_predictor(length=length, bs=bs))
+        know_prepare_ms = int(task.trace.get("predict_know_prepare_ms", 0) or 0)
         know_prepare_s = know_prepare_ms / 1000.0
 
-        async with self._predict_lock:
-            expected_idle_s = self._instance_expected_idle_ts_s.get(task.instance_id, now_s)
-            queue_wait_s = max(0.0, expected_idle_s - now_s)
-            compute_s = max(0.0, queue_predictor(length=length, bs=bs))
-            total_s = know_prepare_s + queue_wait_s + compute_s
-            new_idle_s = max(expected_idle_s, now_s) + compute_s
-            self._instance_expected_idle_ts_s[task.instance_id] = new_idle_s
+        lock = self._get_reservation_lock(task.instance_id)
+        async with lock:
+            self._ensure_instance_reservation_state(task.instance_id, now_s=ts_s)
+            slot_free = self._instance_slot_free_ts_s[task.instance_id]
+            prefill_free_s = self._instance_prefill_free_ts_s[task.instance_id]
+            slot_idx = min(range(len(slot_free)), key=lambda idx: slot_free[idx])
+            slot_ready_s = max(ts_s, slot_free[slot_idx])
+            prefill_start_s = max(slot_ready_s, prefill_free_s)
+            first_token_s = prefill_start_s + compute_s
 
-        # 统一放在 trace，便于现有 meta 返回链路直接观测
-        task.trace["predict_length_tokens"] = int(length)
-        task.trace["predict_bs"] = int(bs)
-        task.trace["predict_know_prepare_ms"] = int(know_prepare_ms)
-        task.trace["predict_queue_wait_ms"] = int(queue_wait_s * 1000)
-        # 兼容旧字段：wait 现在等价于 know_prepare_time
-        task.trace["predict_wait_ms"] = int(know_prepare_ms)
-        task.trace["predict_compute_ms"] = int(compute_s * 1000)
-        task.trace["predict_total_ms"] = int(total_s * 1000)
-        task.trace["predict_expected_idle_before_ms"] = int(expected_idle_s * 1000)
-        task.trace["predict_expected_idle_after_ms"] = int(new_idle_s * 1000)
+            slot_free[slot_idx] = first_token_s
+            self._instance_prefill_free_ts_s[task.instance_id] = first_token_s
+            reservation_seq = self._instance_next_reservation_seq[task.instance_id]
+            self._instance_next_reservation_seq[task.instance_id] = reservation_seq + 1
 
-        logger.info(
-            "[Predict] rid=%s instance=%s len=%s bs=%s know_prepare=%.2fms queue_wait=%.2fms compute=%.2fms total=%.2fms",
-            task.request_id,
-            task.instance_id,
-            length,
-            bs,
-            know_prepare_ms,
-            queue_wait_s * 1000.0,
-            compute_s * 1000.0,
-            total_s * 1000.0,
-        )
+            task.pred_slot_idx = int(slot_idx)
+            task.pred_slot_ready_ts_ms = int(slot_ready_s * 1000)
+            task.pred_prefill_start_ts_ms = int(prefill_start_s * 1000)
+            task.pred_first_token_ts_ms = int(first_token_s * 1000)
+            task.pred_service_ms = int(compute_s * 1000)
+            task.reservation_seq = int(reservation_seq)
+            task.recompute_generation = 0
 
-    async def _apply_idle_correction(self, task: ProxyTask, instance_id: str) -> None:
+            task.trace["predict_length_tokens"] = int(length)
+            task.trace["predict_bs"] = int(bs)
+            task.trace["predict_queue_wait_ms"] = max(0, int((prefill_start_s - ts_s) * 1000))
+            task.trace["predict_compute_ms"] = int(compute_s * 1000)
+            task.trace["predict_vllm_internal_ms"] = max(0, int((first_token_s - slot_ready_s) * 1000))
+            task.trace["predict_total_ms"] = int((know_prepare_s + (first_token_s - ts_s)) * 1000)
+            # compatibility field
+            task.trace["predict_wait_ms"] = int(know_prepare_ms)
+
+            pending = self._instance_pending_tasks[task.instance_id]
+            pending.append(task)
+            pending.sort(key=lambda t: t.reservation_seq)
+
+            logger.debug(
+                "[Reserve] rid=%s instance=%s seq=%s slot=%s slot_free=%s prefill_free=%.3f "
+                "slot_ready=%.3f prefill_start=%.3f first_token=%.3f",
+                task.request_id,
+                task.instance_id,
+                task.reservation_seq,
+                slot_idx,
+                [round(v, 3) for v in slot_free],
+                prefill_free_s,
+                slot_ready_s,
+                prefill_start_s,
+                first_token_s,
+            )
+
+    async def predict_new_task_wait_ms(self, instance_id: str) -> int:
+        now_s = time.time()
+        lock = self._get_reservation_lock(instance_id)
+        async with lock:
+            self._ensure_instance_reservation_state(instance_id, now_s=now_s)
+            slot_free = self._instance_slot_free_ts_s[instance_id]
+            slot_idx = min(range(len(slot_free)), key=lambda idx: slot_free[idx])
+            slot_ready_s = max(now_s, slot_free[slot_idx])
+            prefill_start_s = max(slot_ready_s, self._instance_prefill_free_ts_s[instance_id])
+            return max(0, int((prefill_start_s - now_s) * 1000))
+
+    async def _recompute_pending_from_now(self, instance_id: str, now_s: Optional[float] = None) -> None:
+        ts_s = time.time() if now_s is None else now_s
+        lock = self._get_reservation_lock(instance_id)
+        async with lock:
+            self._ensure_instance_reservation_state(instance_id, now_s=ts_s)
+            pending = [t for t in self._instance_pending_tasks[instance_id] if not t.has_seen_first_token]
+            pending.sort(key=lambda t: t.reservation_seq)
+
+            slot_free = [max(ts_s, float(v)) for v in self._instance_slot_free_ts_s[instance_id]]
+            prefill_cursor_s = max(ts_s, float(self._instance_prefill_free_ts_s[instance_id]))
+
+            for task in pending:
+                slot_idx = min(range(len(slot_free)), key=lambda idx: slot_free[idx])
+                slot_ready_s = max(ts_s, slot_free[slot_idx])
+                prefill_start_s = max(slot_ready_s, prefill_cursor_s)
+                service_s = max(0.0, task.pred_service_ms / 1000.0)
+                first_token_s = prefill_start_s + service_s
+
+                task.pred_slot_idx = int(slot_idx)
+                task.pred_slot_ready_ts_ms = int(slot_ready_s * 1000)
+                task.pred_prefill_start_ts_ms = int(prefill_start_s * 1000)
+                task.pred_first_token_ts_ms = int(first_token_s * 1000)
+                task.recompute_generation += 1
+
+                know_prepare_ms = int(task.trace.get("predict_know_prepare_ms", 0) or 0)
+                task.trace["predict_queue_wait_ms"] = max(0, int((prefill_start_s - ts_s) * 1000))
+                task.trace["predict_vllm_internal_ms"] = max(0, int((first_token_s - slot_ready_s) * 1000))
+                task.trace["predict_total_ms"] = int(know_prepare_ms + (first_token_s - ts_s) * 1000)
+
+                slot_free[slot_idx] = first_token_s
+                prefill_cursor_s = first_token_s
+
+            self._instance_pending_tasks[instance_id] = pending
+            self._instance_slot_free_ts_s[instance_id] = slot_free
+            self._instance_prefill_free_ts_s[instance_id] = prefill_cursor_s
+
+    async def _mark_task_first_token_and_recompute(self, task: ProxyTask, instance_id: str) -> None:
+        now_s = time.time()
+        lock = self._get_reservation_lock(instance_id)
+        async with lock:
+            self._ensure_instance_reservation_state(instance_id, now_s=now_s)
+            task.has_seen_first_token = True
+            if 0 <= task.pred_slot_idx < len(self._instance_slot_free_ts_s[instance_id]):
+                self._instance_slot_free_ts_s[instance_id][task.pred_slot_idx] = now_s
+            self._instance_prefill_free_ts_s[instance_id] = max(now_s, self._instance_prefill_free_ts_s[instance_id])
+            self._instance_pending_tasks[instance_id] = [
+                t for t in self._instance_pending_tasks[instance_id]
+                if t is not task
+            ]
+        await self._recompute_pending_from_now(instance_id, now_s=now_s)
+
+    async def _wait_dispatch_turn(self, task: ProxyTask, instance_id: str) -> None:
         """
-        任务首 token 到达后，按“预测耗时 vs 实际耗时”纠正 expected_idle 时间戳。
-
-        规则：
-        - 默认采用 total 口径：predict_total 对比 actual_total。
-          这样两侧都从 proxy_enqueue 起算，语义一致。
-        - 若 total 字段不可用，再退回 compute 口径：predict_compute 对比 actual_compute。
+        Gate ready forwarding by reservation_seq to keep real prefill order predictable.
         """
-        pred_total_ms = task.trace.get("predict_total_ms")
-        actual_total_ms = task.trace.get("actual_total_ms")
-        pred_compute_ms = task.trace.get("predict_compute_ms")
-        actual_ms = task.trace.get("actual_compute_ms")
-
-        correction_basis = "total"
-        if isinstance(pred_total_ms, int) and isinstance(actual_total_ms, int):
-            pred_ms = pred_total_ms
-            actual_ms = actual_total_ms
-        else:
-            pred_ms = None
-
-        # 兼容兜底：若 total 不可用，则退回 compute 口径
-        if not isinstance(pred_ms, int) or not isinstance(actual_ms, int):
-            if isinstance(pred_compute_ms, int) and isinstance(actual_ms, int):
-                pred_ms = pred_compute_ms
-                correction_basis = "compute"
-            else:
-                pred_ms = None
-
-        if not isinstance(pred_ms, int) or not isinstance(actual_ms, int):
-            return
-
-        correction_s = (actual_ms - pred_ms) / 1000.0
-        if correction_s == 0:
-            return
-        # 限幅，避免极端异常一次性把 expected_idle 拉飞
-        correction_s = max(-2.0, min(2.0, correction_s))
-
-        async with self._predict_lock:
-            now_s = time.time()
-            old_idle_s = self._instance_expected_idle_ts_s.get(instance_id, now_s)
-            new_idle_s = old_idle_s + correction_s
-            # 防止被过度前移到“过去很久”
-            new_idle_s = max(now_s, new_idle_s)
-            self._instance_expected_idle_ts_s[instance_id] = new_idle_s
-
-        task.trace["predict_correction_ms"] = int(correction_s * 1000)
-        task.trace["predict_expected_idle_corrected_ms"] = int(new_idle_s * 1000)
-        task.trace["predict_correction_basis"] = correction_basis
-        logger.info(
-            "[Predict-Correct] rid=%s instance=%s basis=%s correction=%.2fms idle(old->new)=%.2f->%.2f ms",
-            task.request_id,
-            instance_id,
-            correction_basis,
-            correction_s * 1000.0,
-            old_idle_s * 1000.0,
-            new_idle_s * 1000.0,
-        )
+        while True:
+            lock = self._get_reservation_lock(instance_id)
+            async with lock:
+                pending = [t for t in self._instance_pending_tasks.get(instance_id, []) if not t.has_seen_first_token]
+                if not pending:
+                    return
+                pending.sort(key=lambda t: t.reservation_seq)
+                if pending[0] is task:
+                    task.has_started_forward = True
+                    return
+            await asyncio.sleep(0.005)
 
     def ensure_workers_started(self, instance_ids: Optional[list[str]] = None) -> None:
         """
@@ -217,6 +267,7 @@ class QueueManager:
                 self._start_workers_for_instance(iid)
 
     def _start_workers_for_instance(self, instance_id: str) -> None:
+        self._ensure_instance_reservation_state(instance_id)
         if f"prepare_dispatch:{instance_id}" not in self._worker_tasks:
             self._worker_tasks[f"prepare_dispatch:{instance_id}"] = asyncio.create_task(
                 self._prepare_dispatch_loop(instance_id)
@@ -245,7 +296,8 @@ class QueueManager:
 
         # 预测总处理时间 = 等待时间 + 处理时间（bs 当前固定 1）
         try:
-            await self._predict_and_reserve_slot(task)
+            know_prepare_ms = await self._estimate_know_prepare_ms(task)
+            task.trace["predict_know_prepare_ms"] = int(know_prepare_ms)
         except Exception as e:
             logger.warning("[Predict] rid=%s failed: %s", task.request_id, e)
 
@@ -391,6 +443,7 @@ class QueueManager:
                     )
 
                 task.trace["ready_enqueue_ms"] = _now_ms()
+                await self._reserve_ready_task(task, now_s=time.time())
                 await q.ready_q.put(task)
                 logger.info(
                     "[Queue] enqueue_ready rid=%s instance=%s ready_len=%s",
@@ -401,6 +454,7 @@ class QueueManager:
                 task.error = f"prepare_failed: {e}"
                 logger.exception("[Prepare] failed rid=%s fallback no-rag", task.request_id)
                 task.trace["ready_enqueue_ms"] = _now_ms()
+                await self._reserve_ready_task(task, now_s=time.time())
                 await q.ready_q.put(task)
             finally:
                 q.active_prepare = max(0, q.active_prepare - 1)
@@ -425,6 +479,7 @@ class QueueManager:
             try:
                 task.trace["ready_dequeue_ms"] = _now_ms()
                 task.trace["ready_worker_idx"] = worker_idx
+                await self._wait_dispatch_turn(task, instance_id)
 
                 target_url = f"http://{task.instance_host}:{task.instance_port}{task.url_path}"
                 logger.info(
@@ -454,36 +509,40 @@ class QueueManager:
                             if use_chunked:
                                 # 实测时延拆分（从 proxy 入队时刻开始）：
                                 # actual_total = proxy_enqueue -> first_token
-                                # actual_wait  = proxy_enqueue -> forward_start
-                                # actual_compute = forward_start -> first_token
+                                # actual_know_prepare = proxy_enqueue -> ready_enqueue
+                                # actual_ready_queue  = ready_enqueue -> forward_start
+                                # actual_vllm_internal = forward_start -> first_token
                                 first_ms = task.trace.get("first_token_ms")
                                 enqueue_ms = task.trace.get("proxy_enqueue_ms")
+                                ready_enqueue_ms = task.trace.get("ready_enqueue_ms")
                                 fwd_start_ms = task.trace.get("forward_start_ms")
 
                                 if isinstance(first_ms, int) and isinstance(enqueue_ms, int):
                                     task.trace["actual_total_ms"] = max(0, first_ms - enqueue_ms)
-                                if isinstance(fwd_start_ms, int) and isinstance(enqueue_ms, int):
-                                    task.trace["actual_wait_ms"] = max(0, fwd_start_ms - enqueue_ms)
+                                if isinstance(ready_enqueue_ms, int) and isinstance(enqueue_ms, int):
+                                    task.trace["actual_know_prepare_ms"] = max(0, ready_enqueue_ms - enqueue_ms)
+                                if isinstance(fwd_start_ms, int) and isinstance(ready_enqueue_ms, int):
+                                    task.trace["actual_ready_queue_ms"] = max(0, fwd_start_ms - ready_enqueue_ms)
                                 if isinstance(first_ms, int) and isinstance(fwd_start_ms, int):
-                                    task.trace["actual_compute_ms"] = max(0, first_ms - fwd_start_ms)
-
-                                # 依据本次任务的预测-实际误差，动态纠正队列 expected_idle 时间戳
-                                await self._apply_idle_correction(task, instance_id)
+                                    task.trace["actual_vllm_internal_ms"] = max(0, first_ms - fwd_start_ms)
+                                    # compatibility field
+                                    task.trace["actual_compute_ms"] = task.trace["actual_vllm_internal_ms"]
+                                await self._mark_task_first_token_and_recompute(task, instance_id)
 
                                 logger.info(
                                     "[Timing] rid=%s instance=%s "
-                                    "pred(total/know_prepare/queue_wait/compute)=%s/%s/%s/%s ms "
-                                    "actual(total/wait/compute)=%s/%s/%s ms "
-                                    "(actual_wait≈prepare_queue+ready_queue, actual_compute≈vllm_queue+compute)",
+                                    "pred(total/know_prepare/queue_wait/vllm_internal)=%s/%s/%s/%s ms "
+                                    "actual(total/know_prepare/ready_queue/vllm_internal)=%s/%s/%s/%s ms",
                                     task.request_id,
                                     instance_id,
                                     task.trace.get("predict_total_ms"),
                                     task.trace.get("predict_know_prepare_ms"),
                                     task.trace.get("predict_queue_wait_ms"),
-                                    task.trace.get("predict_compute_ms"),
+                                    task.trace.get("predict_vllm_internal_ms"),
                                     task.trace.get("actual_total_ms"),
-                                    task.trace.get("actual_wait_ms"),
-                                    task.trace.get("actual_compute_ms"),
+                                    task.trace.get("actual_know_prepare_ms"),
+                                    task.trace.get("actual_ready_queue_ms"),
+                                    task.trace.get("actual_vllm_internal_ms"),
                                 )
                             else:
                                 logger.info(

@@ -52,5 +52,16 @@ class ProxyTask:
     kv_ack: Dict[str, Any] = field(default_factory=dict)
     trace: Dict[str, int] = field(default_factory=dict)
 
+    # reservation state for ready/prefill timeline
+    pred_slot_idx: int = -1
+    pred_slot_ready_ts_ms: int = 0
+    pred_prefill_start_ts_ms: int = 0
+    pred_first_token_ts_ms: int = 0
+    pred_service_ms: int = 0
+    has_started_forward: bool = False
+    has_seen_first_token: bool = False
+    reservation_seq: int = -1
+    recompute_generation: int = 0
+
     def mark(self, key: str, ts_ms: int) -> None:
         self.trace[key] = int(ts_ms)
