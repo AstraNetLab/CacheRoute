@@ -148,8 +148,10 @@ class QueueManager:
 
             task.trace["predict_length_tokens"] = int(length)
             task.trace["predict_bs"] = int(bs)
-            task.trace["predict_queue_wait_ms"] = max(0, int((prefill_start_s - ts_s) * 1000))
+            # queue_wait: ready queue waiting before forward starts
+            task.trace["predict_queue_wait_ms"] = max(0, int((slot_ready_s - ts_s) * 1000))
             task.trace["predict_compute_ms"] = int(compute_s * 1000)
+            # vllm_internal: from forward_start to first_token, includes vllm queue + prefill compute
             task.trace["predict_vllm_internal_ms"] = max(0, int((first_token_s - slot_ready_s) * 1000))
             task.trace["predict_total_ms"] = int((know_prepare_s + (first_token_s - ts_s)) * 1000)
             # compatibility field
@@ -192,8 +194,10 @@ class QueueManager:
             pending = [t for t in self._instance_pending_tasks[instance_id] if not t.has_seen_first_token]
             pending.sort(key=lambda t: t.reservation_seq)
 
-            slot_free = [max(ts_s, float(v)) for v in self._instance_slot_free_ts_s[instance_id]]
-            prefill_cursor_s = max(ts_s, float(self._instance_prefill_free_ts_s[instance_id]))
+            # Rebuild reservation chain from real "now" baseline.
+            slot_count = len(self._instance_slot_free_ts_s[instance_id])
+            slot_free = [ts_s for _ in range(slot_count)]
+            prefill_cursor_s = ts_s
 
             for task in pending:
                 slot_idx = min(range(len(slot_free)), key=lambda idx: slot_free[idx])
@@ -209,7 +213,7 @@ class QueueManager:
                 task.recompute_generation += 1
 
                 know_prepare_ms = int(task.trace.get("predict_know_prepare_ms", 0) or 0)
-                task.trace["predict_queue_wait_ms"] = max(0, int((prefill_start_s - ts_s) * 1000))
+                task.trace["predict_queue_wait_ms"] = max(0, int((slot_ready_s - ts_s) * 1000))
                 task.trace["predict_vllm_internal_ms"] = max(0, int((first_token_s - slot_ready_s) * 1000))
                 task.trace["predict_total_ms"] = int(know_prepare_ms + (first_token_s - ts_s) * 1000)
 
@@ -228,7 +232,8 @@ class QueueManager:
             task.has_seen_first_token = True
             if 0 <= task.pred_slot_idx < len(self._instance_slot_free_ts_s[instance_id]):
                 self._instance_slot_free_ts_s[instance_id][task.pred_slot_idx] = now_s
-            self._instance_prefill_free_ts_s[instance_id] = max(now_s, self._instance_prefill_free_ts_s[instance_id])
+            # Important: recycle shared prefill timeline to the real current time.
+            self._instance_prefill_free_ts_s[instance_id] = now_s
             self._instance_pending_tasks[instance_id] = [
                 t for t in self._instance_pending_tasks[instance_id]
                 if t is not task
@@ -528,11 +533,16 @@ class QueueManager:
                                     # compatibility field
                                     task.trace["actual_compute_ms"] = task.trace["actual_vllm_internal_ms"]
                                 await self._mark_task_first_token_and_recompute(task, instance_id)
+                                pred_total_ms = task.trace.get("predict_total_ms")
+                                actual_total_ms = task.trace.get("actual_total_ms")
+                                if isinstance(pred_total_ms, int) and isinstance(actual_total_ms, int):
+                                    task.trace["predict_error_ms"] = int(actual_total_ms - pred_total_ms)
 
                                 logger.info(
                                     "[Timing] rid=%s instance=%s "
                                     "pred(total/know_prepare/queue_wait/vllm_internal)=%s/%s/%s/%s ms "
-                                    "actual(total/know_prepare/ready_queue/vllm_internal)=%s/%s/%s/%s ms",
+                                    "actual(total/know_prepare/ready_queue/vllm_internal)=%s/%s/%s/%s ms "
+                                    "predict_error=%s ms",
                                     task.request_id,
                                     instance_id,
                                     task.trace.get("predict_total_ms"),
@@ -543,6 +553,7 @@ class QueueManager:
                                     task.trace.get("actual_know_prepare_ms"),
                                     task.trace.get("actual_ready_queue_ms"),
                                     task.trace.get("actual_vllm_internal_ms"),
+                                    task.trace.get("predict_error_ms"),
                                 )
                             else:
                                 logger.info(
