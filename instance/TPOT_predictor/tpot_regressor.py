@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import json
 import statistics
@@ -13,6 +14,7 @@ from transformers import AutoTokenizer
 from request_generator import (
     bounded_gather,
     generate_prompt_with_tokens,
+    run_background_prefill_load,
     send_stream_request_for_tpot,
 )
 
@@ -27,6 +29,8 @@ class TPOTTaskRecord:
     max_tokens: int
     ttft_seconds: float
     token_steps: List[Dict[str, Any]]
+    scenario: str = "baseline"
+    prefill_load_config: Optional[Dict[str, Any]] = None
 
 
 class TPOTFourTermRegressor:
@@ -98,7 +102,7 @@ class TPOTRegressor:
         smooth_window: int = 5,
         spike_ratio_threshold: float = 1.8,
     ):
-        self._records: Dict[Tuple[int, int], List[TPOTTaskRecord]] = {}
+        self._records: Dict[Tuple[str, int, int], List[TPOTTaskRecord]] = {}
         self._four_term_regressor: Optional[TPOTFourTermRegressor] = None
         self.set_outlier_config(
             outlier_method,
@@ -128,7 +132,7 @@ class TPOTRegressor:
         self._records = {}
 
     def add_record(self, record: TPOTTaskRecord):
-        key = (record.batch_size, record.target_prompt_length)
+        key = (record.scenario, record.batch_size, record.target_prompt_length)
         self._records.setdefault(key, []).append(record)
 
     @staticmethod
@@ -206,89 +210,117 @@ class TPOTRegressor:
         max_tokens: int,
         repeats_per_config: int = 3,
         concurrency: Optional[int] = None,
+        scenario: str = "baseline",
+        prefill_load_config: Optional[Dict[str, Any]] = None,
     ):
         tokenizer = AutoTokenizer.from_pretrained(vllm_config["tokenizer_path"])
         timeout = aiohttp.ClientTimeout(total=900)
         request_counter = 0
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            for bs, target_pl in test_configs:
-                print(f"[TPOT] Start config BS={bs}, target_PL={target_pl}, repeats={repeats_per_config}")
-                for r in range(repeats_per_config):
-                    prompts = [generate_prompt_with_tokens(tokenizer, target_pl) for _ in range(bs)]
-                    real_input_lengths = [self._compute_real_input_length(tokenizer, p) for p in prompts]
-
-                    for idx, real_len in enumerate(real_input_lengths, start=1):
-                        diff = real_len - target_pl
-                        print(
-                            f"[TPOT][LEN-DEBUG] BS={bs}, repeat={r+1}, task={idx}/{bs}, "
-                            f"target_prompt_length={target_pl}, real_input_length={real_len}, diff={diff}"
-                        )
-
-                    run_coros = [
-                        send_stream_request_for_tpot(
-                            session=session,
-                            host=vllm_config["host"],
-                            port=vllm_config["port"],
-                            model=vllm_config["model_id"],
-                            prompt=prompt,
-                            max_tokens=max_tokens,
-                            tokenizer=tokenizer,
-                        )
-                        for prompt in prompts
-                    ]
-
-                    start_round = time.perf_counter()
-                    results = await bounded_gather(run_coros, concurrency=concurrency or bs)
-                    round_ms = (time.perf_counter() - start_round) * 1000
-
-                    success_count = 0
-                    for task_idx, result in enumerate(results, start=1):
-                        request_counter += 1
-                        req_id = f"bs{bs}-tpl{target_pl}-r{r+1}-t{task_idx}-{request_counter}"
-                        if not result.success or result.ttft_seconds is None:
-                            print(f"[TPOT][WARN] req={req_id} failed, error={result.error}")
-                            continue
-
-                        success_count += 1
-                        real_input_len = real_input_lengths[task_idx - 1]
-                        token_steps = [
-                            {
-                                "token_index": s.token_index,
-                                "sequence_length": real_input_len + s.token_index - 1,
-                                "tpot_seconds": s.delta_seconds,
-                            }
-                            for s in result.token_steps
-                        ]
-                        self.add_record(
-                            TPOTTaskRecord(
-                                request_id=req_id,
-                                batch_size=bs,
-                                target_prompt_length=target_pl,
-                                real_input_length=real_input_len,
-                                input_length_offset=real_input_len - target_pl,
-                                max_tokens=max_tokens,
-                                ttft_seconds=result.ttft_seconds,
-                                token_steps=token_steps,
-                            )
-                        )
-
-                    print(
-                        f"[TPOT] Finished BS={bs}, target_PL={target_pl}, repeat={r+1}, "
-                        f"success={success_count}/{bs}, elapsed={round_ms:.1f}ms"
+            stop_event = asyncio.Event()
+            prefill_task = None
+            if scenario == "with_prefill_load":
+                cfg = prefill_load_config or {}
+                prefill_task = asyncio.create_task(
+                    run_background_prefill_load(
+                        session=session,
+                        tokenizer=tokenizer,
+                        host=vllm_config["host"],
+                        port=vllm_config["port"],
+                        model=vllm_config["model_id"],
+                        prefill_prompt_length=int(cfg.get("prefill_prompt_length", 1024)),
+                        prefill_concurrency=int(cfg.get("prefill_concurrency", 1)),
+                        prefill_interval_ms=int(cfg.get("prefill_interval_ms", 0)),
+                        prefill_max_tokens=int(cfg.get("prefill_max_tokens", 1)),
+                        stop_event=stop_event,
                     )
+                )
+            try:
+                for bs, target_pl in test_configs:
+                    print(f"[TPOT] Start config BS={bs}, target_PL={target_pl}, repeats={repeats_per_config}")
+                    for r in range(repeats_per_config):
+                        prompts = [generate_prompt_with_tokens(tokenizer, target_pl) for _ in range(bs)]
+                        real_input_lengths = [self._compute_real_input_length(tokenizer, p) for p in prompts]
+
+                        for idx, real_len in enumerate(real_input_lengths, start=1):
+                            diff = real_len - target_pl
+                            print(
+                                f"[TPOT][LEN-DEBUG] BS={bs}, repeat={r+1}, task={idx}/{bs}, "
+                                f"target_prompt_length={target_pl}, real_input_length={real_len}, diff={diff}"
+                            )
+
+                        run_coros = [
+                            send_stream_request_for_tpot(
+                                session=session,
+                                host=vllm_config["host"],
+                                port=vllm_config["port"],
+                                model=vllm_config["model_id"],
+                                prompt=prompt,
+                                max_tokens=max_tokens,
+                                tokenizer=tokenizer,
+                            )
+                            for prompt in prompts
+                        ]
+
+                        start_round = time.perf_counter()
+                        results = await bounded_gather(run_coros, concurrency=concurrency or bs)
+                        round_ms = (time.perf_counter() - start_round) * 1000
+
+                        success_count = 0
+                        for task_idx, result in enumerate(results, start=1):
+                            request_counter += 1
+                            req_id = f"bs{bs}-tpl{target_pl}-r{r+1}-t{task_idx}-{request_counter}"
+                            if not result.success or result.ttft_seconds is None:
+                                print(f"[TPOT][WARN] req={req_id} failed, error={result.error}")
+                                continue
+
+                            success_count += 1
+                            real_input_len = real_input_lengths[task_idx - 1]
+                            token_steps = [
+                                {
+                                    "token_index": s.token_index,
+                                    "sequence_length": real_input_len + s.token_index - 1,
+                                    "tpot_seconds": s.delta_seconds,
+                                }
+                                for s in result.token_steps
+                            ]
+                            self.add_record(
+                                TPOTTaskRecord(
+                                    request_id=req_id,
+                                    batch_size=bs,
+                                    target_prompt_length=target_pl,
+                                    real_input_length=real_input_len,
+                                    input_length_offset=real_input_len - target_pl,
+                                    max_tokens=max_tokens,
+                                    ttft_seconds=result.ttft_seconds,
+                                    token_steps=token_steps,
+                                    scenario=scenario,
+                                    prefill_load_config=prefill_load_config,
+                                )
+                            )
+
+                        print(
+                            f"[TPOT] Finished BS={bs}, target_PL={target_pl}, repeat={r+1}, "
+                            f"success={success_count}/{bs}, elapsed={round_ms:.1f}ms"
+                        )
+            finally:
+                if prefill_task is not None:
+                    stop_event.set()
+                    await prefill_task
 
     def build_summary(self) -> Dict[str, Any]:
         configs_summary: List[Dict[str, Any]] = []
-        bucket_by_bs_len: Dict[int, Dict[int, List[float]]] = {}
+        bucket_by_scenario_bs_len: Dict[str, Dict[int, Dict[int, List[float]]]] = {}
 
-        for (bs, target_pl), records in sorted(self._records.items(), key=lambda x: (x[0][0], x[0][1])):
+        for (scenario, bs, target_pl), records in sorted(self._records.items(), key=lambda x: (x[0][0], x[0][1], x[0][2])):
             ttft_values = [rec.ttft_seconds for rec in records]
             offsets = [rec.input_length_offset for rec in records]
             real_lengths = [rec.real_input_length for rec in records]
             configs_summary.append(
                 {
                     "batch_size": bs,
+                    "scenario": scenario,
                     "target_prompt_length": target_pl,
                     "tasks": len(records),
                     "avg_ttft_ms": (statistics.mean(ttft_values) * 1000) if ttft_values else None,
@@ -300,89 +332,92 @@ class TPOTRegressor:
                 }
             )
 
-            bucket_by_bs_len.setdefault(bs, {})
+            bucket_by_scenario_bs_len.setdefault(scenario, {})
+            bucket_by_scenario_bs_len[scenario].setdefault(bs, {})
             for rec in records:
                 for step in rec.token_steps:
-                    bucket_by_bs_len[bs].setdefault(step["sequence_length"], []).append(step["tpot_seconds"])
+                    bucket_by_scenario_bs_len[scenario][bs].setdefault(step["sequence_length"], []).append(step["tpot_seconds"])
 
         curves_by_bs: List[Dict[str, Any]] = []
-        for bs, m in sorted(bucket_by_bs_len.items(), key=lambda x: x[0]):
-            points: List[Dict[str, Any]] = []
-            for seq_len, vals in sorted(m.items(), key=lambda x: x[0]):
-                raw_vals = list(vals)
-                filtered_vals, outlier_count = self._filter_outliers(raw_vals)
+        for scenario, bs_map in sorted(bucket_by_scenario_bs_len.items(), key=lambda x: x[0]):
+            for bs, m in sorted(bs_map.items(), key=lambda x: x[0]):
+                points: List[Dict[str, Any]] = []
+                for seq_len, vals in sorted(m.items(), key=lambda x: x[0]):
+                    raw_vals = list(vals)
+                    filtered_vals, outlier_count = self._filter_outliers(raw_vals)
 
-                raw_mean = statistics.mean(raw_vals) * 1000 if raw_vals else None
-                filtered_mean = statistics.mean(filtered_vals) * 1000 if filtered_vals else None
-                filtered_median = statistics.median(filtered_vals) * 1000 if filtered_vals else None
-                filtered_p95 = self._percentile(filtered_vals, 0.95)
+                    raw_mean = statistics.mean(raw_vals) * 1000 if raw_vals else None
+                    filtered_mean = statistics.mean(filtered_vals) * 1000 if filtered_vals else None
+                    filtered_median = statistics.median(filtered_vals) * 1000 if filtered_vals else None
+                    filtered_p95 = self._percentile(filtered_vals, 0.95)
 
-                points.append(
+                    points.append(
+                        {
+                            "sequence_length": seq_len,
+                            "raw_samples": len(raw_vals),
+                            "filtered_samples": len(filtered_vals),
+                            "raw_mean_tpot_ms": raw_mean,
+                            "filtered_mean_tpot_ms": filtered_mean,
+                            "filtered_median_tpot_ms": filtered_median,
+                            "filtered_p95_tpot_ms": (filtered_p95 * 1000) if filtered_p95 is not None else None,
+                            "outlier_count": outlier_count,
+                            "is_low_confidence": len(filtered_vals) < self._min_samples_for_filter,
+                            "suspicious_spike": False,
+                            "smoothed_tpot_ms": None,
+                            "default_tpot_ms": None,
+                            "value_source": "observed",
+                        }
+                    )
+
+                # 同 bs 内滑动中位数平滑（用 filtered_median 优先）
+                for p in points:
+                    p["_base_for_smooth"] = p.get("filtered_median_tpot_ms") if p.get("filtered_median_tpot_ms") is not None else p.get("filtered_mean_tpot_ms")
+                smoothed = self._rolling_median(points, "_base_for_smooth")
+                for i, s in enumerate(smoothed):
+                    points[i]["smoothed_tpot_ms"] = s
+
+                # 邻域突增检测：低置信点 + 相邻长度比较
+                for i, p in enumerate(points):
+                    if not p.get("is_low_confidence"):
+                        continue
+                    cur = p.get("filtered_median_tpot_ms") or p.get("filtered_mean_tpot_ms")
+                    if cur is None:
+                        continue
+                    neigh = []
+                    if i > 0:
+                        left = points[i - 1].get("filtered_median_tpot_ms") or points[i - 1].get("filtered_mean_tpot_ms")
+                        if left is not None:
+                            neigh.append(left)
+                    if i + 1 < len(points):
+                        right = points[i + 1].get("filtered_median_tpot_ms") or points[i + 1].get("filtered_mean_tpot_ms")
+                        if right is not None:
+                            neigh.append(right)
+                    if not neigh:
+                        continue
+                    neigh_ref = float(statistics.median(neigh))
+                    if neigh_ref > 0 and cur > neigh_ref * self._spike_ratio_threshold:
+                        p["suspicious_spike"] = True
+
+                # default 值优先级：filtered_median -> smoothed -> filtered_mean
+                for p in points:
+                    p["default_tpot_ms"] = (
+                        p.get("filtered_median_tpot_ms")
+                        if p.get("filtered_median_tpot_ms") is not None
+                        else p.get("smoothed_tpot_ms")
+                        if p.get("smoothed_tpot_ms") is not None
+                        else p.get("filtered_mean_tpot_ms")
+                    )
+                    p.pop("_base_for_smooth", None)
+
+                curves_by_bs.append(
                     {
-                        "sequence_length": seq_len,
-                        "raw_samples": len(raw_vals),
-                        "filtered_samples": len(filtered_vals),
-                        "raw_mean_tpot_ms": raw_mean,
-                        "filtered_mean_tpot_ms": filtered_mean,
-                        "filtered_median_tpot_ms": filtered_median,
-                        "filtered_p95_tpot_ms": (filtered_p95 * 1000) if filtered_p95 is not None else None,
-                        "outlier_count": outlier_count,
-                        "is_low_confidence": len(filtered_vals) < self._min_samples_for_filter,
-                        "suspicious_spike": False,
-                        "smoothed_tpot_ms": None,
-                        "default_tpot_ms": None,
-                        "value_source": "observed",
+                        "scenario": scenario,
+                        "batch_size": bs,
+                        "min_observed_sequence_length": points[0]["sequence_length"] if points else None,
+                        "max_observed_sequence_length": points[-1]["sequence_length"] if points else None,
+                        "length_tpot_curve": points,
                     }
                 )
-
-            # 同 bs 内滑动中位数平滑（用 filtered_median 优先）
-            for p in points:
-                p["_base_for_smooth"] = p.get("filtered_median_tpot_ms") if p.get("filtered_median_tpot_ms") is not None else p.get("filtered_mean_tpot_ms")
-            smoothed = self._rolling_median(points, "_base_for_smooth")
-            for i, s in enumerate(smoothed):
-                points[i]["smoothed_tpot_ms"] = s
-
-            # 邻域突增检测：低置信点 + 相邻长度比较
-            for i, p in enumerate(points):
-                if not p.get("is_low_confidence"):
-                    continue
-                cur = p.get("filtered_median_tpot_ms") or p.get("filtered_mean_tpot_ms")
-                if cur is None:
-                    continue
-                neigh = []
-                if i > 0:
-                    left = points[i - 1].get("filtered_median_tpot_ms") or points[i - 1].get("filtered_mean_tpot_ms")
-                    if left is not None:
-                        neigh.append(left)
-                if i + 1 < len(points):
-                    right = points[i + 1].get("filtered_median_tpot_ms") or points[i + 1].get("filtered_mean_tpot_ms")
-                    if right is not None:
-                        neigh.append(right)
-                if not neigh:
-                    continue
-                neigh_ref = float(statistics.median(neigh))
-                if neigh_ref > 0 and cur > neigh_ref * self._spike_ratio_threshold:
-                    p["suspicious_spike"] = True
-
-            # default 值优先级：filtered_median -> smoothed -> filtered_mean
-            for p in points:
-                p["default_tpot_ms"] = (
-                    p.get("filtered_median_tpot_ms")
-                    if p.get("filtered_median_tpot_ms") is not None
-                    else p.get("smoothed_tpot_ms")
-                    if p.get("smoothed_tpot_ms") is not None
-                    else p.get("filtered_mean_tpot_ms")
-                )
-                p.pop("_base_for_smooth", None)
-
-            curves_by_bs.append(
-                {
-                    "batch_size": bs,
-                    "min_observed_sequence_length": points[0]["sequence_length"] if points else None,
-                    "max_observed_sequence_length": points[-1]["sequence_length"] if points else None,
-                    "length_tpot_curve": points,
-                }
-            )
 
         return {
             "configs": configs_summary,
@@ -402,16 +437,18 @@ class TPOTRegressor:
         summary = self.build_summary()
         rows = []
         for by_bs in summary.get("length_wise_by_bs", []):
+            scenario = by_bs.get("scenario", "baseline")
             bs = by_bs["batch_size"]
             for p in by_bs.get("length_tpot_curve", []):
-                rows.append({"batch_size": bs, **p})
+                rows.append({"scenario": scenario, "batch_size": bs, **p})
         return rows
 
-    def check_length_coverage(self, batch_size: int, length_start: int, length_end: int) -> Dict[str, Any]:
+    def check_length_coverage(self, batch_size: int, length_start: int, length_end: int, scenario: str = "baseline") -> Dict[str, Any]:
         observed_lengths = sorted(
             {
                 int(p["sequence_length"])
                 for p in self.get_lengthwise_points()
+                if str(p.get("scenario")) == str(scenario)
                 if int(p["batch_size"]) == int(batch_size)
                 and length_start <= int(p["sequence_length"]) <= length_end
             }
@@ -433,6 +470,7 @@ class TPOTRegressor:
         ratio = (len(observed_lengths) / len(expected)) if expected else 0.0
         return {
             "batch_size": batch_size,
+            "scenario": scenario,
             "length_range": [length_start, length_end],
             "covered_lengths": observed_lengths,
             "missing_lengths": missing,
@@ -446,8 +484,13 @@ class TPOTRegressor:
         self._four_term_regressor = model
         return coeffs
 
-    def _predict_from_curve_or_interp(self, batch_size: int, sequence_length: int, label_key: str) -> Tuple[Optional[float], str]:
-        points = [p for p in self.get_lengthwise_points() if p["batch_size"] == batch_size and p.get(label_key) is not None]
+    def _predict_from_curve_or_interp(self, batch_size: int, sequence_length: int, label_key: str, scenario: str = "baseline") -> Tuple[Optional[float], str]:
+        points = [
+            p for p in self.get_lengthwise_points()
+            if p["batch_size"] == batch_size
+            and str(p.get("scenario")) == str(scenario)
+            and p.get(label_key) is not None
+        ]
         if not points:
             return None, "none"
 
@@ -481,10 +524,11 @@ class TPOTRegressor:
         length_end: int,
         prefer_fitted: bool = True,
         label_key: str = "default_tpot_ms",
+        scenario: str = "baseline",
     ) -> List[Dict[str, Any]]:
         rows = []
         for length in range(length_start, length_end + 1):
-            value, source = self._predict_from_curve_or_interp(batch_size, length, label_key)
+            value, source = self._predict_from_curve_or_interp(batch_size, length, label_key, scenario=scenario)
             if value is None and prefer_fitted and self._four_term_regressor is not None:
                 value = self._four_term_regressor.predict_tpot_ms(batch_size, length)
                 source = "fitted"
@@ -495,6 +539,7 @@ class TPOTRegressor:
             rows.append(
                 {
                     "batch_size": batch_size,
+                    "scenario": scenario,
                     "sequence_length": length,
                     "raw_samples": 0,
                     "filtered_samples": 0,
@@ -511,9 +556,12 @@ class TPOTRegressor:
                 }
             )
 
-        observed = {(r["batch_size"], r["sequence_length"]): r for r in self.get_lengthwise_points()}
+        observed = {
+            (r["scenario"], r["batch_size"], r["sequence_length"]): r
+            for r in self.get_lengthwise_points()
+        }
         for i, row in enumerate(rows):
-            k = (row["batch_size"], row["sequence_length"])
+            k = (row["scenario"], row["batch_size"], row["sequence_length"])
             if k in observed:
                 merged = dict(observed[k])
                 merged["batch_size"] = row["batch_size"]
@@ -528,6 +576,7 @@ class TPOTRegressor:
         max_tokens: int,
         prefer_fitted: bool = True,
         label_key: str = "default_tpot_ms",
+        scenario: str = "baseline",
     ) -> Dict[str, Any]:
         curve = self.build_length_range_curve(
             batch_size=batch_size,
@@ -535,6 +584,7 @@ class TPOTRegressor:
             length_end=start_sequence_length + max_tokens - 1,
             prefer_fitted=prefer_fitted,
             label_key=label_key,
+            scenario=scenario,
         )
         total_ms = sum(float(r.get(label_key) or 0.0) for r in curve)
         sources = {"observed": 0, "interpolated": 0, "fitted": 0, "none": 0}
@@ -542,6 +592,7 @@ class TPOTRegressor:
             sources[r["value_source"]] = sources.get(r["value_source"], 0) + 1
         return {
             "batch_size": batch_size,
+            "scenario": scenario,
             "start_sequence_length": start_sequence_length,
             "max_tokens": max_tokens,
             "total_decode_ms": total_ms,
@@ -554,6 +605,7 @@ class TPOTRegressor:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = [
+            "scenario",
             "batch_size",
             "sequence_length",
             "raw_samples",
@@ -597,6 +649,81 @@ class TPOTRegressor:
             path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
         print(f"[TPOT] Exported length-wise curve => {path}")
+
+    def compare_tpot_between_scenarios(
+        self,
+        batch_size: int,
+        length_start: int,
+        length_end: int,
+        baseline_scenario: str = "baseline",
+        prefill_scenario: str = "with_prefill_load",
+        value_key: str = "default_tpot_ms",
+        prefer_fitted: bool = True,
+    ) -> List[Dict[str, Any]]:
+        base_rows = self.build_length_range_curve(
+            batch_size=batch_size,
+            length_start=length_start,
+            length_end=length_end,
+            prefer_fitted=prefer_fitted,
+            label_key=value_key,
+            scenario=baseline_scenario,
+        )
+        load_rows = self.build_length_range_curve(
+            batch_size=batch_size,
+            length_start=length_start,
+            length_end=length_end,
+            prefer_fitted=prefer_fitted,
+            label_key=value_key,
+            scenario=prefill_scenario,
+        )
+        by_len_base = {r["sequence_length"]: r for r in base_rows}
+        by_len_load = {r["sequence_length"]: r for r in load_rows}
+
+        rows = []
+        for length in range(length_start, length_end + 1):
+            b = by_len_base.get(length, {})
+            l = by_len_load.get(length, {})
+            bval = b.get(value_key)
+            lval = l.get(value_key)
+            delta = (lval - bval) if (bval is not None and lval is not None) else None
+            ratio = (lval / bval) if (bval not in (None, 0) and lval is not None) else None
+            rows.append(
+                {
+                    "batch_size": batch_size,
+                    "sequence_length": length,
+                    "baseline_tpot_ms": bval,
+                    "prefill_loaded_tpot_ms": lval,
+                    "delta_tpot_ms": delta,
+                    "delta_ratio": ratio,
+                    "baseline_source": b.get("value_source"),
+                    "prefill_source": l.get("value_source"),
+                }
+            )
+        return rows
+
+    def export_compare_results(self, output_path: str, rows: List[Dict[str, Any]]):
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = [
+            "batch_size",
+            "sequence_length",
+            "baseline_tpot_ms",
+            "prefill_loaded_tpot_ms",
+            "delta_tpot_ms",
+            "delta_ratio",
+            "baseline_source",
+            "prefill_source",
+        ]
+        suffix = path.suffix.lower()
+        if suffix == ".csv":
+            with path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({k: row.get(k) for k in fieldnames})
+        else:
+            path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[TPOT] Exported scenario compare results => {path}")
 
     def export_json(self, output_path: str):
         payload = {

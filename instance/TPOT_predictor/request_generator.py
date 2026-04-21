@@ -4,6 +4,7 @@ import itertools
 import json
 import time
 import uuid
+import contextlib
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -231,3 +232,86 @@ async def bounded_gather(coros: List, concurrency: int):
             return await coro
 
     return await asyncio.gather(*[_run(c) for c in coros])
+
+
+async def send_prefill_only_request(
+    session: aiohttp.ClientSession,
+    host: str,
+    port: int,
+    model: str,
+    prompt: str,
+    max_tokens: int = 1,
+) -> Optional[float]:
+    """
+    近似 Prefill 干扰请求：
+    使用“长 prompt + 极短生成(max_tokens=1)”模拟 Prefill 计算占用。
+    严格 prefill-only 在 /v1/chat/completions 下通常不可直接表达，这里采用近似方式。
+    """
+    api_url = f"http://{host}:{port}/v1/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "max_tokens": max_tokens,
+        "temperature": 0.01,
+    }
+    start_ts = time.perf_counter()
+    try:
+        async with session.post(api_url, headers=headers, json=payload) as resp:
+            if resp.status != 200:
+                await resp.text()
+                return None
+            await resp.read()
+            return time.perf_counter() - start_ts
+    except Exception:
+        return None
+
+
+async def run_background_prefill_load(
+    session: aiohttp.ClientSession,
+    tokenizer,
+    host: str,
+    port: int,
+    model: str,
+    prefill_prompt_length: int,
+    prefill_concurrency: int = 1,
+    prefill_interval_ms: int = 0,
+    prefill_max_tokens: int = 1,
+    stop_event: Optional[asyncio.Event] = None,
+):
+    """
+    后台 Prefill 干扰协程：
+    持续发送“长 prompt + max_tokens=1”请求，直到 stop_event 被置位。
+    """
+    stop_event = stop_event or asyncio.Event()
+    interval_sec = max(0.0, prefill_interval_ms / 1000.0)
+    semaphore = asyncio.Semaphore(max(1, prefill_concurrency))
+
+    async def _one_prefill():
+        async with semaphore:
+            prompt = generate_prompt_with_tokens(tokenizer, prefill_prompt_length)
+            await send_prefill_only_request(
+                session=session,
+                host=host,
+                port=port,
+                model=model,
+                prompt=prompt,
+                max_tokens=prefill_max_tokens,
+            )
+
+    in_flight = set()
+    try:
+        while not stop_event.is_set():
+            task = asyncio.create_task(_one_prefill())
+            in_flight.add(task)
+            task.add_done_callback(lambda t: in_flight.discard(t))
+            if interval_sec > 0:
+                await asyncio.sleep(interval_sec)
+            else:
+                await asyncio.sleep(0)
+    finally:
+        for t in list(in_flight):
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t

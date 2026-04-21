@@ -188,3 +188,80 @@ async def main():
 
 asyncio.run(main())
 ```
+
+---
+
+## 8. Prefill 干扰模式（新增）
+
+新增目标：在采集 decode TPOT 时，后台持续注入 Prefill 型干扰请求，比较：
+
+- `scenario=baseline`
+- `scenario=with_prefill_load`
+
+实现方式是近似模拟：
+
+- 使用“长 prompt + `max_tokens=1`”来制造 Prefill 计算占用；
+- 不追求严格 prefill-only（chat/completions 下通常不可直接表达纯 prefill）。
+
+### 8.1 最小实验（你给的参数）
+
+```python
+import asyncio
+from tpot_predictor import (
+    collect_continuous_tpot_curve,
+    compare_tpot_between_scenarios,
+    export_scenario_compare,
+)
+
+async def main():
+    # baseline
+    baseline = await collect_continuous_tpot_curve(
+        batch_size=1,
+        real_input_length=33,
+        length_start=33,
+        length_end=256,
+        repeats=1,
+        max_tokens=32,
+        with_prefill_load=False,
+    )
+    reg = baseline["regressor"]
+    reg.export_lengthwise_curve(
+        "instance/TPOT_predictor/output/baseline_bs1_33_256.csv",
+        rows=baseline["range_curve"],
+    )
+
+    # with prefill load
+    loaded = await collect_continuous_tpot_curve(
+        batch_size=1,
+        real_input_length=33,
+        length_start=33,
+        length_end=256,
+        repeats=1,
+        max_tokens=32,
+        with_prefill_load=True,
+        prefill_prompt_length=1024,
+        prefill_concurrency=1,
+        prefill_interval_ms=0,
+        prefill_max_tokens=1,
+    )
+    reg2 = loaded["regressor"]
+    reg2.export_lengthwise_curve(
+        "instance/TPOT_predictor/output/prefill_loaded_bs1_33_256.csv",
+        rows=loaded["range_curve"],
+    )
+
+    compare_rows = compare_tpot_between_scenarios(
+        regressor=reg2,
+        batch_size=1,
+        length_start=33,
+        length_end=256,
+        value_key="default_tpot_ms",
+    )
+    export_scenario_compare(
+        regressor=reg2,
+        output_path="instance/TPOT_predictor/output/compare_bs1_33_256.csv",
+        rows=compare_rows,
+    )
+
+asyncio.run(main())
+```

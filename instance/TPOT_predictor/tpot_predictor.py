@@ -73,6 +73,11 @@ async def collect_tpot_matrix(
     min_samples_for_filter: int = 5,
     smooth_window: int = 5,
     spike_ratio_threshold: float = 1.8,
+    with_prefill_load: bool = False,
+    prefill_prompt_length: int = 1024,
+    prefill_concurrency: int = 1,
+    prefill_interval_ms: int = 0,
+    prefill_max_tokens: int = 1,
 ):
     regressor = await get_regressor(
         outlier_method=outlier_method,
@@ -88,6 +93,13 @@ async def collect_tpot_matrix(
         max_tokens=max_tokens,
         repeats_per_config=repeats,
         concurrency=concurrency,
+        scenario="with_prefill_load" if with_prefill_load else "baseline",
+        prefill_load_config={
+            "prefill_prompt_length": prefill_prompt_length,
+            "prefill_concurrency": prefill_concurrency,
+            "prefill_interval_ms": prefill_interval_ms,
+            "prefill_max_tokens": prefill_max_tokens,
+        } if with_prefill_load else None,
     )
     return regressor
 
@@ -184,6 +196,11 @@ async def collect_tpot_range(
     min_samples_for_filter: int = 5,
     smooth_window: int = 5,
     spike_ratio_threshold: float = 1.8,
+    with_prefill_load: bool = False,
+    prefill_prompt_length: int = 1024,
+    prefill_concurrency: int = 1,
+    prefill_interval_ms: int = 0,
+    prefill_max_tokens: int = 1,
 ):
     """
     面向真实 sequence_length 区间 [length_start, length_end] 的接口。
@@ -211,6 +228,11 @@ async def collect_tpot_range(
         min_samples_for_filter=min_samples_for_filter,
         smooth_window=smooth_window,
         spike_ratio_threshold=spike_ratio_threshold,
+        with_prefill_load=with_prefill_load,
+        prefill_prompt_length=prefill_prompt_length,
+        prefill_concurrency=prefill_concurrency,
+        prefill_interval_ms=prefill_interval_ms,
+        prefill_max_tokens=prefill_max_tokens,
     )
 
     coeffs = None
@@ -228,6 +250,7 @@ async def collect_tpot_range(
             length_end=length_end,
             prefer_fitted=prefer_fitted,
             label_key=fit_label_key,
+            scenario="with_prefill_load" if with_prefill_load else "baseline",
         )
         range_rows.extend(rows)
 
@@ -263,6 +286,11 @@ async def collect_continuous_tpot_curve(
     min_samples_for_filter: int = 5,
     smooth_window: int = 5,
     spike_ratio_threshold: float = 1.8,
+    with_prefill_load: bool = False,
+    prefill_prompt_length: int = 1024,
+    prefill_concurrency: int = 1,
+    prefill_interval_ms: int = 0,
+    prefill_max_tokens: int = 1,
 ):
     """
     连续长度采样主模式（单 bs）：
@@ -290,6 +318,11 @@ async def collect_continuous_tpot_curve(
         min_samples_for_filter=min_samples_for_filter,
         smooth_window=smooth_window,
         spike_ratio_threshold=spike_ratio_threshold,
+        with_prefill_load=with_prefill_load,
+        prefill_prompt_length=prefill_prompt_length,
+        prefill_concurrency=prefill_concurrency,
+        prefill_interval_ms=prefill_interval_ms,
+        prefill_max_tokens=prefill_max_tokens,
     )
 
     coeffs = None
@@ -305,8 +338,12 @@ async def collect_continuous_tpot_curve(
         length_end=length_end,
         prefer_fitted=prefer_fitted,
         label_key=fit_label_key,
+        scenario="with_prefill_load" if with_prefill_load else "baseline",
     )
-    coverage = regressor.check_length_coverage(batch_size, length_start, length_end)
+    coverage = regressor.check_length_coverage(
+        batch_size, length_start, length_end,
+        scenario="with_prefill_load" if with_prefill_load else "baseline",
+    )
     observed = [r["sequence_length"] for r in range_rows if r.get("value_source") == "observed"]
     interpolated = [r["sequence_length"] for r in range_rows if r.get("value_source") == "interpolated"]
     fitted = [r["sequence_length"] for r in range_rows if r.get("value_source") == "fitted"]
@@ -317,6 +354,7 @@ async def collect_continuous_tpot_curve(
             "real_input_length": real_input_length,
             "length_range": [length_start, length_end],
             "length_semantics": "real sequence_length",
+            "scenario": "with_prefill_load" if with_prefill_load else "baseline",
         },
         "planned_test_configs": configs,
         "fit_coefficients": coeffs,
@@ -370,11 +408,12 @@ def summarize_results(
     lines.append("\n[Length-wise Curve by BS]")
     r0, r1 = length_range if length_range else (None, None)
     for bs_curve in summary.get("length_wise_by_bs", []):
+        scenario = bs_curve.get("scenario", "baseline")
         bs = bs_curve.get("batch_size")
         curve = bs_curve.get("length_tpot_curve") or []
         min_l = bs_curve.get("min_observed_sequence_length")
         max_l = bs_curve.get("max_observed_sequence_length")
-        lines.append(f"BS={bs}, points={len(curve)}, min_observed_length={min_l}, max_observed_length={max_l}")
+        lines.append(f"Scenario={scenario}, BS={bs}, points={len(curve)}, min_observed_length={min_l}, max_observed_length={max_l}")
 
         should_full = full_curve_bs is not None and bs == full_curve_bs
         selected = curve
@@ -414,6 +453,7 @@ def predict_decode_time(
     max_tokens: int,
     prefer_fitted: bool = True,
     label_key: str = "default_tpot_ms",
+    scenario: str = "baseline",
 ) -> Dict[str, Any]:
     return regressor.predict_decode_time_ms(
         batch_size=batch_size,
@@ -421,6 +461,7 @@ def predict_decode_time(
         max_tokens=max_tokens,
         prefer_fitted=prefer_fitted,
         label_key=label_key,
+        scenario=scenario,
     )
 
 
@@ -429,12 +470,43 @@ def check_length_coverage(
     batch_size: int,
     length_start: int,
     length_end: int,
+    scenario: str = "baseline",
 ) -> Dict[str, Any]:
     return regressor.check_length_coverage(
         batch_size=batch_size,
         length_start=length_start,
         length_end=length_end,
+        scenario=scenario,
     )
+
+
+def compare_tpot_between_scenarios(
+    regressor: TPOTRegressor,
+    batch_size: int,
+    length_start: int,
+    length_end: int,
+    baseline_scenario: str = "baseline",
+    prefill_scenario: str = "with_prefill_load",
+    value_key: str = "default_tpot_ms",
+    prefer_fitted: bool = True,
+) -> List[Dict[str, Any]]:
+    return regressor.compare_tpot_between_scenarios(
+        batch_size=batch_size,
+        length_start=length_start,
+        length_end=length_end,
+        baseline_scenario=baseline_scenario,
+        prefill_scenario=prefill_scenario,
+        value_key=value_key,
+        prefer_fitted=prefer_fitted,
+    )
+
+
+def export_scenario_compare(
+    regressor: TPOTRegressor,
+    output_path: str,
+    rows: List[Dict[str, Any]],
+):
+    regressor.export_compare_results(output_path=output_path, rows=rows)
 
 
 if __name__ == "__main__":
