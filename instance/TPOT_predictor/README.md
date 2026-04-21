@@ -1,0 +1,267 @@
+# TPOT Predictor
+
+`TPOT_predictor` 用于采集并输出按真实 `sequence_length` 组织的 TPOT 曲线，支持区间接口、异常值剔除、平滑诊断、四项线性拟合和 decode 预测。
+
+---
+
+## 1. TPOT 时间戳定义
+
+当前 TPOT 捕获是基于**客户端流式接收时间戳**：
+
+- 在 `send_stream_request_for_tpot(...)` 里使用 `time.perf_counter()` 记录 token 事件到达时间。
+- 第一个生成 token 的时间差记为 TTFT。
+- 后续 token 的时间差记为 TPOT step delta。
+
+这意味着 TPOT 包含了：服务端 decode + 流式刷出节奏 + 网络传输抖动 + 客户端事件循环调度抖动。
+
+---
+
+## 2. 为什么会出现偶发尖峰
+
+流式测量中尖峰常见来源：
+
+1. 多 token 被同一 SSE event 聚合后一起到达；
+2. 网络短时抖动导致 chunk 堆积后突发到达；
+3. 客户端调度抖动（event loop 被其他任务占用）；
+4. 某些 `(bs, sequence_length)` 桶样本太少，单点异常难以被桶内统计抵消。
+
+---
+
+## 3. 新增稳健处理（本次重点）
+
+### 3.1 默认统计口径
+
+默认用于拟合/预测的列从 `filtered_mean_tpot_ms` 切换为更稳健的：
+
+- `filtered_median_tpot_ms`（优先）
+
+并保留均值列作为参考。
+
+### 3.2 平滑列
+
+每个 bs 内，按 sequence_length 顺序新增滑动中位数平滑：
+
+- `smoothed_tpot_ms`
+
+平滑不会覆盖原始值，只是额外诊断列。
+
+### 3.3 双层异常保护
+
+每个点新增：
+
+- `is_low_confidence`：`filtered_samples < min_samples_for_filter`
+- `suspicious_spike`：低置信点且相对邻域出现突增
+
+### 3.4 default_tpot_ms 规则
+
+每个点新增：
+
+- `default_tpot_ms`
+
+优先级：
+
+1. `filtered_median_tpot_ms`
+2. `smoothed_tpot_ms`
+3. `filtered_mean_tpot_ms`
+
+---
+
+## 4. 新区间接口（核心）
+
+```python
+collect_tpot_range(
+    batch_sizes: List[int],
+    length_start: int,
+    length_end: int,
+    ...
+)
+```
+
+这里的 `length_start/length_end` 语义是：**真实 sequence_length 区间 [a,b]**。
+
+接口会自动：
+
+1. 把区间映射成内部待测 `target_prompt_length` 配置；
+2. 输出 `sequence_length=a..b` 的连续曲线；
+3. 对每个点标记来源：`observed / interpolated / fitted / none`。
+
+### 4.1 连续长度采样主模式（推荐）
+
+```python
+collect_continuous_tpot_curve(
+    batch_size=1,
+    real_input_length=128,
+    length_start=128,
+    length_end=256,
+    max_tokens=32,
+    repeats=3,
+)
+```
+
+思路是固定一个 real_input_length 起点，单请求直接覆盖一段连续长度：
+
+- 一次请求覆盖 `sequence_length = L0, L0+1, ..., L0+max_tokens-1`
+- 多个起点窗口按 stride 规划并允许重叠（`overlap_tokens`），让 `[a,b]` 覆盖更完整。
+
+---
+
+## 5. 导出字段（csv/json/xlsx）
+
+导出列：
+
+- `batch_size`
+- `sequence_length`
+- `raw_samples`
+- `filtered_samples`
+- `raw_mean_tpot_ms`
+- `filtered_mean_tpot_ms`
+- `filtered_median_tpot_ms`
+- `filtered_p95_tpot_ms`
+- `outlier_count`
+- `is_low_confidence`
+- `suspicious_spike`
+- `smoothed_tpot_ms`
+- `default_tpot_ms`
+- `value_source`
+
+支持 `.xlsx`，若环境无 `openpyxl` 自动回退 `.csv`。
+
+---
+
+## 6. summarize 区间查看
+
+```python
+summarize_results(summary, full_curve_bs=1, length_range=(a,b))
+```
+
+会打印：
+
+- `raw_samples / filtered_samples / outlier_count`
+- `is_low_confidence / suspicious_spike`
+- `filtered_median_tpot_ms / smoothed_tpot_ms / default_tpot_ms`
+
+并且可以用覆盖诊断函数：
+
+```python
+check_length_coverage(regressor, batch_size=1, length_start=a, length_end=b)
+```
+
+返回：
+
+- `covered_lengths`
+- `missing_lengths`
+- `coverage_ratio`
+- `max_gap`
+
+---
+
+## 7. 最小调用样例
+
+```python
+import asyncio
+from tpot_predictor import collect_continuous_tpot_curve, summarize_results
+
+async def main():
+    result = await collect_continuous_tpot_curve(
+        batch_size=1,
+        real_input_length=128,
+        length_start=128,
+        length_end=192,
+        max_tokens=16,
+        repeats=3,
+        outlier_method="mad",
+        outlier_threshold=3.5,
+        min_samples_for_filter=5,
+        smooth_window=5,
+        spike_ratio_threshold=1.8,
+        fit_after_collect=True,
+    )
+
+    summary = result["summary"]
+    print(summarize_results(summary, full_curve_bs=1, length_range=(128, 192)))
+
+    reg = result["regressor"]
+    reg.export_lengthwise_curve(
+        "instance/TPOT_predictor/output/range_128_192_bs1.xlsx",
+        rows=result["range_curve"],
+    )
+
+asyncio.run(main())
+```
+
+---
+
+## 8. Prefill 干扰模式（新增）
+
+新增目标：在采集 decode TPOT 时，后台持续注入 Prefill 型干扰请求，比较：
+
+- `scenario=baseline`
+- `scenario=with_prefill_load`
+
+实现方式是近似模拟：
+
+- 使用“长 prompt + `max_tokens=1`”来制造 Prefill 计算占用；
+- 不追求严格 prefill-only（chat/completions 下通常不可直接表达纯 prefill）。
+
+### 8.1 最小实验（你给的参数）
+
+```python
+import asyncio
+from tpot_predictor import (
+    collect_continuous_tpot_curve,
+    compare_tpot_between_scenarios,
+    export_scenario_compare,
+)
+
+async def main():
+    # baseline
+    baseline = await collect_continuous_tpot_curve(
+        batch_size=1,
+        real_input_length=33,
+        length_start=33,
+        length_end=256,
+        repeats=1,
+        max_tokens=32,
+        with_prefill_load=False,
+    )
+    reg = baseline["regressor"]
+    reg.export_lengthwise_curve(
+        "instance/TPOT_predictor/output/baseline_bs1_33_256.csv",
+        rows=baseline["range_curve"],
+    )
+
+    # with prefill load
+    loaded = await collect_continuous_tpot_curve(
+        batch_size=1,
+        real_input_length=33,
+        length_start=33,
+        length_end=256,
+        repeats=1,
+        max_tokens=32,
+        with_prefill_load=True,
+        prefill_prompt_length=1024,
+        prefill_concurrency=1,
+        prefill_interval_ms=0,
+        prefill_max_tokens=1,
+    )
+    reg2 = loaded["regressor"]
+    reg2.export_lengthwise_curve(
+        "instance/TPOT_predictor/output/prefill_loaded_bs1_33_256.csv",
+        rows=loaded["range_curve"],
+    )
+
+    compare_rows = compare_tpot_between_scenarios(
+        regressor=reg2,
+        batch_size=1,
+        length_start=33,
+        length_end=256,
+        value_key="default_tpot_ms",
+    )
+    export_scenario_compare(
+        regressor=reg2,
+        output_path="instance/TPOT_predictor/output/compare_bs1_33_256.csv",
+        rows=compare_rows,
+    )
+
+asyncio.run(main())
+```
