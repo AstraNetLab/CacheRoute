@@ -1,7 +1,8 @@
 """TPOT regressor for proxy-side decode estimation.
 
 Model form:
-    tpot = a * batch_size + b * length + c
+    for each fixed batch_size (bs):
+        tpot(bs) = a_bs * length + b_bs
 
 Notes:
 - TPOT here means per-token decode time.
@@ -22,18 +23,17 @@ DEFAULT_COEFF_PATH = Path(__file__).with_name("tpot_coefficients.json")
 
 
 @dataclass
-class ThreeTermCoefficients:
-    a: float
-    b: float
-    c: float
+class PerBSCoefficients:
+    slope: float
+    intercept: float
 
 
 class TPOTFourTermRegressor:
-    """Fit and predict TPOT with 3-term linear features: [B, L, 1]."""
+    """Fit and predict TPOT by per-bs linear curves: tpot = slope*length + intercept."""
 
     def __init__(self) -> None:
         self._samples: List[Tuple[int, int, float]] = []
-        self._coeffs: Optional[ThreeTermCoefficients] = None
+        self._coeffs_by_bs: Dict[int, PerBSCoefficients] = {}
 
     def add_sample(self, batch_size: int, length: int, tpot: float) -> None:
         if batch_size <= 0 or length <= 0:
@@ -87,26 +87,38 @@ class TPOTFourTermRegressor:
                 loaded += 1
         return loaded
 
-    def fit(self) -> ThreeTermCoefficients:
+    def fit(self) -> Dict[int, PerBSCoefficients]:
         if len(self._samples) < 4:
             raise ValueError("at least 4 valid samples are required")
 
-        x = np.array(
-            [[bs, length, 1.0] for bs, length, _ in self._samples],
-            dtype=np.float64,
-        )
-        y = np.array([tpot for _, _, tpot in self._samples], dtype=np.float64)
+        grouped: Dict[int, List[Tuple[int, float]]] = {}
+        for bs, length, tpot in self._samples:
+            grouped.setdefault(bs, []).append((length, tpot))
 
-        coeff, _, _, _ = np.linalg.lstsq(x, y, rcond=None)
-        self._coeffs = ThreeTermCoefficients(a=float(coeff[0]), b=float(coeff[1]), c=float(coeff[2]))
-        return self._coeffs
+        coeffs_by_bs: Dict[int, PerBSCoefficients] = {}
+        for bs, points in grouped.items():
+            if len(points) < 2:
+                raise ValueError(f"batch_size={bs} needs at least 2 points to fit a*length+b")
+            x = np.array([[length, 1.0] for length, _ in points], dtype=np.float64)
+            y = np.array([tpot for _, tpot in points], dtype=np.float64)
+            coeff, _, _, _ = np.linalg.lstsq(x, y, rcond=None)
+            coeffs_by_bs[int(bs)] = PerBSCoefficients(slope=float(coeff[0]), intercept=float(coeff[1]))
+
+        self._coeffs_by_bs = coeffs_by_bs
+        return dict(self._coeffs_by_bs)
 
     def predict(self, batch_size: int, length: int) -> float:
-        if self._coeffs is None:
+        if not self._coeffs_by_bs:
             raise RuntimeError("regressor is not fitted yet")
-        bs = float(batch_size)
+
+        bs = int(batch_size)
         l = float(length)
-        pred = self._coeffs.a * bs + self._coeffs.b * l + self._coeffs.c
+        if bs in self._coeffs_by_bs:
+            coeff = self._coeffs_by_bs[bs]
+        else:
+            nearest_bs = min(self._coeffs_by_bs.keys(), key=lambda k: abs(k - bs))
+            coeff = self._coeffs_by_bs[nearest_bs]
+        pred = coeff.slope * l + coeff.intercept
         return max(0.0, float(pred))
 
     def save_coefficients_json(
@@ -115,26 +127,28 @@ class TPOTFourTermRegressor:
         *,
         unit: str = "seconds",
     ) -> Path:
-        if self._coeffs is None:
+        if not self._coeffs_by_bs:
             raise RuntimeError("regressor is not fitted yet")
         path = Path(coeff_path)
+        by_bs = {
+            str(bs): {"slope": c.slope, "intercept": c.intercept}
+            for bs, c in sorted(self._coeffs_by_bs.items())
+        }
         payload = {
-            "a": self._coeffs.a,
-            "b": self._coeffs.b,
-            "c": self._coeffs.c,
+            "mode": "per_bs_linear",
+            "by_bs": by_bs,
             "unit": unit,
-            "source": "TPOTThreeTermRegressor",
+            "source": "TPOTPerBSLinearRegressor",
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
-    def get_coefficients(self) -> Dict[str, float]:
-        if self._coeffs is None:
+    def get_coefficients(self) -> Dict[str, Dict[str, float]]:
+        if not self._coeffs_by_bs:
             raise RuntimeError("regressor is not fitted yet")
         return {
-            "a": self._coeffs.a,
-            "b": self._coeffs.b,
-            "c": self._coeffs.c,
+            str(bs): {"slope": c.slope, "intercept": c.intercept}
+            for bs, c in sorted(self._coeffs_by_bs.items())
         }
 
     @property
@@ -184,8 +198,7 @@ if __name__ == "__main__":
     coeff_file = regressor.save_coefficients_json()
 
     print(f"[TPOT4] loaded points: {loaded}")
-    print(
-        "[TPOT4] coeffs (seconds): "
-        f"a={coeffs.a:.6e}, b={coeffs.b:.6e}, c={coeffs.c:.6e}"
-    )
+    print("[TPOT4] per-bs coeffs (seconds):")
+    for bs, c in sorted(coeffs.items()):
+        print(f"  bs={bs}: slope={c.slope:.6e}, intercept={c.intercept:.6e}")
     print(f"[TPOT4] coefficients saved to: {coeff_file}")

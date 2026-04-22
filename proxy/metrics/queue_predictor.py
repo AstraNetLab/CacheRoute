@@ -100,27 +100,46 @@ def load_redis_pull_coefficients(
     return coeffs
 
 
-def load_tpot_coefficients(coeff_path: str | Path = DEFAULT_TPOT_COEFF_PATH) -> Dict[str, float]:
-    """Load TPOT a/b/c coefficients from JSON file."""
+def load_tpot_coefficients(coeff_path: str | Path = DEFAULT_TPOT_COEFF_PATH) -> Dict[str, object]:
+    """Load TPOT coefficients from JSON file.
+
+    Supported formats:
+    1) per-bs linear:
+       {"mode":"per_bs_linear","by_bs":{"1":{"slope":...,"intercept":...}, ...}}
+    2) legacy global linear:
+       {"a":...,"b":...,"c":...}
+    """
     path = Path(coeff_path)
     payload = json.loads(path.read_text(encoding="utf-8"))
 
+    if payload.get("mode") == "per_bs_linear":
+        raw_by_bs = payload.get("by_bs")
+        if not isinstance(raw_by_bs, dict) or not raw_by_bs:
+            raise ValueError("invalid per_bs_linear coeff format: by_bs must be non-empty dict")
+        by_bs: Dict[int, Dict[str, float]] = {}
+        for bs_key, item in raw_by_bs.items():
+            by_bs[int(bs_key)] = {
+                "slope": float(item["slope"]),
+                "intercept": float(item["intercept"]),
+            }
+        return {"mode": "per_bs_linear", "by_bs": by_bs}
+
     try:
-        coeffs = {
+        return {
+            "mode": "global_linear",
             "a": float(payload["a"]),
             "b": float(payload["b"]),
             "c": float(payload["c"]),
         }
     except KeyError as exc:
         raise ValueError(f"missing coefficient key: {exc}") from exc
-    return coeffs
 
 
 def queue_predictor(
     length: int,
     bs: Optional[int] = None,
     *,
-    coeffs: Optional[Dict[str, float]] = None,
+    coeffs: Optional[Dict[str, object]] = None,
     coeff_path: str | Path = DEFAULT_COEFF_PATH,
 ) -> float:
     """Predict TTFT compute time by batch-size and prompt length.
@@ -176,11 +195,22 @@ def decode_tpot_predictor(
         raise ValueError("bs must be positive")
 
     c = coeffs or load_tpot_coefficients(coeff_path)
-    pred = (
-        float(c["a"]) * batch_size
-        + float(c["b"]) * int(length)
-        + float(c["c"])
-    )
+    if c.get("mode") == "per_bs_linear":
+        by_bs = c.get("by_bs")
+        if not isinstance(by_bs, dict) or not by_bs:
+            raise ValueError("invalid tpot per_bs_linear coefficients")
+        if batch_size in by_bs:
+            line = by_bs[batch_size]
+        else:
+            nearest_bs = min(by_bs.keys(), key=lambda k: abs(int(k) - batch_size))
+            line = by_bs[nearest_bs]
+        pred = float(line["slope"]) * int(length) + float(line["intercept"])
+    else:
+        pred = (
+            float(c["a"]) * batch_size
+            + float(c["b"]) * int(length)
+            + float(c["c"])
+        )
     return max(0.0, float(pred))
 
 
