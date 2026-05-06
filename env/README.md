@@ -4,11 +4,13 @@
 ### 一、容器基本操作
 新建容器（多卡）
 ```commandline
-docker run --gpus all -it --rm \
+docker run --gpus all -it \
+  --network host \
   --ipc=host \
   --shm-size=64g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
-  -p 8000:8000 \
+  --memory=0 \
+  --memory-swap=0 \
   -v /llm-stack:/workspace/llm-stack \
   basic-cu128:with-pytorch2.9.1 bash
 ```
