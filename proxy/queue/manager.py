@@ -42,7 +42,7 @@ class QueueManager:
     _READY_DEQUEUE_INTERVAL_S = 0.02
     _PREFILL_DECODE_TAIL_TOKENS = 1
     _KV_ALIGN_TOKENS = 256
-    _KV_GB_PER_TOKEN = 0.0000381
+    _KV_MB_PER_TOKEN = 0.096
     _KV_BW_UTIL = 0.825
 
     def __init__(self) -> None:
@@ -103,9 +103,8 @@ class QueueManager:
 
         effective_knowledge_len = self._effective_knowledge_len(knowledge_len)
         residual_tokens = max(1, prompt_len + (knowledge_len - effective_knowledge_len) + header_overhead)
-        redis_kv_load_ms = float(
-            predict_redis_pull_ms(kvcache_size_gb=effective_knowledge_len * self._KV_GB_PER_TOKEN)
-        )
+        kv_size_mb = effective_knowledge_len * self._KV_MB_PER_TOKEN
+        redis_kv_load_ms = float(predict_redis_pull_ms(kvcache_size_gb=(kv_size_mb / 1024.0)))
         residual_prefill_s = max(0.0, queue_predictor(length=residual_tokens, bs=1))
         task.trace["predict_text_prefill_ms"] = 0
         task.trace["predict_redis_kv_load_ms"] = int(redis_kv_load_ms)
@@ -432,12 +431,12 @@ class QueueManager:
                 kdn_addr = str(task.kdn_addr or "").strip()
                 item = links.get(kdn_addr) or links.get(f"kdn://{kdn_addr}") or links.get(f"http://{kdn_addr}") or {}
                 bandwidth_mbps = float(item.get("bandwidth_mbps", 0.0) or 0.0)
-                link_bandwidth = max(1e-9, bandwidth_mbps / 1000.0)
-                effective_bandwidth = link_bandwidth * self._KV_BW_UTIL
+                bandwidth_MBps = max(1e-9, bandwidth_mbps / 8.0)
+                effective_bandwidth = bandwidth_MBps * self._KV_BW_UTIL
                 know_len = int(getattr(svc, "Knowledge_length", 0) or 0)
                 effective_knowledge_len = self._effective_knowledge_len(know_len)
-                kv_transfer_gb = effective_knowledge_len * self._KV_GB_PER_TOKEN
-                kv_transfer_s = (kv_transfer_gb / effective_bandwidth) if effective_bandwidth > 0 else 0.0
+                kv_size_mb = effective_knowledge_len * self._KV_MB_PER_TOKEN
+                kv_transfer_s = (kv_size_mb / effective_bandwidth) if effective_bandwidth > 0 else 0.0
                 link_key = f"{task.instance_id}|{kdn_addr or 'unknown'}"
                 now_s = time.time()
                 lock = self._get_kdn_kv_link_lock(link_key)
@@ -694,7 +693,9 @@ class QueueManager:
                                     "[Timing] rid=%s instance=%s "
                                     "stage=%s active_decode=%s "
                                     "pred(total/know_prepare/queue_wait/vllm_internal/decode)=%s/%s/%s/%s/%s ms "
-                                    "pred_ts(first_token/forward_end/worker_free)=%s/%s/%s "
+                                    "pred(extra prepare_qwait/kv_transfer/redis_load/residual_prefill/prefill_service)=%s/%s/%s/%s/%s ms "
+                                    "pred(tokens total/reused/residual)=%s/%s/%s "
+                                    "kv_ack(payload_bytes/net_q/net_xfer/net_total)=%s/%s/%s/%s "
                                     "actual(total/know_prepare/ready_queue/vllm_internal)=%s/%s/%s/%s ms "
                                     "predict_error=%s ms",
                                     task.request_id,
@@ -706,9 +707,18 @@ class QueueManager:
                                     task.trace.get("predict_queue_wait_ms"),
                                     task.trace.get("predict_vllm_internal_ms"),
                                     task.trace.get("predict_decode_ms"),
-                                    task.trace.get("pred_first_token_ts_ms"),
-                                    task.trace.get("pred_forward_end_ts_ms"),
-                                    task.trace.get("pred_worker_free_ts_ms"),
+                                    task.trace.get("predict_prepare_queue_wait_ms"),
+                                    task.trace.get("predict_kv_transfer_ms"),
+                                    task.trace.get("predict_redis_kv_load_ms"),
+                                    task.trace.get("predict_residual_prefill_ms"),
+                                    task.trace.get("predict_prefill_service_ms"),
+                                    task.trace.get("predict_total_tokens"),
+                                    task.trace.get("predict_reused_tokens"),
+                                    task.trace.get("predict_residual_tokens"),
+                                    task.kv_ack.get("payload_bytes"),
+                                    task.kv_ack.get("network_queue_ms"),
+                                    task.kv_ack.get("network_transfer_ms"),
+                                    task.kv_ack.get("network_total_ms"),
                                     task.trace.get("actual_total_ms"),
                                     task.trace.get("actual_know_prepare_ms"),
                                     task.trace.get("actual_ready_queue_ms"),
