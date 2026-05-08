@@ -561,6 +561,34 @@ class QueueManager:
                                 task.trace["kv_ack_start_ms"] = _now_ms()
                                 kv_ack = await self._inject_ready_kv_via_instance(task)
                                 task.trace["kv_ack_end_ms"] = _now_ms()
+                                kv_ack_end_ms = float(task.trace.get("kv_ack_end_ms", 0) or 0)
+                                kv_ack_start_ms = float(task.trace.get("kv_ack_start_ms", 0) or 0)
+                                if kv_ack_end_ms > 0:
+                                    actual_done_s = kv_ack_end_ms / 1000.0
+                                    kdn_addr = str(task.kdn_addr or "").strip()
+                                    link_key = f"{task.instance_id}|{kdn_addr or 'unknown'}"
+                                    lock = self._get_kdn_kv_link_lock(link_key)
+                                    async with lock:
+                                        old_free_s = self._kdn_kv_link_free_ts_s.get(link_key, actual_done_s)
+                                        self._kdn_kv_link_free_ts_s[link_key] = max(old_free_s, actual_done_s)
+                                        kdn_link_free_after = self._kdn_kv_link_free_ts_s[link_key]
+                                    task.trace["kdn_link_free_before"] = int(old_free_s * 1000.0)
+                                    task.trace["kdn_link_free_after"] = int(kdn_link_free_after * 1000.0)
+                                else:
+                                    task.trace["kdn_link_free_before"] = int(time.time() * 1000.0)
+                                    task.trace["kdn_link_free_after"] = task.trace["kdn_link_free_before"]
+                                task.trace["actual_prepare_ms"] = int(max(0.0, kv_ack_end_ms - kv_ack_start_ms))
+                                logger.info(
+                                    "[Prepare][KVLink] rid=%s predict_prepare_ms=%s actual_prepare_ms=%s "
+                                    "kdn_link_free_before=%s kdn_link_free_after=%s kv_ack_start_ms=%s kv_ack_end_ms=%s",
+                                    task.request_id,
+                                    task.trace.get("predict_prepare_ms"),
+                                    task.trace.get("actual_prepare_ms"),
+                                    task.trace.get("kdn_link_free_before"),
+                                    task.trace.get("kdn_link_free_after"),
+                                    task.trace.get("kv_ack_start_ms"),
+                                    task.trace.get("kv_ack_end_ms"),
+                                )
 
                                 task.kv_ack = kv_ack
                                 logger.info(
