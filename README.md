@@ -171,8 +171,9 @@ Python版本：3.12.11<br>
     ```
     echo 'export PYTHONPATH=/workspace/llm-stack/CacheRoute' >> ~/.bashrc
     ```
-    此外，proxy开启iws策略后，会接管注入策略，此时client测发送的Injection-type将被覆盖而失效。
-11. 此时scheduler/proxy/instance待完成启动后会发布INFO并等待请求接收，待都启动完毕后，进入client，发现显示<client>，输入http请求即可实现快速示例。
+    此外，proxy注入策略默认为text，开启iws策略后，会接管注入策略，此时client测发送的Injection-type将被覆盖而失效。
+    
+12. 此时scheduler/proxy/instance待完成启动后会发布INFO并等待请求接收，待都启动完毕后，进入client，发现显示<client>，输入http请求即可实现快速示例。
    注意，此处url应为调度器监听地址与端口，确保http请求解析并发往调度器，此处给出基于本地测试的三个请求demo。<br>
 - chat模式(流式与非流式，是否启用RAG)
     ```
