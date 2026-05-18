@@ -480,10 +480,65 @@ async def proxy_chat_completions(request: FastAPIRequest):
     logger.info("[Proxy] instance chosen(chat): id=%s addr=%s:%s", getattr(chosen, "instance_id", "?"), host, port)
     strategy_name = getattr(proxy.state, "injection_strategy_name", "default")
     if strategy_name == "iws":
-        logger.info(
-            "[Proxy][IWS] dry-run disabled, keep request Injection_type=%s",
-            getattr(req_obj.Service, "Injection_type", None),
-        )
+        original_mode = getattr(req_obj.Service, "Injection_type", "text")
+        applied_mode = original_mode
+        try:
+            costs = await queue_mgr.estimate_iws_costs(
+                req_obj=req_obj,
+                instance_id=chosen.instance_id,
+                kdn_addr=getattr(req_obj.Task, "KDN_server_addr", None),
+            )
+            rag_enabled = bool(getattr(req_obj.Service, "Enable_know_injection", False))
+            knowledge_len = int(getattr(req_obj.Service, "Knowledge_length", 0) or 0)
+            knowledge_list = getattr(req_obj.Service, "Knowledge_List", []) or []
+            if (not rag_enabled) or knowledge_len <= 0 or (not knowledge_list):
+                iws_suggest = "text"
+                iws_reason = "no_rag_or_empty_knowledge"
+            elif costs.get("kv_hidden_by_ready_wait"):
+                iws_suggest = "kvcache"
+                iws_reason = "kv_hidden_by_ready_wait"
+            elif (costs.get("kvcache_total_ms") or 0) < (costs.get("text_total_ms") or 0):
+                iws_suggest = "kvcache"
+                iws_reason = "kvcache_total_smaller"
+            else:
+                iws_suggest = "text"
+                iws_reason = "text_total_smaller"
+            req_obj.Service.Injection_type = iws_suggest
+            applied_mode = iws_suggest
+            logger.info(
+                "[Proxy][IWS] rid=%s original=%s iws_suggest=%s applied=%s reason=%s ready_wait=%s "
+                "kv_prepare=%s kv_hidden=%s text_total=%s kvcache_total=%s "
+                "text_service=%s kvcache_service=%s kv_transfer=%s kv_queue_wait=%s "
+                "redis_load=%s residual_prefill=%s effective_len=%s residual_tokens=%s "
+                "bw=%s bw_src=%s",
+                req_obj.Request_ID,
+                original_mode,
+                iws_suggest,
+                applied_mode,
+                iws_reason,
+                costs.get("ready_wait_ms"),
+                costs.get("kvcache_prepare_ms"),
+                costs.get("kv_hidden_by_ready_wait"),
+                costs.get("text_total_ms"),
+                costs.get("kvcache_total_ms"),
+                costs.get("text_service_ms"),
+                costs.get("kvcache_service_ms"),
+                costs.get("kv_transfer_ms"),
+                costs.get("kv_queue_wait_ms"),
+                costs.get("redis_load_ms"),
+                costs.get("residual_prefill_ms"),
+                costs.get("effective_knowledge_len"),
+                costs.get("residual_tokens"),
+                costs.get("bandwidth_mbps"),
+                costs.get("bandwidth_source"),
+            )
+        except Exception as e:
+            logger.warning(
+                "[Proxy][IWS] estimate_iws_costs failed rid=%s err=%s keep=%s",
+                req_obj.Request_ID,
+                str(e),
+                original_mode,
+            )
 
     # ====================================
     # 送入队列enqueue -> manager -> forward
@@ -557,10 +612,65 @@ async def proxy_completions(request: FastAPIRequest):
     logger.info("[Proxy] instance chosen(completions): id=%s addr=%s:%s", getattr(chosen, "instance_id", "?"), host, port)
     strategy_name = getattr(proxy.state, "injection_strategy_name", "default")
     if strategy_name == "iws":
-        logger.info(
-            "[Proxy][IWS] dry-run disabled, keep request Injection_type=%s",
-            getattr(req_obj.Service, "Injection_type", None),
-        )
+        original_mode = getattr(req_obj.Service, "Injection_type", "text")
+        applied_mode = original_mode
+        try:
+            costs = await queue_mgr.estimate_iws_costs(
+                req_obj=req_obj,
+                instance_id=chosen.instance_id,
+                kdn_addr=getattr(req_obj.Task, "KDN_server_addr", None),
+            )
+            rag_enabled = bool(getattr(req_obj.Service, "Enable_know_injection", False))
+            knowledge_len = int(getattr(req_obj.Service, "Knowledge_length", 0) or 0)
+            knowledge_list = getattr(req_obj.Service, "Knowledge_List", []) or []
+            if (not rag_enabled) or knowledge_len <= 0 or (not knowledge_list):
+                iws_suggest = "text"
+                iws_reason = "no_rag_or_empty_knowledge"
+            elif costs.get("kv_hidden_by_ready_wait"):
+                iws_suggest = "kvcache"
+                iws_reason = "kv_hidden_by_ready_wait"
+            elif (costs.get("kvcache_total_ms") or 0) < (costs.get("text_total_ms") or 0):
+                iws_suggest = "kvcache"
+                iws_reason = "kvcache_total_smaller"
+            else:
+                iws_suggest = "text"
+                iws_reason = "text_total_smaller"
+            req_obj.Service.Injection_type = iws_suggest
+            applied_mode = iws_suggest
+            logger.info(
+                "[Proxy][IWS] rid=%s original=%s iws_suggest=%s applied=%s reason=%s ready_wait=%s "
+                "kv_prepare=%s kv_hidden=%s text_total=%s kvcache_total=%s "
+                "text_service=%s kvcache_service=%s kv_transfer=%s kv_queue_wait=%s "
+                "redis_load=%s residual_prefill=%s effective_len=%s residual_tokens=%s "
+                "bw=%s bw_src=%s",
+                req_obj.Request_ID,
+                original_mode,
+                iws_suggest,
+                applied_mode,
+                iws_reason,
+                costs.get("ready_wait_ms"),
+                costs.get("kvcache_prepare_ms"),
+                costs.get("kv_hidden_by_ready_wait"),
+                costs.get("text_total_ms"),
+                costs.get("kvcache_total_ms"),
+                costs.get("text_service_ms"),
+                costs.get("kvcache_service_ms"),
+                costs.get("kv_transfer_ms"),
+                costs.get("kv_queue_wait_ms"),
+                costs.get("redis_load_ms"),
+                costs.get("residual_prefill_ms"),
+                costs.get("effective_knowledge_len"),
+                costs.get("residual_tokens"),
+                costs.get("bandwidth_mbps"),
+                costs.get("bandwidth_source"),
+            )
+        except Exception as e:
+            logger.warning(
+                "[Proxy][IWS] estimate_iws_costs failed rid=%s err=%s keep=%s",
+                req_obj.Request_ID,
+                str(e),
+                original_mode,
+            )
 
     # ==================================
     # 送入队列enqueue -> drain -> forward
