@@ -52,6 +52,13 @@ PROXY_MAX_CAPACITY = int(os.environ.get("PROXY_MAX_CAPACITY", config.PROXY_MAX_C
 PROXY_INSTANCE_COUNT = int(os.environ.get("PROXY_INSTANCE_COUNT", config.PROXY_INSTANCE_COUNT))
 PROXY_KV_MEM_PER_INSTANCE_GB = float(os.environ.get("PROXY_KV_MEM_PER_INSTANCE_GB", config.PROXY_KV_MEM_PER_INSTANCE_GB))
 PROXY_KV_CACHE_UPDATE_POLICY = os.environ.get("PROXY_KV_CACHE_UPDATE_POLICY", config.PROXY_KV_CACHE_UPDATE_POLICY)
+PROXY_INJECTION_STRATEGY = os.environ.get("PROXY_INJECTION_STRATEGY", "default").strip().lower()
+if PROXY_INJECTION_STRATEGY not in {"default", "iws"}:
+    logger.warning(
+        "[Proxy] invalid PROXY_INJECTION_STRATEGY=%s, fallback to default",
+        PROXY_INJECTION_STRATEGY,
+    )
+    PROXY_INJECTION_STRATEGY = "default"
 
 # NOTE:
 # This is a TEMPORARY fallback for legacy request path.
@@ -106,6 +113,8 @@ async def lifespan(app: FastAPI):
       - shutdown: 优雅注销（非强依赖，kill -9 情况靠 TTL 清理）
     """
     _squelch_noisy_loggers()
+    app.state.injection_strategy_name = PROXY_INJECTION_STRATEGY  # type: ignore
+    logger.info("[Proxy] injection strategy=%s", app.state.injection_strategy_name)
     # --- 初始化实例池，并注入proxy控制平面 ---
     ttl_s = int(os.environ.get("PROXY_INSTANCE_TTL_S", config.INSTANCE_ALIVE_TTL_S))
     app.state.instance_pool = InstancePool(ttl_s=ttl_s)  # type: ignore
@@ -469,6 +478,47 @@ async def proxy_chat_completions(request: FastAPIRequest):
     port = int(chosen.port)
     url_path = "/v1/chat/completions"
     logger.info("[Proxy] instance chosen(chat): id=%s addr=%s:%s", getattr(chosen, "instance_id", "?"), host, port)
+    strategy_name = getattr(proxy.state, "injection_strategy_name", "default")
+    if strategy_name == "iws":
+        original_mode = getattr(req_obj.Service, "Injection_type", "text")
+        try:
+            costs = await queue_mgr.estimate_iws_costs(
+                req_obj=req_obj,
+                instance_id=chosen.instance_id,
+                kdn_addr=getattr(req_obj.Task, "KDN_server_addr", None),
+            )
+            logger.info(
+                "[Proxy][IWS][DryRun] rid=%s original=%s ready_wait=%s "
+                "kv_prepare=%s kv_hidden=%s text_total=%s kvcache_total=%s "
+                "text_service=%s kvcache_service=%s kv_transfer=%s kv_queue_wait=%s "
+                "redis_load=%s residual_prefill=%s effective_len=%s residual_tokens=%s "
+                "bw=%s bw_src=%s keep=%s",
+                req_obj.Request_ID,
+                original_mode,
+                costs.get("ready_wait_ms"),
+                costs.get("kvcache_prepare_ms"),
+                costs.get("kv_hidden_by_ready_wait"),
+                costs.get("text_total_ms"),
+                costs.get("kvcache_total_ms"),
+                costs.get("text_service_ms"),
+                costs.get("kvcache_service_ms"),
+                costs.get("kv_transfer_ms"),
+                costs.get("kv_queue_wait_ms"),
+                costs.get("redis_load_ms"),
+                costs.get("residual_prefill_ms"),
+                costs.get("effective_knowledge_len"),
+                costs.get("residual_tokens"),
+                costs.get("bandwidth_mbps"),
+                costs.get("bandwidth_source"),
+                original_mode,
+            )
+        except Exception as e:
+            logger.warning(
+                "[Proxy][IWS][DryRun] estimate_iws_costs failed rid=%s err=%s keep=%s",
+                req_obj.Request_ID,
+                str(e),
+                original_mode,
+            )
 
     # ====================================
     # 送入队列enqueue -> manager -> forward
@@ -540,6 +590,47 @@ async def proxy_completions(request: FastAPIRequest):
     url_path = "/v1/completions"
 
     logger.info("[Proxy] instance chosen(completions): id=%s addr=%s:%s", getattr(chosen, "instance_id", "?"), host, port)
+    strategy_name = getattr(proxy.state, "injection_strategy_name", "default")
+    if strategy_name == "iws":
+        original_mode = getattr(req_obj.Service, "Injection_type", "text")
+        try:
+            costs = await queue_mgr.estimate_iws_costs(
+                req_obj=req_obj,
+                instance_id=chosen.instance_id,
+                kdn_addr=getattr(req_obj.Task, "KDN_server_addr", None),
+            )
+            logger.info(
+                "[Proxy][IWS][DryRun] rid=%s original=%s ready_wait=%s "
+                "kv_prepare=%s kv_hidden=%s text_total=%s kvcache_total=%s "
+                "text_service=%s kvcache_service=%s kv_transfer=%s kv_queue_wait=%s "
+                "redis_load=%s residual_prefill=%s effective_len=%s residual_tokens=%s "
+                "bw=%s bw_src=%s keep=%s",
+                req_obj.Request_ID,
+                original_mode,
+                costs.get("ready_wait_ms"),
+                costs.get("kvcache_prepare_ms"),
+                costs.get("kv_hidden_by_ready_wait"),
+                costs.get("text_total_ms"),
+                costs.get("kvcache_total_ms"),
+                costs.get("text_service_ms"),
+                costs.get("kvcache_service_ms"),
+                costs.get("kv_transfer_ms"),
+                costs.get("kv_queue_wait_ms"),
+                costs.get("redis_load_ms"),
+                costs.get("residual_prefill_ms"),
+                costs.get("effective_knowledge_len"),
+                costs.get("residual_tokens"),
+                costs.get("bandwidth_mbps"),
+                costs.get("bandwidth_source"),
+                original_mode,
+            )
+        except Exception as e:
+            logger.warning(
+                "[Proxy][IWS][DryRun] estimate_iws_costs failed rid=%s err=%s keep=%s",
+                req_obj.Request_ID,
+                str(e),
+                original_mode,
+            )
 
     # ==================================
     # 送入队列enqueue -> drain -> forward
