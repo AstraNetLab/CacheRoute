@@ -46,42 +46,32 @@ def is_stream(body: Dict[str, Any]) -> bool:
 
 
 def check_trace_order(trace: Dict[str, int]) -> List[str]:
-    ordered_keys = [
-        "proxy_recv_ms",
-        "proxy_enqueue_ms",
-        "prepare_queue_enqueue_ms",
-        "prepare_dequeue_ms",
-        "prepare_start_ms",
-        "kdn_fetch_start_ms",
-        "kdn_fetch_end_ms",
-        "kv_ack_start_ms",
-        "kv_ack_end_ms",
-        "kv_inject_queue_enqueue_ms",
-        "kv_inject_start_ms",
-        "kv_inject_end_ms",
-        "text_prefill_build_start_ms",
-        "text_prefill_build_end_ms",
-        "ready_enqueue_ms",
-        "ready_dequeue_ms",
-        "forward_wait_start_ms",
-        "forward_wait_end_ms",
-        "forward_start_ms",
-        "first_token_ms",
-    ]
     warnings: List[str] = []
-
-    prev_key: Optional[str] = None
-    prev_val: Optional[int] = None
-    for key in ordered_keys:
-        if key not in trace:
+    ordered_pairs = [
+        ("proxy_recv_ms", "proxy_enqueue_ms"),
+        ("prepare_queue_enqueue_ms", "prepare_dequeue_ms"),
+        ("prepare_dequeue_ms", "prepare_start_ms"),
+        ("kdn_fetch_start_ms", "kdn_fetch_end_ms"),
+        ("kv_inject_queue_enqueue_ms", "kv_inject_start_ms"),
+        ("kv_inject_start_ms", "kv_ack_start_ms"),
+        ("kv_ack_start_ms", "kv_ack_end_ms"),
+        ("kv_ack_end_ms", "kv_inject_end_ms"),
+        ("text_prefill_build_start_ms", "text_prefill_build_end_ms"),
+        ("ready_enqueue_ms", "ready_dequeue_ms"),
+        ("ready_dequeue_ms", "forward_wait_start_ms"),
+        ("forward_wait_start_ms", "forward_wait_end_ms"),
+        ("forward_wait_end_ms", "forward_start_ms"),
+        ("forward_start_ms", "first_token_ms"),
+    ]
+    for left_key, right_key in ordered_pairs:
+        if left_key not in trace or right_key not in trace:
             continue
-        current_val = int(trace[key])
-        if prev_key is not None and prev_val is not None and current_val < prev_val:
+        left_val = int(trace[left_key])
+        right_val = int(trace[right_key])
+        if right_val < left_val:
             warnings.append(
-                f"trace timestamp order violation: {prev_key}={prev_val} > {key}={current_val}"
+                f"trace timestamp order violation: {left_key}={left_val} > {right_key}={right_val}"
             )
-        prev_key = key
-        prev_val = current_val
 
     return warnings
 
@@ -164,6 +154,12 @@ def calc_metrics(trace: Dict[str, int]) -> Dict[str, Optional[int]]:
         "vllm_first_token_ms": vllm_first_token_ms,
         "instance_exec_to_first_token_ms": instance_exec_to_first_token_ms,
         "kv_ack_ms": kv_ack_ms,
+        "actual_prepare_total_ms": trace.get("actual_prepare_total_ms"),
+        "prepare_buffer_wait_ms": trace.get("prepare_buffer_wait_ms"),
+        "actual_ready_queue_ms": trace.get("actual_ready_queue_ms"),
+        "actual_vllm_internal_ms": trace.get("actual_vllm_internal_ms"),
+        "predict_queue_wait_ms": trace.get("predict_queue_wait_ms"),
+        "predict_error_ms": trace.get("predict_error_ms"),
     }
 
 
@@ -171,19 +167,23 @@ def check_trace_integrity(trace: Dict[str, int], injection_type: str) -> List[st
     warnings: List[str] = []
     mode = str(injection_type or "").strip().lower()
     if mode == "kvcache":
-        required_pairs = [
-            ("kdn_fetch_start_ms", "kdn_fetch_end_ms"),
-            ("kv_ack_start_ms", "kv_ack_end_ms"),
-            ("kv_inject_start_ms", "kv_inject_end_ms"),
-        ]
-        for sk, ek in required_pairs:
-            if sk not in trace or ek not in trace:
-                warnings.append(f"kvcache trace missing {sk}/{ek}")
+        path = str(trace.get("kvcache_actual_path", "") or "")
+        if path == "kv_inject":
+            required_pairs = [
+                ("kdn_fetch_start_ms", "kdn_fetch_end_ms"),
+                ("kv_ack_start_ms", "kv_ack_end_ms"),
+                ("kv_inject_start_ms", "kv_inject_end_ms"),
+            ]
+            for sk, ek in required_pairs:
+                if sk not in trace or ek not in trace:
+                    warnings.append(f"kvcache trace missing {sk}/{ek}")
     if mode == "text":
-        if "text_prefill_build_start_ms" not in trace or "text_prefill_build_end_ms" not in trace:
-            warnings.append("text trace missing text_prefill_build_start_ms/text_prefill_build_end_ms")
-        if "prepare_start_ms" not in trace or "ready_enqueue_ms" not in trace:
-            warnings.append("text trace missing prepare_start_ms/ready_enqueue_ms")
+        path = str(trace.get("text_actual_path", "") or "")
+        if path == "text_inject":
+            if "text_prefill_build_start_ms" not in trace or "text_prefill_build_end_ms" not in trace:
+                warnings.append("text trace missing text_prefill_build_start_ms/text_prefill_build_end_ms")
+            if "prepare_start_ms" not in trace or "ready_enqueue_ms" not in trace:
+                warnings.append("text trace missing prepare_start_ms/ready_enqueue_ms")
     return warnings
 
 
@@ -487,6 +487,12 @@ def summarize(
         ("vllm_first_token_ms", "Average vLLM first token time"),
         ("instance_exec_to_first_token_ms", "Average instance execution to first token"),
         ("kv_ack_ms", "Average kv ack time"),
+        ("actual_prepare_total_ms", "Average actual prepare total time"),
+        ("prepare_buffer_wait_ms", "Average prepare buffer wait time"),
+        ("actual_ready_queue_ms", "Average actual ready queue time"),
+        ("actual_vllm_internal_ms", "Average actual vLLM internal time"),
+        ("predict_queue_wait_ms", "Average predict queue wait time"),
+        ("predict_error_ms", "Average predict error time"),
     ]
 
     for metric_key, metric_label in metric_names:
@@ -741,7 +747,7 @@ def main() -> None:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=64,
+        default=1,
         help="max tokens",
     )
     parser.add_argument(

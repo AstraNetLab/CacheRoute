@@ -825,8 +825,9 @@ class QueueManager:
                 enable_rag = bool(getattr(svc, "Enable_know_injection", False))
                 knowledge_ids = getattr(svc, "Knowledge_List", []) or []
                 injection_type = getattr(svc, "Injection_type", "text")
+                injection_mode = str(injection_type or "text").strip().lower()
 
-                if enable_rag and knowledge_ids and injection_type in ("text", "kvcache"):
+                if enable_rag and knowledge_ids and injection_mode in ("text", "kvcache"):
                     kdn_addr = (task.kdn_addr or "").strip()
                     if not kdn_addr:
                         logger.warning("[Prepare] rid=%s no kdn_addr", task.request_id)
@@ -856,7 +857,8 @@ class QueueManager:
                     )
 
                     endpoint_type = getattr(svc, "Endpoint_type", "chat/completions")
-                    if str(injection_type).strip().lower() == "text":
+                    if injection_mode == "text":
+                        task.trace["text_actual_path"] = "text_inject"
                         task.trace["text_prefill_build_start_ms"] = _now_ms()
                     task.instance_body = inject_rag_into_instance_body(
                         instance_body=task.instance_body,
@@ -864,7 +866,7 @@ class QueueManager:
                         retrieved_context=ctx,
                         injection_type=injection_type,
                     )
-                    if str(injection_type).strip().lower() == "text":
+                    if injection_mode == "text":
                         task.trace["text_prefill_build_end_ms"] = _now_ms()
                     task.trace["prompt_injected_ms"] = _now_ms()
 
@@ -889,9 +891,10 @@ class QueueManager:
                         q.active_prepare,
                     )
 
-                    if injection_type == "kvcache":
+                    if injection_mode == "kvcache":
                         if task.kv_ready_kids:
                             try:
+                                task.trace["kvcache_actual_path"] = "kv_inject"
                                 kdn_addr = str(task.kdn_addr or "").strip()
                                 link_key = f"{task.instance_id}|{kdn_addr or 'unknown'}"
                                 kv_transfer_s = await self._predict_kv_transfer_s(task)
@@ -999,7 +1002,9 @@ class QueueManager:
                                     kv_ack.get("keys_injected", 0),
                                 )
                             except Exception as e:
+                                task.trace["kvcache_actual_path"] = "kv_inject_failed_fallback_text"
                                 task.trace["kv_ack_end_ms"] = _now_ms()
+                                task.trace["kv_inject_end_ms"] = int(task.trace.get("kv_ack_end_ms", _now_ms()) or _now_ms())
                                 task.trace["prepare_self_done_ms"] = int(task.trace.get("kv_ack_end_ms", 0) or 0)
                                 pending = self._kdn_kv_pending_tasks.get(link_key, [])
                                 self._kdn_kv_pending_tasks[link_key] = [x for x in pending if x is not task]
@@ -1014,6 +1019,7 @@ class QueueManager:
                                 logger.exception("[Prepare] rid=%s kv inject ack failed, fallback text-only",
                                                  task.request_id)
                         else:
+                            task.trace["kvcache_actual_path"] = "no_kv_ready_fallback_text"
                             kdn_addr = str(task.kdn_addr or "").strip()
                             link_key = f"{task.instance_id}|{kdn_addr or 'unknown'}"
                             pending = self._kdn_kv_pending_tasks.get(link_key, [])
@@ -1028,12 +1034,14 @@ class QueueManager:
                             }
                             logger.info("[Prepare] rid=%s no kv_ready_kids, fallback text-only", task.request_id)
                 else:
+                    if injection_mode == "text":
+                        task.trace["text_actual_path"] = "no_rag_or_empty_knowledge"
                     logger.info(
                         "[Prepare] skip knowledge injection request_id(rid)=%s enable_rag=%s injection=None kids=%s",
                         task.request_id, enable_rag, len(knowledge_ids)
                     )
 
-                if str(injection_type).strip().lower() == "text":
+                if injection_mode == "text":
                     prepare_done_ms = _now_ms()
                     task.trace["prepare_self_done_ms"] = prepare_done_ms
                     proxy_enqueue_ms = int(task.trace.get("proxy_enqueue_ms", prepare_done_ms) or prepare_done_ms)
