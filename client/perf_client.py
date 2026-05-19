@@ -415,7 +415,7 @@ def summarize(
     print("Compact Request Performance Summary")
     print("=" * 160)
     print(
-        "idx | name | injection | status | total_prefill_ms | "
+        "idx | name | injection | server_injection_mode | text_actual_path | kvcache_actual_path | status | total_prefill_ms | "
         "proxy_before_vllm_ms | proxy_queue_wait_ms | ready_dequeue_to_forward_ms | "
         "proxy_wait_until_forward_ms | proxy_enqueue_to_forward_ms | proxy_recv_to_forward_ms | "
         "prepare_queue_wait_ms | prepare_worker_gap_ms | kdn_fetch_ms | kv_ack_ms | "
@@ -428,10 +428,14 @@ def summarize(
 
     for r in results:
         m = r["metrics"]
+        t = r.get("trace", {}) if isinstance(r.get("trace"), dict) else {}
         print(
             f"{r['req_index']:03d} | "
             f"{r['name']} | "
             f"{r['injection_type']} | "
+            f"{fmt(t.get('injection_mode'))} | "
+            f"{fmt(t.get('text_actual_path'))} | "
+            f"{fmt(t.get('kvcache_actual_path'))} | "
             f"{r['http_status']} | "
             f"{fmt(m.get('total_prefill_ms'))} | "
             f"{fmt(m.get('proxy_before_vllm_ms'))} | "
