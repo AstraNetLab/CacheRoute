@@ -53,6 +53,8 @@ PROXY_INSTANCE_COUNT = int(os.environ.get("PROXY_INSTANCE_COUNT", config.PROXY_I
 PROXY_KV_MEM_PER_INSTANCE_GB = float(os.environ.get("PROXY_KV_MEM_PER_INSTANCE_GB", config.PROXY_KV_MEM_PER_INSTANCE_GB))
 PROXY_KV_CACHE_UPDATE_POLICY = os.environ.get("PROXY_KV_CACHE_UPDATE_POLICY", config.PROXY_KV_CACHE_UPDATE_POLICY)
 PROXY_INJECTION_STRATEGY = os.environ.get("PROXY_INJECTION_STRATEGY", "default").strip().lower()
+IWS_KDN_QUEUE_PENALTY_ALPHA = float(os.environ.get("IWS_KDN_QUEUE_PENALTY_ALPHA", "0.5"))
+IWS_DECISION_MARGIN_MS = int(os.environ.get("IWS_DECISION_MARGIN_MS", "100"))
 if PROXY_INJECTION_STRATEGY not in {"default", "iws"}:
     logger.warning(
         "[Proxy] invalid PROXY_INJECTION_STRATEGY=%s, fallback to default",
@@ -494,37 +496,65 @@ async def proxy_chat_completions(request: FastAPIRequest):
             if (not rag_enabled) or knowledge_len <= 0 or (not knowledge_list):
                 iws_suggest = "text"
                 iws_reason = "no_rag_or_empty_knowledge"
-            elif costs.get("kv_hidden_by_ready_wait"):
-                iws_suggest = "kvcache"
-                iws_reason = "kv_hidden_by_ready_wait"
-            elif (costs.get("kvcache_total_ms") or 0) < (costs.get("text_total_ms") or 0):
-                iws_suggest = "kvcache"
-                iws_reason = "kvcache_total_smaller"
             else:
-                iws_suggest = "text"
-                iws_reason = "text_total_smaller"
+                text_total_ms = float(costs.get("text_total_ms") or 0.0)
+                kvcache_total_ms = float(costs.get("kvcache_total_ms") or 0.0)
+                kv_queue_wait_ms = float(costs.get("kv_queue_wait_ms") or 0.0)
+                text_net_wait_ms = float(costs.get("text_net_wait_ms") or 0.0)
+                ready_wait_ms = float(costs.get("ready_wait_ms") or 0.0)
+                kv_prepare_ms = float(costs.get("kvcache_prepare_ms") or 0.0)
+                kdn_queue_penalty_ms = IWS_KDN_QUEUE_PENALTY_ALPHA * kv_queue_wait_ms
+                kvcache_score_ms = kvcache_total_ms + kdn_queue_penalty_ms
+                text_score_ms = text_total_ms
+                costs["kdn_queue_penalty_ms"] = kdn_queue_penalty_ms
+                costs["kvcache_score_ms"] = kvcache_score_ms
+                costs["text_score_ms"] = text_score_ms
+                if kvcache_score_ms + IWS_DECISION_MARGIN_MS < text_score_ms:
+                    iws_suggest = "kvcache"
+                    if kv_prepare_ms <= ready_wait_ms:
+                        iws_reason = "kvcache_hidden_and_score_better"
+                    else:
+                        iws_reason = "kvcache_score_better"
+                else:
+                    iws_suggest = "text"
+                    if kv_queue_wait_ms > 0:
+                        iws_reason = "text_due_to_kdn_congestion"
+                    elif text_net_wait_ms > 0:
+                        iws_reason = "text_despite_active_kv_wait"
+                    else:
+                        iws_reason = "text_score_better"
             req_obj.Service.Injection_type = iws_suggest
             applied_mode = iws_suggest
             logger.info(
                 "[Proxy][IWS] rid=%s original=%s iws_suggest=%s applied=%s reason=%s ready_wait=%s "
-                "kv_prepare=%s kv_hidden=%s text_total=%s kvcache_total=%s "
-                "text_service=%s kvcache_service=%s kv_transfer=%s kv_queue_wait=%s "
-                "redis_load=%s residual_prefill=%s effective_len=%s residual_tokens=%s "
-                "bw=%s bw_src=%s",
+                "text_prepare_wait=%s text_net_wait=%s text_fetch_fixed=%s kdn_active_until=%s "
+                "kv_prepare=%s kv_hidden=%s kv_queue_wait=%s text_total=%s kvcache_total=%s "
+                "text_score=%s kvcache_score=%s kdn_queue_penalty=%s iws_alpha=%s iws_margin=%s "
+                "text_service=%s kvcache_service=%s kv_transfer=%s redis_load=%s residual_prefill=%s "
+                "effective_len=%s residual_tokens=%s bw=%s bw_src=%s",
                 req_obj.Request_ID,
                 original_mode,
                 iws_suggest,
                 applied_mode,
                 iws_reason,
                 costs.get("ready_wait_ms"),
+                costs.get("text_prepare_wait_ms"),
+                costs.get("text_net_wait_ms"),
+                costs.get("text_fetch_fixed_ms"),
+                costs.get("kdn_active_until_ms"),
                 costs.get("kvcache_prepare_ms"),
                 costs.get("kv_hidden_by_ready_wait"),
+                costs.get("kv_queue_wait_ms"),
                 costs.get("text_total_ms"),
                 costs.get("kvcache_total_ms"),
+                costs.get("text_score_ms"),
+                costs.get("kvcache_score_ms"),
+                costs.get("kdn_queue_penalty_ms"),
+                IWS_KDN_QUEUE_PENALTY_ALPHA,
+                IWS_DECISION_MARGIN_MS,
                 costs.get("text_service_ms"),
                 costs.get("kvcache_service_ms"),
                 costs.get("kv_transfer_ms"),
-                costs.get("kv_queue_wait_ms"),
                 costs.get("redis_load_ms"),
                 costs.get("residual_prefill_ms"),
                 costs.get("effective_knowledge_len"),
@@ -626,37 +656,65 @@ async def proxy_completions(request: FastAPIRequest):
             if (not rag_enabled) or knowledge_len <= 0 or (not knowledge_list):
                 iws_suggest = "text"
                 iws_reason = "no_rag_or_empty_knowledge"
-            elif costs.get("kv_hidden_by_ready_wait"):
-                iws_suggest = "kvcache"
-                iws_reason = "kv_hidden_by_ready_wait"
-            elif (costs.get("kvcache_total_ms") or 0) < (costs.get("text_total_ms") or 0):
-                iws_suggest = "kvcache"
-                iws_reason = "kvcache_total_smaller"
             else:
-                iws_suggest = "text"
-                iws_reason = "text_total_smaller"
+                text_total_ms = float(costs.get("text_total_ms") or 0.0)
+                kvcache_total_ms = float(costs.get("kvcache_total_ms") or 0.0)
+                kv_queue_wait_ms = float(costs.get("kv_queue_wait_ms") or 0.0)
+                text_net_wait_ms = float(costs.get("text_net_wait_ms") or 0.0)
+                ready_wait_ms = float(costs.get("ready_wait_ms") or 0.0)
+                kv_prepare_ms = float(costs.get("kvcache_prepare_ms") or 0.0)
+                kdn_queue_penalty_ms = IWS_KDN_QUEUE_PENALTY_ALPHA * kv_queue_wait_ms
+                kvcache_score_ms = kvcache_total_ms + kdn_queue_penalty_ms
+                text_score_ms = text_total_ms
+                costs["kdn_queue_penalty_ms"] = kdn_queue_penalty_ms
+                costs["kvcache_score_ms"] = kvcache_score_ms
+                costs["text_score_ms"] = text_score_ms
+                if kvcache_score_ms + IWS_DECISION_MARGIN_MS < text_score_ms:
+                    iws_suggest = "kvcache"
+                    if kv_prepare_ms <= ready_wait_ms:
+                        iws_reason = "kvcache_hidden_and_score_better"
+                    else:
+                        iws_reason = "kvcache_score_better"
+                else:
+                    iws_suggest = "text"
+                    if kv_queue_wait_ms > 0:
+                        iws_reason = "text_due_to_kdn_congestion"
+                    elif text_net_wait_ms > 0:
+                        iws_reason = "text_despite_active_kv_wait"
+                    else:
+                        iws_reason = "text_score_better"
             req_obj.Service.Injection_type = iws_suggest
             applied_mode = iws_suggest
             logger.info(
                 "[Proxy][IWS] rid=%s original=%s iws_suggest=%s applied=%s reason=%s ready_wait=%s "
-                "kv_prepare=%s kv_hidden=%s text_total=%s kvcache_total=%s "
-                "text_service=%s kvcache_service=%s kv_transfer=%s kv_queue_wait=%s "
-                "redis_load=%s residual_prefill=%s effective_len=%s residual_tokens=%s "
-                "bw=%s bw_src=%s",
+                "text_prepare_wait=%s text_net_wait=%s text_fetch_fixed=%s kdn_active_until=%s "
+                "kv_prepare=%s kv_hidden=%s kv_queue_wait=%s text_total=%s kvcache_total=%s "
+                "text_score=%s kvcache_score=%s kdn_queue_penalty=%s iws_alpha=%s iws_margin=%s "
+                "text_service=%s kvcache_service=%s kv_transfer=%s redis_load=%s residual_prefill=%s "
+                "effective_len=%s residual_tokens=%s bw=%s bw_src=%s",
                 req_obj.Request_ID,
                 original_mode,
                 iws_suggest,
                 applied_mode,
                 iws_reason,
                 costs.get("ready_wait_ms"),
+                costs.get("text_prepare_wait_ms"),
+                costs.get("text_net_wait_ms"),
+                costs.get("text_fetch_fixed_ms"),
+                costs.get("kdn_active_until_ms"),
                 costs.get("kvcache_prepare_ms"),
                 costs.get("kv_hidden_by_ready_wait"),
+                costs.get("kv_queue_wait_ms"),
                 costs.get("text_total_ms"),
                 costs.get("kvcache_total_ms"),
+                costs.get("text_score_ms"),
+                costs.get("kvcache_score_ms"),
+                costs.get("kdn_queue_penalty_ms"),
+                IWS_KDN_QUEUE_PENALTY_ALPHA,
+                IWS_DECISION_MARGIN_MS,
                 costs.get("text_service_ms"),
                 costs.get("kvcache_service_ms"),
                 costs.get("kv_transfer_ms"),
-                costs.get("kv_queue_wait_ms"),
                 costs.get("redis_load_ms"),
                 costs.get("residual_prefill_ms"),
                 costs.get("effective_knowledge_len"),
