@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import random
 import statistics
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -37,6 +38,23 @@ def parse_hybrid_pattern(pattern: str) -> Tuple[int, int]:
     if a <= 0 or b <= 0:
         raise ValueError(f"--hybrid-pattern '{pattern}' is invalid, A and B must be > 0")
     return a, b
+
+
+def parse_gpu_ids(gpu_ids_str: Optional[str]) -> Optional[Set[int]]:
+    if gpu_ids_str is None:
+        return None
+    raw = str(gpu_ids_str).strip()
+    if not raw:
+        return None
+    ids: Set[int] = set()
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            raise ValueError(f"--gpu-ids '{gpu_ids_str}' is invalid, empty GPU id found")
+        if not token.isdigit():
+            raise ValueError(f"--gpu-ids '{gpu_ids_str}' is invalid, '{token}' is not a non-negative integer")
+        ids.add(int(token))
+    return ids
 
 
 def resolve_injection_type(base_injection_type: str, req_index: int, hybrid_pattern: str) -> str:
@@ -83,6 +101,114 @@ def check_trace_order(trace: Dict[str, int]) -> List[str]:
             )
 
     return warnings
+
+
+async def monitor_gpu(
+    stop_event: asyncio.Event,
+    sample_interval_s: float,
+    gpu_ids: Optional[Set[int]],
+) -> List[Dict[str, Any]]:
+    samples: List[Dict[str, Any]] = []
+    warned_unavailable = False
+    nvidia_smi_path = shutil.which("nvidia-smi")
+    if not nvidia_smi_path:
+        print("[GPU] nvidia-smi not available, skip GPU monitoring")
+        return samples
+
+    cmd = [
+        nvidia_smi_path,
+        "--query-gpu=index,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw",
+        "--format=csv,noheader,nounits",
+    ]
+
+    while not stop_event.is_set():
+        ts = time.time()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out_b, err_b = await proc.communicate()
+            if proc.returncode != 0:
+                if not warned_unavailable:
+                    err_msg = err_b.decode("utf-8", errors="replace").strip()
+                    print(f"[GPU] nvidia-smi execution failed, skip GPU monitoring: {err_msg or 'unknown error'}")
+                    warned_unavailable = True
+                break
+            lines = out_b.decode("utf-8", errors="replace").strip().splitlines()
+            for line in lines:
+                cols = [x.strip() for x in line.split(",")]
+                if len(cols) != 6:
+                    continue
+                try:
+                    gpu_index = int(cols[0])
+                    if gpu_ids is not None and gpu_index not in gpu_ids:
+                        continue
+                    samples.append({
+                        "timestamp": ts,
+                        "gpu_index": gpu_index,
+                        "gpu_util": int(cols[1]),
+                        "mem_util": int(cols[2]),
+                        "mem_used_mb": int(cols[3]),
+                        "mem_total_mb": int(cols[4]),
+                        "power_w": float(cols[5]),
+                    })
+                except Exception:
+                    continue
+        except FileNotFoundError:
+            if not warned_unavailable:
+                print("[GPU] nvidia-smi not available, skip GPU monitoring")
+                warned_unavailable = True
+            break
+        except Exception as e:
+            if not warned_unavailable:
+                print(f"[GPU] nvidia-smi execution failed, skip GPU monitoring: {e}")
+                warned_unavailable = True
+            break
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=sample_interval_s)
+        except asyncio.TimeoutError:
+            pass
+
+    return samples
+
+
+def summarize_gpu(samples: List[Dict[str, Any]]) -> None:
+    print("\n" + "=" * 160)
+    print("GPU Utilization Summary")
+    print("=" * 160)
+    if not samples:
+        print("GPU monitoring enabled but no valid samples collected.")
+        print("=" * 160)
+        return
+
+    by_gpu: Dict[int, List[Dict[str, Any]]] = {}
+    for s in samples:
+        gid = int(s.get("gpu_index", -1))
+        by_gpu.setdefault(gid, []).append(s)
+
+    overall_utils: List[float] = []
+    for gid in sorted(by_gpu.keys()):
+        items = by_gpu[gid]
+        gpu_utils = [float(x["gpu_util"]) for x in items]
+        mem_utils = [float(x["mem_util"]) for x in items]
+        mem_used = [float(x["mem_used_mb"]) for x in items]
+        mem_total_vals = [float(x["mem_total_mb"]) for x in items]
+        power_vals = [float(x["power_w"]) for x in items]
+        overall_utils.extend(gpu_utils)
+        mem_total_mb = int(statistics.mean(mem_total_vals)) if mem_total_vals else 0
+        print(
+            f"GPU {gid}: samples={len(items)} "
+            f"avg_gpu_util={statistics.mean(gpu_utils):.1f}% max_gpu_util={int(max(gpu_utils))}% "
+            f"avg_mem_util={statistics.mean(mem_utils):.1f}% "
+            f"avg_mem_used={statistics.mean(mem_used):.1f}MB max_mem_used={int(max(mem_used))}MB "
+            f"total_mem={mem_total_mb}MB avg_power={statistics.mean(power_vals):.1f}W"
+        )
+
+    print(f"Overall average GPU utilization: {statistics.mean(overall_utils):.1f}%")
+    print("=" * 160)
 
 
 def calc_metrics(trace: Dict[str, int]) -> Dict[str, Optional[int]]:
@@ -411,6 +537,8 @@ def summarize(
     target_rps: Optional[float] = None,
     print_trace: bool = False,
     hybrid_pattern: str = "2:1",
+    gpu_samples: Optional[List[Dict[str, Any]]] = None,
+    gpu_monitor_enabled: bool = False,
 ) -> None:
     def fmt(v: Any) -> str:
         return "N/A" if v is None else str(v)
@@ -568,6 +696,8 @@ def summarize(
                 print(f"  - idx={req_idx}: {warning}")
 
     print("=" * 160)
+    if gpu_monitor_enabled:
+        summarize_gpu(gpu_samples or [])
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -590,6 +720,9 @@ def validate_args(args: argparse.Namespace) -> None:
             raise ValueError("--rps must be > 0 in rps mode")
 
     parse_hybrid_pattern(args.hybrid_pattern)
+    parse_gpu_ids(args.gpu_ids)
+    if args.gpu_sample_interval <= 0:
+        raise ValueError("--gpu-sample-interval must be > 0")
 
 
 async def run_concurrent_mode(
@@ -673,6 +806,7 @@ async def run_rps_mode(
 
 async def main_async(args: argparse.Namespace) -> None:
     validate_args(args)
+    gpu_ids = parse_gpu_ids(args.gpu_ids)
 
     workload = json.loads(Path(args.workload_file).read_text(encoding="utf-8"))
     req_templates = workload.get("requests", [])
@@ -694,6 +828,18 @@ async def main_async(args: argparse.Namespace) -> None:
     )
 
     timeout = httpx.Timeout(300.0)
+    gpu_samples: List[Dict[str, Any]] = []
+    gpu_stop_event: Optional[asyncio.Event] = None
+    gpu_task: Optional[asyncio.Task] = None
+    if args.monitor_gpu:
+        gpu_stop_event = asyncio.Event()
+        gpu_task = asyncio.create_task(
+            monitor_gpu(
+                stop_event=gpu_stop_event,
+                sample_interval_s=args.gpu_sample_interval,
+                gpu_ids=gpu_ids,
+            )
+        )
 
     exp_start = time.time()
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -702,6 +848,9 @@ async def main_async(args: argparse.Namespace) -> None:
         else:
             results, peak_inflight = await run_rps_mode(client, args, selected_templates)
     exp_end = time.time()
+    if gpu_task is not None and gpu_stop_event is not None:
+        gpu_stop_event.set()
+        gpu_samples = await gpu_task
 
     summarize(
         results=results,
@@ -711,6 +860,8 @@ async def main_async(args: argparse.Namespace) -> None:
         target_rps=args.rps if args.mode == "rps" else None,
         print_trace=args.print_trace,
         hybrid_pattern=args.hybrid_pattern,
+        gpu_samples=gpu_samples,
+        gpu_monitor_enabled=args.monitor_gpu,
     )
 
 
@@ -815,6 +966,22 @@ def main() -> None:
         "--print-trace",
         action="store_true",
         help="print per-request trace and metrics as JSON",
+    )
+    parser.add_argument(
+        "--monitor-gpu",
+        action="store_true",
+        help="enable GPU utilization sampling via nvidia-smi during the experiment",
+    )
+    parser.add_argument(
+        "--gpu-sample-interval",
+        type=float,
+        default=1.0,
+        help="GPU sampling interval in seconds",
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        default=None,
+        help="comma-separated GPU ids to monitor, e.g. 0,1,2",
     )
 
     args = parser.parse_args()
