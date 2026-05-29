@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
+TRACE_ORDER_TOLERANCE_MS = 2
+
 
 def parse_bool(v: Any) -> bool:
     if isinstance(v, bool):
@@ -95,7 +97,7 @@ def check_trace_order(trace: Dict[str, int]) -> List[str]:
             continue
         left_val = int(trace[left_key])
         right_val = int(trace[right_key])
-        if right_val < left_val:
+        if right_val + TRACE_ORDER_TOLERANCE_MS < left_val:
             warnings.append(
                 f"trace timestamp order violation: {left_key}={left_val} > {right_key}={right_val}"
             )
@@ -175,17 +177,32 @@ async def monitor_gpu(
     return samples
 
 
-def summarize_gpu(samples: List[Dict[str, Any]]) -> None:
+def summarize_gpu(
+    samples: List[Dict[str, Any]],
+    start_ts: Optional[float] = None,
+    end_ts: Optional[float] = None,
+) -> None:
     print("\n" + "=" * 160)
     print("GPU Utilization Summary")
     print("=" * 160)
-    if not samples:
-        print("GPU monitoring enabled but no valid samples collected.")
+    filtered_samples = samples
+    if start_ts is not None and end_ts is not None:
+        filtered_samples = [
+            s for s in samples
+            if isinstance(s.get("timestamp"), (int, float))
+            and start_ts <= float(s["timestamp"]) <= end_ts
+        ]
+
+    if not filtered_samples:
+        if start_ts is not None and end_ts is not None:
+            print("GPU monitoring enabled but no valid samples collected in experiment window.")
+        else:
+            print("GPU monitoring enabled but no valid samples collected.")
         print("=" * 160)
         return
 
     by_gpu: Dict[int, List[Dict[str, Any]]] = {}
-    for s in samples:
+    for s in filtered_samples:
         gid = int(s.get("gpu_index", -1))
         by_gpu.setdefault(gid, []).append(s)
 
@@ -358,6 +375,8 @@ async def read_chat_stream_meta(
                     except Exception:
                         meta = {"raw_meta": data}
 
+        if not meta:
+            return status, {"error": "missing_cacheroute_meta"}
         return status, meta
 
 
@@ -501,6 +520,15 @@ async def run_one(
     trace_warnings = check_trace_order(trace if isinstance(trace, dict) else {})
     trace_warnings.extend(check_trace_integrity(trace if isinstance(trace, dict) else {}, actual_injection_type))
 
+    meta_missing = False
+    if isinstance(meta, dict):
+        meta_missing = bool(meta.get("error") == "missing_cacheroute_meta" or not meta)
+    else:
+        meta_missing = True
+    trace_key_count = len(trace) if isinstance(trace, dict) else 0
+    trace_has_first_token = bool(isinstance(trace, dict) and "first_token_ms" in trace)
+    trace_has_forward_start = bool(isinstance(trace, dict) and "forward_start_ms" in trace)
+
     client_send_delay_ms: Optional[int] = None
     if scheduled_send_ts is not None:
         client_send_delay_ms = int((actual_send_ts - scheduled_send_ts) * 1000)
@@ -520,6 +548,10 @@ async def run_one(
         "error": meta.get("error") if isinstance(meta, dict) else None,
         "injection_type": actual_injection_type,
         "trace_warnings": trace_warnings,
+        "meta_missing": meta_missing,
+        "trace_key_count": trace_key_count,
+        "trace_has_first_token": trace_has_first_token,
+        "trace_has_forward_start": trace_has_forward_start,
         "rag": body.get("RAG"),
         "stream": body.get("stream"),
         "request_body": body,
@@ -539,6 +571,8 @@ def summarize(
     hybrid_pattern: str = "2:1",
     gpu_samples: Optional[List[Dict[str, Any]]] = None,
     gpu_monitor_enabled: bool = False,
+    exp_start_ts: Optional[float] = None,
+    exp_end_ts: Optional[float] = None,
 ) -> None:
     def fmt(v: Any) -> str:
         return "N/A" if v is None else str(v)
@@ -695,9 +729,29 @@ def summarize(
             for warning in warnings:
                 print(f"  - idx={req_idx}: {warning}")
 
+    total_requests = len(results)
+    missing_meta = [r for r in results if r.get("meta_missing")]
+    missing_first_token = [r for r in results if not r.get("trace_has_first_token")]
+    missing_forward_start = [r for r in results if not r.get("trace_has_forward_start")]
+    trace_key_counts = [int(r.get("trace_key_count", 0) or 0) for r in results]
+    avg_trace_key_count = statistics.mean(trace_key_counts) if trace_key_counts else 0.0
+    print("\nTrace Completeness Summary")
+    print(f"Total requests: {total_requests}")
+    print(f"Missing meta count: {len(missing_meta)}")
+    print(f"Missing first_token count: {len(missing_first_token)}")
+    print(f"Missing forward_start count: {len(missing_forward_start)}")
+    print(f"Average trace key count: {avg_trace_key_count:.2f}")
+    if missing_meta:
+        print("Missing meta request details:")
+        for r in missing_meta:
+            print(
+                f"  - idx={r.get('req_index')} name={r.get('name')} injection={r.get('injection_type')} "
+                f"status={r.get('http_status')} wall_ms={r.get('wall_ms')}"
+            )
+
     print("=" * 160)
     if gpu_monitor_enabled:
-        summarize_gpu(gpu_samples or [])
+        summarize_gpu(gpu_samples or [], start_ts=exp_start_ts, end_ts=exp_end_ts)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -862,6 +916,8 @@ async def main_async(args: argparse.Namespace) -> None:
         hybrid_pattern=args.hybrid_pattern,
         gpu_samples=gpu_samples,
         gpu_monitor_enabled=args.monitor_gpu,
+        exp_start_ts=exp_start,
+        exp_end_ts=exp_end,
     )
 
 

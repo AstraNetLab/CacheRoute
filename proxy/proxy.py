@@ -359,8 +359,8 @@ def build_body_for_instance(req_obj: SchedulerRequest, mode: str) -> Dict[str, A
     return body
 
 
-def _sse_meta_event(task: ProxyTask) -> bytes:
-    payload = {
+def build_cacheroute_meta(task: ProxyTask) -> Dict[str, Any]:
+    return {
         "trace": task.trace,
         "kv_ack": task.kv_ack,
         "kv_ready_kids": task.kv_ready_kids,
@@ -368,6 +368,10 @@ def _sse_meta_event(task: ProxyTask) -> bytes:
         "miss_kids": task.miss_kids,
         "error": task.error,
     }
+
+
+def _sse_meta_event(task: ProxyTask) -> bytes:
+    payload = build_cacheroute_meta(task)
     return (
         "event: cacheroute_meta\n"
         f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -381,39 +385,33 @@ async def _wrap_chat_stream_with_meta(task: ProxyTask, queue_mgr: QueueManager) 
     pending = b""
     done_seen = False
 
-    async for chunk in queue_mgr.iter_response(task):
-        if not chunk:
-            continue
+    try:
+        async for chunk in queue_mgr.iter_response(task):
+            if not chunk:
+                continue
 
-        pending += chunk
+            pending += chunk
 
-        while b"\n" in pending:
-            line, pending = pending.split(b"\n", 1)
-            full_line = line + b"\n"
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                full_line = line + b"\n"
 
-            if line.startswith(b"data:"):
-                data = line[len(b"data:"):].strip()
-                if data == b"[DONE]":
-                    done_seen = True
-                    continue
+                if line.startswith(b"data:"):
+                    data = line[len(b"data:"):].strip()
+                    if data == b"[DONE]":
+                        done_seen = True
+                        continue
 
-            yield full_line
-
-        # 保守处理：如果 chunk 里没有换行，继续积累
-
-    if pending:
-        # 还有残留未结束行，原样转发
-        yield pending
-        pending = b""
-
-    # 在 [DONE] 之前插入 meta
-    yield _sse_meta_event(task)
-
-    # 再发真正的 done
-    if done_seen:
-        yield b"data: [DONE]\n\n"
-    else:
-        # 即便下游没发，也补一个，避免 client 一直等
+                yield full_line
+    except Exception as e:
+        task.error = f"stream_wrap_failed: {e}"
+        task.trace["stream_exception_ms"] = int(time.time() * 1000)
+        logger.exception("[Proxy] stream wrapper failed rid=%s", task.request_id)
+    finally:
+        if pending:
+            yield pending
+            pending = b""
+        yield _sse_meta_event(task)
         yield b"data: [DONE]\n\n"
 
 
@@ -781,14 +779,14 @@ async def proxy_completions(request: FastAPIRequest):
         # 尝试按 JSON 解析；解析失败就原样返回文本，便于排查
         try:
             obj = json.loads(content_bytes.decode("utf-8", errors="replace"))
-            obj["_cacheroute_meta"] = {"trace": task.trace}
+            obj["_cacheroute_meta"] = build_cacheroute_meta(task)
             return JSONResponse(status_code=200, content=obj)
         except Exception:
             return JSONResponse(
                 status_code=200,
                 content={
                     "raw": content_bytes.decode("utf-8", errors="replace"),
-                    "_cacheroute_meta": {"trace": task.trace},
+                    "_cacheroute_meta": build_cacheroute_meta(task),
                 }
             )
 

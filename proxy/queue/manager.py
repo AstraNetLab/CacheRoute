@@ -925,16 +925,17 @@ class QueueManager:
                                 )
                                 task.trace["predict_prepare_ms"] = int(task.trace["predict_know_prepare_ms"])
                                 task.trace["predict_prepare_model_ms"] = int(task.trace["predict_prepare_ms"])
+                                task.trace["kv_inject_reserved_start_ms"] = int(start_s * 1000.0)
                                 if kv_queue_wait_s > 0:
                                     task.trace["kv_inject_queue_enqueue_ms"] = int(task.trace.get("kv_inject_queue_enqueue_ms", int(now_s * 1000.0)) or int(now_s * 1000.0))
-                                    task.trace["kv_inject_start_ms"] = int(start_s * 1000.0)
                                     await asyncio.sleep(kv_queue_wait_s)
                                 else:
                                     instant_ms = _now_ms()
                                     task.trace["kv_inject_queue_enqueue_ms"] = int(task.trace.get("kv_inject_queue_enqueue_ms", instant_ms) or instant_ms)
-                                    task.trace["kv_inject_start_ms"] = int(task.trace.get("kv_inject_start_ms", instant_ms) or instant_ms)
+                                actual_inject_start_ms = _now_ms()
+                                task.trace["kv_inject_start_ms"] = actual_inject_start_ms
                                 task.trace["kv_link_reserved"] = 1
-                                task.trace["kv_ack_start_ms"] = _now_ms()
+                                task.trace["kv_ack_start_ms"] = actual_inject_start_ms
                                 kv_ack = await self._inject_ready_kv_via_instance(task)
                                 task.trace["kv_ack_end_ms"] = _now_ms()
                                 task.trace["kv_inject_end_ms"] = int(task.trace.get("kv_ack_end_ms", _now_ms()) or _now_ms())
@@ -1053,6 +1054,13 @@ class QueueManager:
 
             except Exception as e:
                 task.error = f"prepare_failed: {e}"
+                prepare_error_ms = _now_ms()
+                task.trace["prepare_error_ms"] = prepare_error_ms
+                task.trace["prepare_self_done_ms"] = prepare_error_ms
+                task.trace["prepare_failed_injection_mode"] = str(locals().get("injection_mode", "unknown"))
+                proxy_enqueue_ms = task.trace.get("proxy_enqueue_ms")
+                if isinstance(proxy_enqueue_ms, int):
+                    task.trace["actual_prepare_total_ms"] = max(0, prepare_error_ms - proxy_enqueue_ms)
                 logger.exception("[Prepare] failed rid=%s fallback no-rag", task.request_id)
                 await self._mark_prepare_done_and_flush(instance_id, task)
             finally:
@@ -1224,6 +1232,11 @@ class QueueManager:
 
             except Exception as e:
                 task.error = f"ready_failed: {e}"
+                if "forward_start_ms" not in task.trace:
+                    task.trace["ready_failed_before_forward_ms"] = _now_ms()
+                if "first_token_ms" not in task.trace:
+                    task.trace["ttft_observable"] = 0
+                    task.trace["first_token_missing_reason"] = "ready_failed_before_first_token"
                 task.trace["forward_end_ms"] = _now_ms()
                 await self._mark_task_decode_end(task, instance_id)
                 logger.exception("[Ready] worker=%s failed rid=%s", worker_idx, task.request_id)
