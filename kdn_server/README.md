@@ -147,4 +147,4 @@ python3 kv_injector.py --kv-dir /workspace/llm-stack/CacheRoute/kdn_server/KV_da
 python3 batch_register_kdn.py --manifest knowledge_manifest_nq.json --base-url http://127.0.0.1:9101 --api-url http://127.0.0.1:8000/v1/chat/completions --model llama3-70b --redis-host 127.0.0.1 --redis-port 6379 --redis-db 0 --count all --flushdb
 ```
 其中，`--manifest`指定json文件的路径，`--base-url`指定KDN启用的服务器监听URL，`--api-url`指定vLLM服务监听URL，`--model`指定模型名，`--redis-port`指定redis容器的监听端口，`--redis-db`指定redis仓库，注意为设置默认为0号仓库，`--count`指定注入的条数，可选all，或任意想注入的条目数量，`--flushdb`建议开启但会清空Redis知识库，为防止KVCache连续注册所导致的粘黏。
-<img width="600" height="302" alt="image" src="https://github.com/user-attachments/assets/2bbbca78-93f2-4b08-aab5-268e413580a9" />
+<img width="600" height="202" alt="image" src="https://github.com/user-attachments/assets/2bbbca78-93f2-4b08-aab5-268e413580a9" />
