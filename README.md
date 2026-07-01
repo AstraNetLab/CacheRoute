@@ -37,12 +37,6 @@ CacheRoute addresses this problem by using KDN servers to store KVCache blocks f
 
 ## Key Features
 
- - **Feature 1** — Compute-network-aware knowledge injection: CacheRoute dynamically chooses between text recomputation and KVCache reuse. Text injection saves network bandwidth but increases prefill computation, while KVCache injection saves computation but consumes network bandwidth. CacheRoute predicts task cost at the proxy and selects the injection strategy according to current compute and network load.
- - **Feature 2** —  Knowledge-oriented cross-system routing: CacheRoute parses the knowledge requirement before resource-pool scheduling. The scheduler jointly considers knowledge availability, system load, and topology information, and routes requests to the LLM system that can serve the required knowledge more efficiently.
- - **Feature 3** —  KDN-based KV cache management: CacheRoute uses KDN servers to register, store, query, and inject KV cache blocks for reusable knowledge. This enables external knowledge to be reused across LLM systems instead of being repeatedly recomputed.
-
-## Key Features
-
 | Feature | Description |
 |---|---|
 | ⚙️ **Compute-network-aware knowledge injection** | CacheRoute dynamically chooses between text recomputation and KVCache reuse according to compute and network load. It predicts task cost at the proxy and selects the injection strategy according to current compute and network load. |
