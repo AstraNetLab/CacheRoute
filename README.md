@@ -1,5 +1,3 @@
-# CacheRoute
-
 <img width="1400" height="369" alt="CacheRoute" src="https://github.com/user-attachments/assets/6050e71f-0e37-4cf9-b712-26e11242c9cd" />
 
 <p align="center">
