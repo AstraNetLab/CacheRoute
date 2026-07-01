@@ -32,6 +32,9 @@ kdn_server/
 ├── text_db.py                    # text knowledge database
 └── README.md
 ```
+Each knowledge block is identified by a content-based hash ID. Text knowledge and KVCache blocks are stored separately, while the KDN metadata links them together.
+
+---
 
 ### KDN服务器
 数据结构：<br>
