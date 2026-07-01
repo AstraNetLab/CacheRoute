@@ -2,10 +2,28 @@
 
 <img width="1400" height="369" alt="CacheRoute" src="https://github.com/user-attachments/assets/6050e71f-0e37-4cf9-b712-26e11242c9cd" />
 
-[![Version](https://img.shields.io/badge/version-0.1.8-blue)](https://github.com/BJTU-ANT/CacheRoute/releases)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
-[![Built on vLLM](https://img.shields.io/badge/Built%20on-vLLM-6C5CE7?style=flat-square&logo=github&logoColor=white)](https://github.com/vllm-project/vllm)
-[![Powered by LMCache](https://img.shields.io/badge/Powered%20by-LMCache-00B894?style=flat-square&logo=github&logoColor=white)](https://github.com/LMCache/LMCache)
+<p align="center">
+  <b>Flexible KV cache reuse for knowledge-intensive LLM serving</b>
+</p>
+
+<p align="center">
+  <i>Built on vLLM and LMCache. Designed for compute-network-aware knowledge injection across LLM systems.</i>
+</p>
+
+<p align="center">
+  <a href="https://github.com/BJTU-ANT/CacheRoute/releases">
+    <img src="https://img.shields.io/badge/version-0.1.8-blue" alt="Version">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License">
+  </a>
+  <a href="https://github.com/vllm-project/vllm">
+    <img src="https://img.shields.io/badge/Built%20on-vLLM-6C5CE7?style=flat-square&logo=github&logoColor=white" alt="Built on vLLM">
+  </a>
+  <a href="https://github.com/LMCache/LMCache">
+    <img src="https://img.shields.io/badge/Powered%20by-LMCache-00B894?style=flat-square&logo=github&logoColor=white" alt="Powered by LMCache">
+  </a>
+</p>
 
 CacheRoute is an LLM scheduling framework built on [vLLM](https://github.com/vllm-project/vllm) and [LMCache](https://github.com/LMCache/LMCache) to enable flexible KV cache reuse across LLM systems. It targets knowledge-intensive LLM services, such as browser AI and knowledge QA systems, where many requests repeatedly use the same external knowledge. Existing systems usually prepend long knowledge texts to the user question and send the whole prompt to the model for recomputation. Although this approach helps reduce model hallucination and improve answer quality, it introduces heavy prefill overhead and causes redundant computation when the same knowledge appears across many requests.
 
