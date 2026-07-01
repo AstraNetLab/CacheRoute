@@ -1,6 +1,14 @@
 # KDN Server
 
-The KDN Server is the knowledge management and KVCache injection component in CacheRoute. It maintains reusable external knowledge, tracks KVCache availability, and injects prepared KVCache blocks into the target LMCache backend when KVCache-based knowledge injection is selected.
+## Background: What is KDN?
+
+Knowledge Delivery Network (KDN) is a concept proposed in *Do Large Language Models Need a Content Delivery Network?* by Cheng et al. The key idea is to treat KV caches as a medium for reusable knowledge and to deliver them across LLM engines, compute resources, and storage resources, similar to how CDNs deliver web content.
+
+CacheRoute follows this vision and implements a lightweight KDN Server for knowledge-intensive LLM serving. In CacheRoute, the KDN Server stores reusable external knowledge, tracks KVCache availability, and injects prepared KVCache blocks into the target LMCache backend when KVCache-based knowledge injection is selected.
+
+> Reference: Y. Cheng, K. Du, J. Yao, and J. Jiang, “Do Large Language Models Need a Content Delivery Network?”, arXiv:2409.13761, 2024.
+
+## Overview
 
 In CacheRoute, the KDN Server plays two roles:
 
