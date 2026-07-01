@@ -1,3 +1,10 @@
+# KDN Server
+
+The KDN Server is the knowledge management and KVCache injection component in CacheRoute. It maintains reusable external knowledge, tracks KVCache availability, and injects prepared KVCache blocks into the target LMCache backend when KVCache-based knowledge injection is selected.
+
+In CacheRoute, the KDN Server plays two roles:
+
+
 ### KDN服务器
 数据结构：<br>
 kdn_server/<br>
