@@ -4,7 +4,6 @@
 
 [![Version](https://img.shields.io/badge/version-0.1.8-blue)](https://github.com/BJTU-ANT/CacheRoute/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/BJTU-ANT/CacheRoute?style=social)](https://github.com/BJTU-ANT/CacheRoute)
 [![Built on vLLM](https://img.shields.io/badge/Built%20on-vLLM-6C5CE7?style=flat-square&logo=github&logoColor=white)](https://github.com/vllm-project/vllm)
 [![Powered by LMCache](https://img.shields.io/badge/Powered%20by-LMCache-00B894?style=flat-square&logo=github&logoColor=white)](https://github.com/LMCache/LMCache)
 
