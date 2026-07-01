@@ -1,15 +1,5 @@
 # CacheRoute
 
-**CacheRoute is an LLM scheduling framework built on vLLM and LMCache for flexible KV cache reuse across LLM systems.**
-
-It targets knowledge-intensive LLM services where many requests repeatedly use the same external knowledge. Instead of always recomputing long knowledge prompts, CacheRoute can reuse precomputed KV cache blocks through KDN servers and dynamically choose between text-based injection and KVCache-based injection according to compute and network load.
-
-## Why CacheRoute?
-
-- **Avoid redundant prefill computation** for repeated knowledge prompts.
-- **Reuse KV cache across LLM systems** through KDN servers.
-- **Coordinate compute and network resources** with dynamic knowledge injection.
-
 <img width="1400" height="369" alt="CacheRoute" src="https://github.com/user-attachments/assets/6050e71f-0e37-4cf9-b712-26e11242c9cd" />
 
 [![Version](https://img.shields.io/badge/version-0.1.8-blue)](https://github.com/BJTU-ANT/CacheRoute/releases)
@@ -21,6 +11,12 @@ It targets knowledge-intensive LLM services where many requests repeatedly use t
 CacheRoute is an LLM scheduling framework built on [vLLM](https://github.com/vllm-project/vllm) and [LMCache](https://github.com/LMCache/LMCache) to enable flexible KV cache reuse across LLM systems. It targets knowledge-intensive LLM services, such as browser AI and knowledge QA systems, where many requests repeatedly use the same external knowledge. Existing systems usually prepend long knowledge texts to the user question and send the whole prompt to the model for recomputation. Although this approach helps reduce model hallucination and improve answer quality, it introduces heavy prefill overhead and causes redundant computation when the same knowledge appears across many requests.
 
 CacheRoute addresses this problem by using KDN servers to store KVCache blocks for popular knowledge. For each request, CacheRoute dynamically chooses between text-based injection and KVCache-based injection according to task queues, compute load, and network load. In this way, CacheRoute shifts knowledge injection cost between compute and network resources, improving task latency and system throughput.
+
+## Why CacheRoute?
+
+- **Less redundant prefill computation:** reuse repeated knowledge through KV cache instead of recomputing long prompts.
+- **Cross-system KV cache reuse:** share reusable knowledge across LLM systems through KDN servers.
+- **Compute-network coordination:** dynamically choose between recomputation and KV cache injection based on real-time resource load.
 
 ## Key Features
 
