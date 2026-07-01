@@ -1,3 +1,8 @@
+# CacheRoute
+
+**CacheRoute is an LLM scheduling framework built on vLLM and LMCache for flexible KV cache reuse across LLM systems.**
+
+It targets knowledge-intensive LLM services where many requests repeatedly use the same external knowledge. Instead of always recomputing long knowledge prompts, CacheRoute can reuse precomputed KV cache blocks through KDN servers and dynamically choose between text-based injection and KVCache-based injection according to compute and network load.
 
 <img width="1400" height="369" alt="CacheRoute" src="https://github.com/user-attachments/assets/6050e71f-0e37-4cf9-b712-26e11242c9cd" />
 
