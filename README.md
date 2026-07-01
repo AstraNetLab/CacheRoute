@@ -219,6 +219,12 @@ For full deployment with vLLM, LMCache, Redis, KDN warm-up, and KVCache injectio
 
 ## API Usage
 
+CacheRoute exposes OpenAI-compatible API endpoints through the Scheduler.
+| Endpoint | Mode |
+|---|---|
+| `/v1/chat/completions` | Chat completion |
+| `/v1/completions` | Completion |
+
 ### Chat Completion
 
 ```bash
