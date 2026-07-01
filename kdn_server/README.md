@@ -363,7 +363,7 @@ python3 test_kv_injector_reuse.py
 
 If the injection succeeds, the instance should reuse the injected KVCache blocks through LMCache.
 
-<img width="600" height="60" alt="KVCache reuse test" src="https://github.com/user-attachments/assets/d02b5d2d-1950-4374-a9da-3483929900bc" />
+<img width="600" height="50" alt="KVCache reuse test" src="https://github.com/user-attachments/assets/d02b5d2d-1950-4374-a9da-3483929900bc" />
 
 ---
 
