@@ -108,7 +108,7 @@ python3 demo_instance.py --port 9001 --host 127.0.0.1
 python3 demo_client.py --with-ui
 ```
 
-### Option 2: Full Deployment
+### Option 2: Full CacheRoute Deployment
 For full deployment with vLLM, LMCache, Redis, KDN warm-up, and KVCache injection, see:
 - `env/README.md` for environment setup.
 - `kdn_server/README.md` for KDN registration and KVCache injection.
