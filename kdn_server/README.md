@@ -408,7 +408,7 @@ Main arguments:
 
 The batch script is useful for preparing knowledge-intensive workloads used in CacheRoute experiments.
 
-<img width="600" height="202" alt="Batch KDN registration" src="https://github.com/user-attachments/assets/2bbbca78-93f2-4b08-aab5-268e413580a9" />
+<img width="600" height="242" alt="Batch KDN registration" src="https://github.com/user-attachments/assets/2bbbca78-93f2-4b08-aab5-268e413580a9" />
 
 ---
 
