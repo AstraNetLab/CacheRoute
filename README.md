@@ -51,41 +51,23 @@ Default ports:<br>
 
 ---
 
-### Requirements
+## Requirements
 
-Python version：3.12.11<br>
-&emsp;- torch==2.3.1<br>
-&emsp;- sentence-transformers~=5.1.2<br>
-&emsp;- faiss-cpu==1.13.1<br>
-&emsp;- fastapi~=0.124.0<br>
-&emsp;- pyyaml~=6.0.3<br>
-&emsp;- uvicorn~=0.38.0<br>
-&emsp;- matplotlib~=3.10.7<br>
-&emsp;- aiohttp~=3.13.2<br>
-&emsp;- jupyter_client~=8.6.3<br>
-&emsp;- transformers~=4.57.3<br>
-&emsp;- requests~=2.32.5<br>
-&emsp;- jupyter_client~=8.6.3<br>
-&emsp;- pandas~=2.3.3<br>
-&emsp;- scikit-learn~=1.7.2<br>
-&emsp;- jupyter_client~=8.6.3<br>
-&emsp;- scipy~=1.16.3<br>
-&emsp;- jupyter_client~=8.6.3<br>
-&emsp;- datasets~=4.4.2<br>
-&emsp;- numpy~=1.26.4<br>
-&emsp;- jupyter_client~=8.6.3<br>
-&emsp;- warcio~=1.7.5<br>
-&emsp;- bs4~=0.0.2<br>
-&emsp;- beautifulsoup4~=4.14.3<br>
-&emsp;- tqdm~=4.67.1<br>
-&emsp;- Booktype~=1.5<br>
-&emsp;- safetensors~=0.7.0<br>
-&emsp;- pyzmq~=27.1.0<br>
-&emsp;- pydantic~=2.12.5<br>
-&emsp;- starlette~=0.50.0<br>
-&emsp;- httpx~=0.28.1<br>
-&emsp;- setuptools~=78.1.0<br>
-&emsp;- huggingface-hub~=0.36.0<br>
+CacheRoute has been tested with the following core environment:
+
+| Component | Version |
+|---|---|
+| Python | 3.12.11 |
+| vLLM | 0.13.x |
+| LMCache | 0.3.x |
+| PyTorch | 2.9.x |
+| Redis | 7 |
+| CUDA GPUs | Required for full LLM serving |
+
+Install Python dependencies with:
+
+```bash
+pip install -r requirements.txt
 
 ---
 
