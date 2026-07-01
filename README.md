@@ -10,9 +10,7 @@ It targets knowledge-intensive LLM services where many requests repeatedly use t
 - **Reuse KV cache across LLM systems** through KDN servers.
 - **Coordinate compute and network resources** with dynamic knowledge injection.
 
-<p align="center">
-  <img width="600" alt="CacheRoute" src="https://github.com/user-attachments/assets/6050e71f-0e37-4cf9-b712-26e11242c9cd" />
-</p>
+<img width="1400" height="369" alt="CacheRoute" src="https://github.com/user-attachments/assets/6050e71f-0e37-4cf9-b712-26e11242c9cd" />
 
 [![Version](https://img.shields.io/badge/version-0.1.8-blue)](https://github.com/BJTU-ANT/CacheRoute/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
@@ -34,7 +32,9 @@ More logs and update details: https://github.com/BJTU-ANT/CacheRoute/tree/main/d
 
 ### Architecture
 
-<img width="983" height="1215" alt="image" src="https://github.com/user-attachments/assets/9150a874-4e04-4499-821b-39a850e56db6" />
+<p align="center">
+  <img width="700" alt="CacheRoute" src="https://github.com/user-attachments/assets/9150a874-4e04-4499-821b-39a850e56db6" />
+</p>
 
 - The Client sends an inference request to the Scheduler for global resource-pool selection.<br>
 - After receiving the request, the Scheduler parses the request information, builds the request scheduling policy, and enables knowledge-oriented task routing. It then sends the scheduling result to the Proxy of the selected resource pool.
