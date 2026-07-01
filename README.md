@@ -20,18 +20,19 @@ CacheRoute is an LLM scheduling framework built on vLLM and LMCache to enable fl
 
 To address this problem, CacheRoute deploys independent KDN servers to store KVCache blocks for popular knowledge. When a request needs related knowledge, CacheRoute can inject the corresponding KVCache blocks directly instead of recomputing the full knowledge text. Within each local resource pool, CacheRoute dynamically tracks task queues, network load, and compute load, and selects a suitable knowledge injection strategy for each request, either text-based injection or KVCache-based injection. By shifting knowledge injection cost between compute and network resources, CacheRoute improves task latency and system throughput. For more details about the motivation and design of CacheRoute, please refer to our related paper, which is currently under submission.
 
- - **Feature 1** — Dynamic knowledge injection based on compute-network coordination: CacheRoute considers that text-based knowledge injection has high recomputation cost but low transmission cost, while KVCache-based knowledge injection has low computation cost but high transmission cost. Therefore, any fixed injection strategy, such as always using text recomputation or always preferring KVCache reuse, cannot fully coordinate and utilize compute and network resources. CacheRoute designs a task cost predictor inside the proxy (`proxy/queue`), which supports low-error vLLM task performance prediction without modifying vLLM. Based on this predictor, CacheRoute adopts a dynamic knowledge injection strategy driven by compute and network resource coordination. It adjusts the injection strategy for each task according to task requirements and resource load, choosing either recomputation or KVCache reuse. In this way, CacheRoute uses compute and network resources in parallel and improves both average task performance and overall system throughput.
- - **Feature 2** — Knowledge-oriented task routing across LLM systems: CacheRoute focuses on scenarios where distributed servers maintain knowledge KVCache resources. Traditional systems usually parse the knowledge requirements inside an LLM system and then fetch knowledge from the target knowledge base. In contrast, CacheRoute moves task parsing into the network. During resource-pool-level scheduling (`scheduler`), it analyzes the knowledge requirements of each task in advance. CacheRoute jointly considers the resource load of each LLM system and the task's knowledge requirements. It routes tasks to LLM systems that can access the required knowledge more easily while keeping load balanced. This improves the efficiency of later knowledge injection and the overall utilization of compute and network resources.
+## Key Features
 
+ - **Feature 1** — Compute-network-aware knowledge injection: CacheRoute dynamically chooses between text recomputation and KVCache reuse. Text injection saves network bandwidth but increases prefill computation, while KVCache injection saves computation but consumes network bandwidth. CacheRoute predicts task cost at the proxy and selects the injection strategy according to current compute and network load.
+ - **Feature 2** —  Knowledge-oriented cross-system routing: CacheRoute parses the knowledge requirement before resource-pool scheduling. The scheduler jointly considers knowledge availability, system load, and topology information, and routes requests to the LLM system that can serve the required knowledge more efficiently.
+ - **Feature 3** —  KDN-based KV cache management: CacheRoute uses KDN servers to register, store, query, and inject KV cache blocks for reusable knowledge. This enables external knowledge to be reused across LLM systems instead of being repeatedly recomputed.
+ - 
 More logs and update details: https://github.com/BJTU-ANT/CacheRoute/tree/main/doc/blog
 
 ---
 
 ### Architecture
 
--------------------------------------------------------------------------------------------<br>
-| [Client] -> [Scheduler] -> [Proxy] -> [Instance (vLLM-LMCache)] <- [KDN Server] |<br>
--------------------------------------------------------------------------------------------<br>
+<img width="983" height="1215" alt="image" src="https://github.com/user-attachments/assets/9150a874-4e04-4499-821b-39a850e56db6" />
 
 - The Client sends an inference request to the Scheduler for global resource-pool selection.<br>
 - After receiving the request, the Scheduler parses the request information, builds the request scheduling policy, and enables knowledge-oriented task routing. It then sends the scheduling result to the Proxy of the selected resource pool.
