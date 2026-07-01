@@ -92,6 +92,29 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+CacheRoute provides two ways to get started.
+
+### Option 1: Lightweight Demo
+
+Use the demo scripts to understand the CacheRoute scheduling workflow.
+
+```bash
+cd test
+
+python3 demo_scheduler.py --cacheroute
+python3 demo_kdn.py
+python3 demo_proxy.py --strategy round_robin --injection-strategy iws --ready-release-policy text_bypass
+python3 demo_instance.py --port 9001 --host 127.0.0.1
+python3 demo_client.py --with-ui
+```
+
+### Option 2: Full Deployment
+For full deployment with vLLM, LMCache, Redis, KDN warm-up, and KVCache injection, see:
+- `env/README.md` for environment setup.
+- `kdn_server/README.md` for KDN registration and KVCache injection.
+- `core/README.md` for multi-machine configuration.
+<details>
+  <summary>Full single-machine deployment guide</summary>
 1. Place the whole CacheRoute project under `/workspace/`.<br>
 2. Create a new container that supports vLLM. The required image is `cacheroute:vllm0.13-lmcache3.11-pytorch2.9.1` built from source. If you do not know how to quickly deploy the CacheRoute environment or download models, see `/env/README.md`.<br>
     ```
@@ -188,7 +211,8 @@ pip install -r requirements.txt
     
 12. After the Scheduler, Proxy, and Instance start, they will publish INFO logs and wait for requests. After all components are ready, enter the client. When `<client>` is shown, you can input HTTP requests for a quick demo.
    Note that the URL should be the listening address and port of the Scheduler, so that HTTP requests can be parsed and forwarded to the Scheduler. The following gives three local test request demos.<br>
-
+<details>
+  
 ---
 
 ## API Usage
