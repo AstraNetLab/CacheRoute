@@ -1,3 +1,20 @@
+# Scheduler
+
+The Scheduler is the global request routing component in CacheRoute. It receives OpenAI-compatible inference requests, maintains the runtime state of KDN servers and Proxy nodes, and routes each request to a suitable LLM system according to the selected scheduling strategy.
+
+In CacheRoute, the Scheduler is the first stage of the two-level scheduling pipeline:
+
+```text
+Client
+  └──> Scheduler
+          ├── selects a KDN server
+          └── selects a Proxy / LLM system
+                  └──> Proxy
+                          └──> Instance / vLLM + LMCache
+```
+
+
+
 ### CacheRoute Scheduler
 
 CacheRoute Scheduler 是一个基于 FastAPI 的大语言模型推理调度器。<br>
