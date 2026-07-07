@@ -55,7 +55,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 # 添加 deadsnakes PPA 以安装 Python 3.12
 RUN add-apt-repository ppa:deadsnakes/ppa && \
     apt-get update && \
-    apt-get install -y python3.12 python3.12-venv python3.12-dev && \
+    apt-get install -y python3.12 python3.12-venv python3.12-dev python3.12-tk && \
     rm -rf /var/lib/apt/lists/*
 
 # 设置 Python 3.12 为默认版本
