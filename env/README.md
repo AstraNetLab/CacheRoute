@@ -1,3 +1,69 @@
+# Environment Setup
+
+This document describes the environment used to run CacheRoute with vLLM, LMCache, Redis, and CUDA GPUs.
+
+CacheRoute can run a lightweight mock demo without a full LLM serving stack. This document is for the full deployment path, where vLLM + LMCache are built and used as the backend inference engine.
+
+---
+
+## Tested Environment
+
+CacheRoute has been tested with the following environment:
+
+| Component | Version |
+|---|---|
+| OS | Ubuntu 22.04.5 Jammy |
+| Docker | 28.2.2 |
+| CUDA | 13.0 |
+| NVIDIA Driver | 580.95.05 |
+| PyTorch | 2.9.1 |
+| vLLM | 0.13.x |
+| LMCache | 0.3.x |
+| Python | 3.12.x |
+
+The exact versions can be adjusted, but the vLLM, LMCache, CUDA, PyTorch, and driver versions should be kept compatible.
+
+---
+
+## Workspace Layout
+
+CacheRoute assumes a shared workspace for source code, models, cache files, and logs.
+
+A recommended layout is:
+
+```text
+/llm-stack/
+├── src/                         # vLLM and LMCache source code
+├── models/                      # local model files
+├── cache/
+│   ├── hf/
+│   ├── torch/
+│   └── lmcache/
+│       └── local_disk/
+├── logs/
+└── docker/
+```
+
+Create the workspace:
+
+```bash
+sudo mkdir -p /llm-stack
+sudo mkdir -p /llm-stack/{src,models,cache/{hf,torch,lmcache/local_disk},logs,docker}
+```
+
+Clone the required repositories:
+
+```bash
+cd /llm-stack/src
+
+git clone https://github.com/vllm-project/vllm.git
+git clone https://github.com/LMCache/LMCache.git
+git clone https://github.com/BJTU-ANT/CacheRoute.git
+```
+
+---
+
+
 ## CacheRoute 容器环境搭建
 2026.1.26 v0.1.0版本
 
