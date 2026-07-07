@@ -16,6 +16,24 @@ class InstanceLoad:
 
 
 @dataclass
+class InstanceResource:
+    cpu_util: Optional[float] = None
+    memory_used_mb: Optional[float] = None
+    memory_total_mb: Optional[float] = None
+    memory_free_mb: Optional[float] = None
+    memory_free_ratio: Optional[float] = None
+    gpu_util_avg: Optional[float] = None
+    gpu_mem_used_mb: Optional[float] = None
+    gpu_mem_total_mb: Optional[float] = None
+    network_rx_mbps: Optional[float] = None
+    network_tx_mbps: Optional[float] = None
+    admission_state: Optional[str] = None
+    resource_ts_ms: Optional[int] = None
+    resource_reported_at: Optional[int] = None
+    raw_resource: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class InstanceInfo:
     instance_id: str
     host: str
@@ -26,6 +44,7 @@ class InstanceInfo:
     meta: Dict[str, Any] = field(default_factory=dict)
 
     load: InstanceLoad = field(default_factory=InstanceLoad)
+    resource: InstanceResource = field(default_factory=InstanceResource)
     registered_at: int = field(default_factory=lambda: int(time.time()))
     last_seen_at: int = field(default_factory=lambda: int(time.time()))
 
@@ -106,6 +125,16 @@ class InstancePool:
                 it.load.gpu_util = float(gpu_util)
             return True
 
+    def report_resource_snapshot(self, instance_id: str, snapshot: Dict[str, Any]) -> bool:
+        now = int(time.time())
+        with self._lock:
+            it = self._items.get(instance_id)
+            if not it:
+                return False
+            it.last_seen_at = now
+            it.resource = _resource_from_snapshot(snapshot=snapshot, reported_at=now)
+            return True
+
     def remove(self, instance_id: str) -> bool:
         with self._lock:
             return self._items.pop(instance_id, None) is not None
@@ -123,3 +152,62 @@ class InstancePool:
             if (now - int(it.last_seen_at)) <= self._ttl_s:
                 alive.append(it)
         return alive
+
+
+def _as_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resource_from_snapshot(snapshot: Dict[str, Any], reported_at: int) -> InstanceResource:
+    devices = snapshot.get("devices") if isinstance(snapshot, dict) else {}
+    devices = devices if isinstance(devices, dict) else {}
+    cpu = devices.get("cpu") if isinstance(devices.get("cpu"), dict) else {}
+    memory = devices.get("memory") if isinstance(devices.get("memory"), dict) else {}
+    capacity = snapshot.get("capacity_hint") if isinstance(snapshot.get("capacity_hint"), dict) else {}
+
+    gpus = devices.get("gpu") if isinstance(devices.get("gpu"), list) else []
+    gpu_utils: List[float] = []
+    gpu_mem_used = 0.0
+    gpu_mem_total = 0.0
+    for gpu in gpus:
+        if not isinstance(gpu, dict):
+            continue
+        util = _as_float(gpu.get("utilization_pct"))
+        if util is not None:
+            gpu_utils.append(util)
+        gpu_mem_used += _as_float(gpu.get("memory_used_mb")) or 0.0
+        gpu_mem_total += _as_float(gpu.get("memory_total_mb")) or 0.0
+
+    networks = devices.get("network") if isinstance(devices.get("network"), list) else []
+    first_net = networks[0] if networks and isinstance(networks[0], dict) else {}
+
+    return InstanceResource(
+        cpu_util=_as_float(cpu.get("utilization_pct")),
+        memory_used_mb=_as_float(memory.get("used_mb")),
+        memory_total_mb=_as_float(memory.get("total_mb")),
+        memory_free_mb=_as_float(memory.get("free_mb")),
+        memory_free_ratio=_as_float(capacity.get("memory_free_ratio")),
+        gpu_util_avg=(sum(gpu_utils) / len(gpu_utils)) if gpu_utils else None,
+        gpu_mem_used_mb=gpu_mem_used if gpus else None,
+        gpu_mem_total_mb=gpu_mem_total if gpus else None,
+        network_rx_mbps=_as_float(first_net.get("rx_mbps")),
+        network_tx_mbps=_as_float(first_net.get("tx_mbps")),
+        admission_state=str(capacity.get("admission_state")) if capacity.get("admission_state") is not None else None,
+        resource_ts_ms=_as_int(snapshot.get("timestamp_ms")),
+        resource_reported_at=reported_at,
+        raw_resource=dict(snapshot) if isinstance(snapshot, dict) else {},
+    )
