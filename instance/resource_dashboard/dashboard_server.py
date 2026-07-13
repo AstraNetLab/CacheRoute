@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 import urllib.request
-from urllib.parse import unquote, urlsplit
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -140,14 +139,14 @@ class AgentManager:
                 proc_missing = False
                 proc_exited = False
                 print(f"[ResourceDashboard] stopping managed agent pid={proc.pid}", flush=True)
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
         if proc_missing:
             return {"ok": True, "stopped": False, "reason": "no_managed_agent", "status": self.status()}
         if proc_exited:
             return {"ok": True, "stopped": False, "reason": "managed_agent_already_exited", "status": self.status()}
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
         try:
             proc.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
@@ -157,7 +156,8 @@ class AgentManager:
                 pass
             proc.wait(timeout=5.0)
         with self._lock:
-            self._proc = None
+            if self._proc is proc:
+                self._proc = None
         return {"ok": True, "stopped": True, "status": self.status()}
 
 
@@ -165,22 +165,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     manager: AgentManager
 
     def translate_path(self, path: str) -> str:
-        # Serve only files under instance/resource_dashboard/static.
-        static_root = STATIC_DIR.resolve()
-        url_path = unquote(urlsplit(path).path)
-        if url_path == "/":
-            rel_parts = ["index.html"]
+        # Serve the static frontend from instance/resource_dashboard/static.
+        if path == "/" or path.startswith("/static/"):
+            rel = "index.html" if path == "/" else path[len("/static/"):]
         else:
-            parts = [part for part in url_path.split("/") if part not in ("", ".", "..")]
-            if parts and parts[0] == "static":
-                parts = parts[1:]
-            rel_parts = parts
-        candidate = (static_root.joinpath(*rel_parts)).resolve()
+            rel = path.lstrip("/")
+        static_root = STATIC_DIR.resolve()
+        target = (static_root / rel).resolve()
         try:
-            candidate.relative_to(static_root)
+            target.relative_to(static_root)
         except ValueError:
-            return str(static_root / "__not_found__")
-        return str(candidate)
+            target = static_root / "index.html"
+        return str(target)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[ResourceDashboard] {self.address_string()} - {fmt % args}", flush=True)
