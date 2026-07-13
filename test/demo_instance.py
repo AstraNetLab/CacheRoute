@@ -40,9 +40,16 @@ def main():
     )
     parser.add_argument(
         "--resource-monitor",
+        dest="resource_monitor",
         action="store_true",
         default=_env_flag("INSTANCE_RESOURCE_MONITOR_ENABLE", config.INSTANCE_RESOURCE_MONITOR_ENABLE),
-        help="enable Resource Agent startup and Proxy resource reporting (default: disabled)",
+        help="enable Resource Agent startup and Proxy resource reporting (default: enabled for demo_instance)",
+    )
+    parser.add_argument(
+        "--no-resource-monitor",
+        dest="resource_monitor",
+        action="store_false",
+        help="disable Resource Agent startup and resource reporting",
     )
     parser.add_argument(
         "--resource-agent",
@@ -164,7 +171,7 @@ def main():
             flush=True,
         )
     else:
-        print("[demo_instance] resource monitor disabled (default)", flush=True)
+        print("[demo_instance] resource monitor disabled", flush=True)
 
     from instance import instance
     uvicorn.run(instance, host=host, port=port, reload=False)
