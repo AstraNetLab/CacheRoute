@@ -1,33 +1,46 @@
 # CacheRoute Instance Resource Dashboard
 
-This dashboard is a lightweight validation frontend for the native Instance resource agent. It starts or connects to the Rust agent, fetches resource snapshots, and displays CPU, memory, GPU, network, admission-state, and raw JSON information.
+`instance/resource_dashboard/` contains local visual frontends for the Rust Instance Resource Agent.
 
-It does **not** integrate with the Scheduler or Proxy control plane yet. It also does not change Proxy forwarding, scheduling, KVCache injection, or existing Instance request behavior.
+The dashboard is for **local observation and debugging**. It can start or connect to the Resource Agent and display CPU, memory, GPU, network, admission state, and raw snapshot data. The dashboard is separate from the demo resource-reporting path now owned by `test/demo_instance.py`.
+
+```text
+Local visual path:
+  dashboard_app.py / dashboard_server.py
+      └── Rust Resource Agent /v1/resource/snapshot
+
+Demo reporting path:
+  test/demo_instance.py
+      └── Rust Resource Agent /v1/resource/snapshot
+            └── Proxy /v1/instance/resource_snapshot
+```
+
+The dashboard does **not** make scheduling decisions and does not change Proxy forwarding, KVCache injection, or Scheduler behavior.
 
 ## Files
 
 ```text
 instance/resource_dashboard/
 ├── README.md
-├── dashboard_app.py          # local desktop monitor, recommended when a GUI display is available
-├── dashboard_server.py       # browser/server fallback for containers, headless servers, or remote use
+├── dashboard_app.py          # local desktop monitor when a GUI display is available
+├── dashboard_server.py       # browser/server fallback for containers or remote hosts
 └── static/
     ├── index.html
     ├── app.js
     └── style.css
 ```
 
-## 1. Build/check the Rust agent
+## Build/check the Rust agent
 
-Run from the CacheRoute repository root:
+Run from the repository root:
 
 ```bash
 cargo check --manifest-path instance/resource_agent/Cargo.toml
 ```
 
-## 2. Recommended container usage: browser dashboard
+## Browser dashboard, recommended in containers
 
-For Docker containers and remote machines, the browser dashboard is the most reliable choice. It does not require the container to access the host graphical display.
+For Docker containers and remote machines, the browser dashboard is the most reliable choice because it does not require the container to access the host graphical display.
 
 ```bash
 python3 instance/resource_dashboard/dashboard_server.py \
@@ -37,36 +50,31 @@ python3 instance/resource_dashboard/dashboard_server.py \
   --instance-id hp_127.0.0.1:9001
 ```
 
-Then open this address in the **host browser**:
+Open in the host browser:
 
 ```text
 http://127.0.0.1:9202
 ```
 
-If the container uses `--network host`, the address above should work directly. If the container does not use host networking, expose the dashboard port when starting the container:
+If the container is not running with host networking, expose the port when starting the container:
 
 ```bash
 -p 9202:9202
 ```
 
-The browser dashboard exposes:
+Useful API calls:
 
 ```bash
 curl -sS http://127.0.0.1:9202/api/health | python3 -m json.tool
 curl -sS http://127.0.0.1:9202/api/snapshot | python3 -m json.tool
 curl -sS http://127.0.0.1:9202/api/agent/status | python3 -m json.tool
-```
-
-It also supports:
-
-```bash
 curl -sS -X POST http://127.0.0.1:9202/api/agent/start | python3 -m json.tool
 curl -sS -X POST http://127.0.0.1:9202/api/agent/stop | python3 -m json.tool
 ```
 
-## 3. Desktop window usage
+## Desktop dashboard
 
-The desktop dashboard opens a small local Tkinter window:
+The desktop dashboard opens a local Tkinter window:
 
 ```bash
 python3 instance/resource_dashboard/dashboard_app.py \
@@ -75,9 +83,7 @@ python3 instance/resource_dashboard/dashboard_app.py \
   --instance-id hp_127.0.0.1:9001
 ```
 
-It auto-starts the Rust resource agent unless `--no-auto-start` is used.
-
-By default, it starts the agent with:
+It auto-starts the Rust Resource Agent unless `--no-auto-start` is used. By default, it starts:
 
 ```bash
 cargo run --manifest-path instance/resource_agent/Cargo.toml -- \
@@ -86,27 +92,51 @@ cargo run --manifest-path instance/resource_agent/Cargo.toml -- \
   --instance-id hp_127.0.0.1:9001
 ```
 
-Use `--no-auto-start` if you want to start the agent yourself.
+Use `--no-auto-start` when another process already owns the Resource Agent lifecycle.
 
-## 4. Why a container may not open a desktop window
+## Demo resource reporting
 
-Having a physical monitor on the host machine is not enough. A Docker container cannot automatically access the host graphical display. If the container does not have the `DISPLAY` environment variable and the X11 socket mounted, Tkinter will fail with an error such as:
+For end-to-end Proxy resource-state validation, prefer the demo path:
+
+```bash
+cd test
+python3 demo_proxy.py --host 127.0.0.1 --port 8001 --strategy round_robin --injection-strategy iws
+```
+
+In another terminal:
+
+```bash
+cd test
+python3 demo_instance.py --host 127.0.0.1 --port 9001 --proxy-cp-url http://127.0.0.1:8002
+```
+
+Then inspect Proxy-side resource state:
+
+```bash
+curl -sS "http://127.0.0.1:8002/debug/instance_resources" | python3 -m json.tool
+```
+
+`demo_instance.py` starts or reuses the Rust agent, waits for health, reports snapshots only after registration succeeds, and cleans up only the Resource Agent process group it started.
+
+## Why a container may not open a desktop window
+
+Having a physical monitor on the host machine is not enough. A Docker container cannot automatically access the host graphical display. If the container does not have `DISPLAY` and the X11 socket mounted, Tkinter may fail with:
 
 ```text
 no display name and no $DISPLAY environment variable
 ```
 
-In this case, either use the browser dashboard in Section 2, or start the container with X11 forwarding enabled.
+Use the browser dashboard, or start the container with X11 forwarding.
 
 ### X11 example on Linux hosts
 
-On the host machine, allow local Docker clients to access the X server:
+On the host:
 
 ```bash
 xhost +local:docker
 ```
 
-Start the container with `DISPLAY` and the X11 Unix socket mounted:
+Start the container with `DISPLAY` and the X11 socket:
 
 ```bash
 sudo docker run --gpus all -it \
@@ -124,7 +154,7 @@ sudo docker run --gpus all -it \
   basic-cu128 bash
 ```
 
-Inside the container, verify:
+Inside the container:
 
 ```bash
 echo $DISPLAY
@@ -134,13 +164,9 @@ print("tkinter: ok")
 EOF
 ```
 
-Then run `dashboard_app.py` again.
+If this is inconvenient, use `dashboard_server.py` instead. If the container cannot open the desktop window, you can also try running the Rust agent and desktop dashboard directly on the host machine, as long as the host has a compatible Rust/Cargo toolchain and repository permissions are correct.
 
-### WSLg or desktop-capable environments
-
-If you use WSLg or another desktop-capable environment, make sure the container inherits the correct display variables and socket mounts from that environment. If this is inconvenient, use the browser dashboard fallback.
-
-## 5. Validate direct Rust agent endpoint
+## Validate direct Rust agent endpoint
 
 ```bash
 curl -sS http://127.0.0.1:9201/healthz
@@ -169,23 +195,12 @@ Use the CacheRoute Docker image built from `env/docker/Dockerfile`, or install R
 
 Install Tkinter as a system package. It should **not** be added to `requirements.txt`.
 
-For Python 3.12:
-
-```bash
-apt-get update
-apt-get install -y python3.12-tk
-```
-
-For the system default Python:
-
 ```bash
 apt-get update
 apt-get install -y python3-tk
 ```
 
-### Desktop window does not open
-
-If the error mentions `$DISPLAY`, the container has no graphical display access. Use the browser dashboard, or start the container with X11 forwarding as described above.
+For Python 3.12, use `python3.12-tk` if available.
 
 ### Dashboard starts but snapshot is unavailable
 
@@ -197,7 +212,7 @@ curl -sS http://127.0.0.1:9201/healthz
 
 ### GPU list is empty
 
-Check whether the container can run:
+Check GPU visibility:
 
 ```bash
 nvidia-smi
@@ -207,7 +222,7 @@ Make sure the container was started with `--gpus all`.
 
 ### Port is already in use
 
-Change ports with:
+Change the agent or dashboard port:
 
 ```bash
 --agent-listen 127.0.0.1:<port>
@@ -224,10 +239,9 @@ POST /api/agent/start
 POST /api/agent/stop
 ```
 
-## Future Work
+## Future work
 
-1. Report resource snapshots to the Proxy control plane.
-2. Extend `InstancePool` with normalized resource-state fields.
-3. Add Instance-side queue and KVCache block metrics.
-4. Replace `nvidia-smi` polling with NVML-based GPU collection.
-5. Support multiple Instances in one dashboard.
+- Improve the desktop UI for many-GPU machines.
+- Add richer per-Instance queue and KVCache metrics once they are exported by Instance.
+- Replace `nvidia-smi` polling with a lower-overhead GPU collector such as NVML.
+- Support multi-Instance comparison in one dashboard.
