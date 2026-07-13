@@ -1,448 +1,574 @@
-**此处为cacheroute初始架构搭建相关更新日志。更多系统调试与blog更新见pull Requests。**
+# CacheRoute Blog / Update Log
 
-### 260713 后续计划
+这里维护 CacheRoute 原型系统的阶段性工程记录。更细粒度的调试过程、代码讨论和审查意见以 GitHub Issues / Pull Requests 为准。
 
-目前知识注入侧的全局调度器（一级）已有雏形，本地资源池的调度主要实现了动态知识注入决策，实例选择的模块待整理更新。
+## 阅读方式
+
+- **最新进展**放在最前面。
+- 每条记录按“背景 / 改动 / 验证 / 后续”组织。
+- 旧 README 中的历史内容已整理为结构化 changelog，保留关键动机、文件范围和维护者信息。
+
+---
+
+## 260713：Instance Resource Agent demo 集成与资源状态上报
+
+### 背景
+
+本轮目标是把 Instance 侧资源采集链路从“手动启动 Rust Agent + 手动 reporter”推进到 demo 可直接验证的状态，使 Proxy 能看到本地 Instance 的 CPU、内存、GPU、网络和资源时间戳状态。
+
+### 改动
+
+- `test/demo_instance.py` 默认启用资源监控。
+- demo Instance 显式接管 Rust Resource Agent 生命周期：启动 / 复用、readiness 检查、周期上报、shutdown 清理、SIGTERM/SIGKILL fallback。
+- 上报只在 Instance 成功注册到 Proxy 后启动，避免 Proxy 收到 `unknown_instance`。
+- `instance/resource_agent/proxy_reporter.py` 的上报 payload 增加 metadata：
+  - `reported_instance_id`
+  - `report_monotonic_ms`
+  - `report_wall_time_ms`
+  - `agent_snapshot_timestamp_ms`
+- Proxy `InstancePool.resource` 增加规范化资源字段和时间戳字段。
+- Proxy 控制面新增 / 完善资源查看入口：
+  - `GET /debug/instance_resources`
+  - `GET /v1/instance/list?include_dead=true`
+- Proxy 资源 snapshot 成功日志降噪：第一次成功保留 INFO，后续成功更新转为 DEBUG。
+- 新增 `test/demo_resource_monitor_e2e.py`，用于启动 Proxy + Instance、等待资源上报、关闭 Instance 并检查 demo-owned agent 是否清理。
+- 新增 `test/README.md`，整理 `test/` 下 demo 文件职责。
+
+### 验证命令
+
+启动 Proxy：
+
+```bash
+cd test
+python3 demo_proxy.py \
+  --host 127.0.0.1 \
+  --port 8001 \
+  --strategy round_robin \
+  --injection-strategy iws
+```
+
+启动 Instance：
+
+```bash
+cd test
+python3 demo_instance.py \
+  --host 127.0.0.1 \
+  --port 9001 \
+  --proxy-cp-url http://127.0.0.1:8002
+```
+
+查看 Proxy 收到的资源状态：
+
+```bash
+curl -sS "http://127.0.0.1:8002/debug/instance_resources" | python3 -m json.tool
+curl -sS "http://127.0.0.1:8002/v1/instance/list?include_dead=true" | python3 -m json.tool
+```
+
+单独检查 Rust Agent：
+
+```bash
+curl -sS http://127.0.0.1:9201/healthz
+curl -sS http://127.0.0.1:9201/v1/resource/snapshot | python3 -m json.tool
+```
+
+运行 e2e smoke：
+
+```bash
+python3 test/demo_resource_monitor_e2e.py \
+  --agent-listen 127.0.0.1:19201 \
+  --agent-url http://127.0.0.1:19201
+```
+
+### 当前状态
+
+Issue #86 的核心目标基本完成：Instance demo 能默认启动或复用 Resource Agent，注册后向 Proxy 上报资源，Proxy 能通过 API 查看资源状态。资源状态目前仍是**观测数据**，尚未进入 Proxy Instance 选择策略。
+
+### 后续
+
+1. 基于 `InstancePool.resource` 设计资源感知 Instance selection 策略。
+2. 在 Instance 侧补充队列、KVCache block、vLLM runtime 等更细粒度指标。
+3. 将 GPU 采集从 `nvidia-smi` 轮询替换为更低开销方案。
+4. 继续改进 Resource Dashboard UI，使多 GPU 场景更易读。
+
+维护者：heyao
+
+---
+
+## 260713：后续计划
+
+目前知识注入侧的全局调度器已有雏形，本地资源池的调度主要实现了动态知识注入决策，实例选择模块仍需继续整理。
 
 <img width="400" alt="image" src="https://github.com/user-attachments/assets/965b2b48-afe2-4c26-8784-ae52f7f4bcbe" />
 
-后续的原型系统工程计划主要有两步工作：
+后续原型系统工程计划：
 
-（1）资源池级实例调度策略
-
-（1-1） 基于 Rust Agent实现实例资源感知与管理
-
-（1-2） 基于API/gRPC上报至Proxy
-
-（1-3） Proxy实现基于前缀缓存的管理，维护实例KVCache资源情况，同时上报KDN服务器和Scheduler。
-
-（2）KDN服务器的改进（为后续KVCache放置策略服务）
-目前KDN服务器仅支持简单的知识注册、查询和反馈，后续需要实现KDN服务器控制平面，对知识资源进行更细致化的维护，最后为上层KVCache放置策略服务。
-
----
-
-### 260312 提升Perf_Client能力，修复KEYS失配问题，完善KDN能力
-
-(1)修改LMCache的keys生成规则，观察是否可以跨容器周期复用（有待观察）依旧失败，chunk hash值还在变化导致KEY不一致，依次排查过`NONE_HASH`,`model_name`等变量，最后发现确认是chunk_hash在变化，其根本原因在于chat-template中包含Today-Data信息，导致日期变化KVCache前缀失效。<br>
-(2)完善perf_client功能，支持hybrid模式的Injection-type，用于初步测试混合策略下任务性能的优势。<br>
-(3)完善KDN服务器，构建网络传输模型，采用批次内知识请求并发并均分带宽，批次间请求串行传输的方式，可动态配置批次窗口等变量<br>
-
-涉及修改文件:<br>
-`model/tokenizer_config.json`<br>
-`client/perf_client.py`<br>
-`kdn_server/kv_injector.py`<br>
-`kdn_server/kdn_api.py`<br>
-`test/demo_kdn.py`<br>
-
-一些提上日程的工作：<br>
-(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
-(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
-(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
-(4)知识清单中可用LLM系统的状态更新<br>
+1. **资源池级实例调度策略**
+   - 基于 Rust Agent 实现实例资源感知与管理。
+   - 通过 API / gRPC 上报至 Proxy。
+   - Proxy 维护实例 KVCache 和资源状态，并向 KDN / Scheduler 上报必要摘要。
+2. **KDN 服务器改进**
+   - 当前 KDN 服务器支持知识注册、查询和反馈。
+   - 后续需要控制平面，对知识资源进行更细粒度维护，为 KVCache 放置策略服务。
 
 维护者：heyao
 
 ---
 
-### 260311 提升Client显示与发包能力
+## 260312：提升 Perf Client 能力，修复 KEYS 失配问题，完善 KDN 能力
 
-(1)client增加显示任务时间戳能力。<br>
-(2)扩展perf_client功能，化简workload.json，新增client的taskset/来批量生产任务json。<br>
-(3)perf_client增加rps模式，相比concurrency模式固定并发和任务总数的小规模实验，rps模式用于持续压测和性能曲线实验，来实现定时的rps转发<br>
+### 改动
 
-涉及新增文件：<br>
-`client/taskset/`<br>
+- 排查 LMCache key 不能跨容器周期复用的问题，确认 `chat-template` 中的 Today-Date 信息导致 chunk hash 变化。
+- `perf_client.py` 支持 hybrid 模式 `Injection_type`，用于测试混合策略性能。
+- KDN 服务器构建网络传输模型，支持批次内并发、均分带宽、批次间串行传输，并支持批次窗口配置。
 
-涉及修改文件:<br>
-`client/client.py`<br>
-`client/perf_client.py`<br>
+### 涉及文件
 
-维护者：heyao
+- `model/tokenizer_config.json`
+- `client/perf_client.py`
+- `kdn_server/kv_injector.py`
+- `kdn_server/kdn_api.py`
+- `test/demo_kdn.py`
 
----
+### 后续
 
-### 260310 提升KDN批量注册与显示能力
-
-(1)支持KDN批量知识文本注册，读取json文件内的知识文本并依次送入KDN进行注册，初始化可用的KDN知识库，具体使用方法见kdn`README`。<br>
-(2)改善KDNcli输出显示，允许查看整体资源池状态。<br>
-
-涉及新增文件：<br>
-`kdn_server/util/knowledge_manifest.json`<br>
-`kdn_server/util/batch_register_kdn.py`<br>
-
-涉及修改文件:<br>
-`kdn_server/kdn_api.py`<br>
-`kdn_server/kdn_register_cli.py`<br>
-`kdn_server/text_db.py`<br>
+- KDN 服务器 UI。
+- Instance 侧资源检索平台。
+- 双 inflight 维护池级业务流状态。
+- 知识清单中可用 LLM 系统状态更新。
 
 维护者：heyao
 
 ---
 
-### 260309 实现proxy并行处理任务队列，完善时间戳与client端发包器
+## 260311：提升 Client 显示与发包能力
 
-(1)支持多任务并行知识注入调度。目前`prepare-ready`处理是串行，同一个Instance只有一个`_prepare_worker_loop()`，它会在循环里等待一次完整的text获取、分类、可能的`kv_ack`，然后才处理下一个任务（串行）。而 instance_queues.py 目前也只有两个队列，没有并发控制器或活动任务计数。增加时间锚点给每个任务记录这些时间点，单位统一为 epoch_ms。<br>
-  (1.1)实现并行队列，现在只有两个队列。把它升级成“队列 + prepare 并发控制 + 活动计数”。<br>
-  (1.2)当前是从队列取一个任务，然后完整跑完的串行。改造增加dispatcher，为每个Instance启用多个worker来动态并发任务。<br>
-  (1.3)chat/completion在结果返回时附带一个_cacheroute_meta字段用于观察性能。新增chat SSE事件函数，用于chat流式结束后回复任务性能记录。<br>
-(2)新增`perf_client.py`，`workload.json`，来支持后续的持续发包压力测试。client在json里随机抓请求，一次发起多个请求，不打印具体生成内容，只打印性能状态和trace计算结果。示例如：<br>
+### 改动
+
+- Client 增加任务时间戳显示。
+- 扩展 `perf_client.py`，简化 `workload.json`，新增 `client/taskset/` 生成任务 JSON。
+- `perf_client.py` 增加 RPS 模式，用于持续压测和性能曲线实验。
+
+### 涉及文件
+
+- `client/taskset/`
+- `client/client.py`
+- `client/perf_client.py`
+
+维护者：heyao
+
+---
+
+## 260310：提升 KDN 批量注册与显示能力
+
+### 改动
+
+- 支持从 JSON 批量注册知识文本，初始化 KDN 知识库。
+- 改善 KDN CLI 输出，允许查看整体资源池状态。
+
+### 涉及文件
+
+- `kdn_server/util/knowledge_manifest.json`
+- `kdn_server/util/batch_register_kdn.py`
+- `kdn_server/kdn_api.py`
+- `kdn_server/kdn_register_cli.py`
+- `kdn_server/text_db.py`
+
+维护者：heyao
+
+---
+
+## 260309：实现 Proxy 并行处理任务队列，完善时间戳与 Client 发包器
+
+### 改动
+
+- 将 `prepare-ready` 串行处理升级为队列 + prepare 并发控制 + 活动计数。
+- 为每个 Instance 启用多个 prepare worker。
+- Chat / completion 返回结果附带 `cacheroute_meta`，用于观察性能。
+- 新增 `perf_client.py` 和 `workload.json`，支持持续发包压力测试。
+- 支持透传 `Injection_type` 字段，作为策略调试控制。
+- 继续观察 LMCache keys 复用问题。
+
+### 示例
+
+```bash
+python3 perf_client.py \
+  --base-url http://127.0.0.1:7001 \
+  --workload-file workload.json \
+  --requests 2 \
+  --concurrency 8 \
+  --allow-duplicate \
+  --seed 7
 ```
-python3 perf_client.py --base-url http://127.0.0.1:7001 --workload-file workload.json --requests 2 --concurrency 8 --allow-duplicate --seed 7
-```
-其中`--allow-duplicate`：是否允许重复抽样，`--seed`：相同的seed将抽样顺序固定，便于复现。<br>
-(3)透传client字段支持写入Injection_type字段，作为在proxy目前缺少调度策略时的调试控制。<br>
-(4)修改LMCache的keys生成规则，观察是否可以跨容器周期复用（有待观察）<br>
 
-一些提上日程的工作：<br>
-(1)KDN服务器的UI搭建，重点是知识可读性（_TODO. chen_）<br>
-(2)instance侧需要搭建一个灵活的资源检索平台(主要是基于vllm平台抓取信息)，使得instance面向proxy暴露动态更新的实例负载信息，便于proxy抓取（_TODO. sihan_）<br>
-(3)双inflight对池级业务流状态维护(_TODO. heyao_)<br>
-(4)知识清单中可用LLM系统的状态更新<br>
+### 后续
+
+- KDN 服务器 UI。
+- Instance 资源检索平台。
+- 双 inflight 池级业务流维护。
+- 可用 LLM 系统状态更新。
 
 维护者：heyao
 
 ---
 
-### 260306 大更新（v0.1.4）实现基于文本和基于KVCache注入的全流程行为打通
+## 260306：大更新 v0.1.4，打通文本与 KVCache 注入全流程
 
-(1)实现基于KVCache的知识注入，当Injection_type=kvcache时，prepare work仍然拉文本并拼接，但会额外通知选中的Instance将这批knowledge_id的KVCache注入到该Instance本地的redis。Instance完成后ACK给Proxy，Proxy待确认ACK后，任务才进入Ready队列。<br>
-(1.1)实现proxy.manager对知识需求的状态分类处理，对每个List_ID，查询相应信息并归类为kv_ready，text_only或miss。在注入到prompt是优先将kv_ready的放在前面，text放在后面。相应的日志会反馈给scheduler，用于上层知识维护的决策。注意，如果kid未build，kdn只把命中的发给Instance，告知miss。然后由Instance反馈给proxy，进而反馈给scheduler miss 情况。因为对于KDN面向Instance和proxy的业务面，下游无权改变上游维护知识的存储结构（考虑到存储策略问题）。<br>
-(1.2)实现KVCache注入通信链路，proxy当Injection_type=kvcache时，先做text分类与注入，再等Instance/KDN的ACK，最后进入ready。针对kv_ready的kid发起KV注入请求。搭建proxy-Instance-kdn_server子链路。<br>
-(1.3)实现具体KVCache注入行为嵌入，统一消息格式以触发重用。<br>
+### 改动
 
-涉及新增文件：<br>
-`instance/kv_service.py`<br>
-`instance/control_plane.py`<br>
+- 实现基于 KVCache 的知识注入。
+- 当 `Injection_type=kvcache` 时，Proxy 先完成文本分类和注入准备，再通知 Instance 将 KVCache 注入到本地 Redis，收到 ACK 后任务进入 ready 队列。
+- `proxy.manager` 对知识需求分类为 `kv_ready`、`text_only`、`miss`。
+- 打通 Proxy -> Instance -> KDN Server 的 KV 注入子链路。
+- 集成 KVCache 注入行为和消息格式。
 
-涉及修改文件:<br>
-`proxy/queue/task.py`<br>
-`proxy/queue/manager.py`<br>
-`proxy/queue/knowledge.py`<br>
-`instance/instance_api.py`<br>
-`core/config.py`
-`kdn_server/kdn_api.py`<br>
+### 涉及文件
 
-维护者：heyao
-
----
-
-### 260305 构建Proxy内Prepare+Ready双任务队列结构
-
-(1)串通基于文本的知识注入和基于KVCache的知识注入，添加Injection_type变量来标记任务注入策略，在scheduler build_request过程中默认赋值text，后续待proxy结合实际资源进行更新（text or kvcache）。<br>
-(2)引入队列骨架，proxy主handler不再直接调用forward_request(...)，而是决策完成后把任务交给队列模块。队列模块当前仍然“同步drain”（立即出队并转发），所以对外表现不变（待后续开发更多队列行为）。<br>
-(3)释放Proxy功能，将知识注入函数移植到外部queue内，仅保留处理request、策略执行、送入队列以及接收队列结果的流水线工作。Proxy保持对外功能不变。引入per-instance的`prepare/ready`双队列，并把知识注入从proxy handler迁到 prepare-queue worker。<br>
- - prepare-queue worker仅负责知识注入的任务准备工作，然后把注入完成的任务丢进ready_q。目前仅支持Injection_type =="text"的知识注入。<br>
- - ready-queue worker：负责真正forward_request到instance，并通过task的response_queue把输出回传给handler。<br>
-
-涉及新增文件：<br>
-`proxy/queue/__init__.py`<br>
-`proxy/queue/task.py`<br>
-`proxy/queue/manager.py`<br>
-`proxy/queue/knowledge.py`<br>
-`proxy/queue/instance_queues.py`<br>
-
-涉及修改文件:<br>
-`core/request.py`<br>
-`scheduler/scheduler.py`<br>
-`proxy/proxy.py`<br>
+- `instance/kv_service.py`
+- `instance/control_plane.py`
+- `proxy/queue/task.py`
+- `proxy/queue/manager.py`
+- `proxy/queue/knowledge.py`
+- `instance/instance_api.py`
+- `core/config.py`
+- `kdn_server/kdn_api.py`
 
 维护者：heyao
 
 ---
 
-### 260304 完善scheduler与proxy的日志输出
+## 260305：构建 Proxy 内 Prepare + Ready 双任务队列结构
 
-(1)优化scheduler输出显示，避免被心跳包淹没，按周期统计资源池信息做数据整理简报，并输出到log/scheduler/scheduler.log中，而非显示在命令行（命令行仅有极少数重要信息）。<br>
-(2)优化proxy输出显示，屏蔽海量心跳包，转而进行周期性统计。<br>
+### 改动
 
-涉及新增文件：<br>
-`scheduler/resource/hb_log.py`<br>
-`proxy/resource/hb_log.py`<br>
+- 串通文本知识注入与 KVCache 注入。
+- 添加 `Injection_type` 变量标记任务注入策略。
+- Proxy 主 handler 不再直接调用 `forward_request`，而是把任务交给队列模块。
+- 引入 per-instance `prepare/ready` 双队列。
+- 知识注入迁移到 prepare queue worker。
+- ready queue worker 负责真正转发到 Instance 并回传输出。
 
-涉及修改文件:<br>
-`core/config.py`<br>
-`scheduler/scheduler.py`<br>
-`scheduler/resource/control_plane.py`<br>
-`scheduler/knowledge/kdn_sync.py`<br>
-`proxy/proxy.py`<br>
+### 涉及文件
 
-维护者：heyao
-
----
-
-### 260303 完善scheduler的proxy资源池信息维护
-
-(1)新增proxy_pool中proxy对控制LLM系统的静态处理能力描述，作为后续调度变量它由proxy注册时上报，在完整的生命周期内保持不变，具体涉及<br>
- - proxy所支持的最大并发任务数 `PROXY_MAX_CAPACITY`<br>
- - proxy管理实例数 `PROXY_INSTANCE_COUNT`<br>
- - proxy中管理的每个实例的KVCache内存大小 `PROXY_KV_MEM_PER_INSTANCE_GB`<br>
- - proxy管理实例池的KV内存大小 `kv_cache_pool_gb`<br>
- - proxy对KV缓存的更新策略 `PROXY_KV_CACHE_UPDATE_POLICY`<br>
- 
-(2)支持scheduler对流事件的追踪，scheduler根据会话维护每个proxy正在执行的任务数，进而作为LLM系统负载的评判依据之一。此外，它还结合proxy心跳包和scheduler基于流的自校正来维护资源动态性。具体的，为减少维护inflight所带来的成本，采用由scheduler事件驱动+proxy低频校准的混合维护机制。scheduler收到新的任务请求，流数就加1。只要scheduler对proxy的这次转发stream结束了（不管对端是正常结束、异常、被取消、下游断开），scheduler都认为这个inflight周期结束；这样容易做到不漏减。此外，通过proxy的周期汇报来校准，避免大规模负载偏差。<br>
-
-涉及修改文件:<br>
-`core/request.py`<br>
-`core/config.py`<br>
-`scheduler/scheduler.py`<br>
-`scheduler/scheduler_cli.py`<br>
-`scheduler/resource/control_plane.py`<br>
-`scheduler/resource/proxy_pool.py`<br>
-`proxy/proxy.py`<br>
-`proxy/sclient/scheduler_client.py`<br>
+- `proxy/queue/__init__.py`
+- `proxy/queue/task.py`
+- `proxy/queue/manager.py`
+- `proxy/queue/knowledge.py`
+- `proxy/queue/instance_queues.py`
+- `core/request.py`
+- `scheduler/scheduler.py`
+- `proxy/proxy.py`
 
 维护者：heyao
 
 ---
 
-### 260302 Scheduler显示优化，KDN+Proxy调度策略集成
+## 260304：完善 Scheduler 与 Proxy 日志输出
 
-(1)完善scheduler_cli的status查询输出，支持查看kdn资源池状态<br>
-(2)优化kdn的知识更新（即`kdn_refresh_once()`函数），现在在old_table更新，可能在并发refresh时造成混乱。因此在更新时先新建一个new_table，并发更新都集中在new_table上，待完毕后统一swap old_table。<br>
-(3)将KDN选择策略集成到scheduler的strategy统一策略中，现在scheduler在选择时仅在handle_client()送入proxy池和proxy选择策略，并在request.py执行时确定proxy。kdn则在外面通过一个外挂简单循环实现，没有集成至统一scheduler配置的入口策略中。通过集成，使得KDN选择策略一同集成进scheduler/strategy内<br>
-(4)优化kdn_refresh，在KDN注册成功后立即触发一次refresh，而不是等待周期更新。<br>
+### 改动
 
-涉及修改文件:<br>
-`core/request.py`<br>
-`scheduler/scheduler.py`<br>
-`scheduler/scheduler_cli.py`<br>
-`scheduler/resource/control_plane.py`<br>
-`scheduler/knowledge/kdn_sync.py`<br>
-`scheduler/strategy/base.py`<br>
-`scheduler/strategy/round_robin.py`<br>
-`store/knowledge_base.py`<br>
+- Scheduler 心跳日志改为周期统计，减少命令行噪声。
+- Proxy 心跳日志改为周期统计，避免海量输出。
 
-维护者：heyao
+### 涉及文件
 
----
-
-### 260202 Proxy、Scheduler池资源结构优化
-
-(1)支持proxy的策略接入Instance池，实现基于池的proxy策略选择，而非默认<br>
-(2)优化proxy，在初始化时支持加载策略，不再依赖Scheduler中build_request赋值<br>
-(3)更新Scheduler获取知识清单的方式，为其构建KDN池，并在初始化时控制平面构建，由KDN服务器在启动时主动向Scheduler的kdn_pool注册，随后触发snapshot拉取知识清单<br>
-(4)CacheRoute中资源获取关系与启动顺序更新：
-  ```
-  1. Scheduler启动->维护构建proxy_pool和kdn_pool，构建控制平面监听端口（7002），处理来自proxy和kdn的注册、心跳包和注销
-  2. KDN && Proxy启动->向Scheduler的控制平面发起注册请求，随后向Scheduler上报资源情况，后续执行个性化资源维护
-  3. Instance启动->绑定具体vllm实例，探测资源，向本地proxy注册并上报负载情况
-  ```
-涉及修改文件:<br>
-`core/config.py`<br>
-`scheduler/scheduler.py`<br>
-`scheduler/resource/control_plane.py`<br>
-`scheduler/knowledge/kdn_sync.py`<br>
-`scheduler/resource/kdn_pool.py`<br>
-`kdn_server/sclient/scheduler_client.py`<br>
-`proxy/proxy_cli.py`<br>
-`proxy/README.md`<br>
-`test/demo_kdn.py`<br>
-`README.md`<br>
-
-涉及新增文件:<br>
-`proxy/strategy/base.py`<br>
-`proxy/strategy/factory.py`<br>
-`proxy/strategy/round_robin.py`<br>
+- `scheduler/resource/hb_log.py`
+- `proxy/resource/hb_log.py`
+- `core/config.py`
+- `scheduler/scheduler.py`
+- `scheduler/resource/control_plane.py`
+- `scheduler/knowledge/kdn_sync.py`
+- `proxy/proxy.py`
 
 维护者：heyao
 
 ---
 
-### 260201 Proxy_CLI显示输出功能
+## 260303：完善 Scheduler 的 Proxy 资源池信息维护
 
-(1)支持proxy_CLI开发，显示输出实例池、proxy信息，并维护使用方法<br>
+### 改动
 
-涉及修改文件:<br>
-`proxy/proxy_cli.py`<br>
-`proxy/README.md`<br>
+- Proxy 注册时上报静态能力描述：最大并发、实例数、KVCache 容量、更新策略等。
+- Scheduler 基于流事件维护 proxy inflight，并通过 proxy 心跳低频校准。
 
-维护者：heyao
+### 涉及文件
 
----
-
-### 260131 一些有关Instance的功能完善
-
-(1)Instance支持启动多个不同端口号的实例，解决了多个Instance下proxy注册失败问题<br>
-(2)优化proxy和Instance之间的交互日志输出<br>
-
-涉及修改文件:<br>
-`proxy/resource/p_control_plane.py`<br>
-`instance/instance_api.py`<br>
-`test/demo_instance.py`<br>
+- `core/request.py`
+- `core/config.py`
+- `scheduler/scheduler.py`
+- `scheduler/scheduler_cli.py`
+- `scheduler/resource/control_plane.py`
+- `scheduler/resource/proxy_pool.py`
+- `proxy/proxy.py`
+- `proxy/sclient/scheduler_client.py`
 
 维护者：heyao
 
 ---
 
-### 260130 (v0.1.1) Proxy与Instance之间的接口功能完善
+## 260302：Scheduler 显示优化，KDN + Proxy 调度策略集成
 
-(1)实现proxy控制平面逻辑Fastapi(8002)，供Instance调用register/heartbeat/unregister/list<br>
-(2)构建描述Instance状态的结构体`InstancePool`，描述Instance池ID，Instance负载信息等状态<br>
-(3)支持proxy在lifespan启动时构建InstancePool，注入控制平面并启动控制平面。支持proxy在注销时在注销时退出控制平面并上报scheduler。<br>
-(4)支持Instance与proxy控制平面之间的交互，register/heartbeat/unregister<br>
+### 改动
 
-涉及修改文件:<br>
-`proxy/proxy.py`<br>
-`core/config.py`<br>
-`instance/instance_api.py`<br>
-`test/demo_instance.py`<br>
+- `scheduler_cli` status 支持查看 KDN 资源池。
+- 优化 KDN refresh，先构建新表再 swap，避免并发刷新混乱。
+- 将 KDN 选择策略集成进 Scheduler strategy。
+- KDN 注册成功后立即触发 refresh。
 
-涉及新增文件:<br>
-`proxy/resource/instance_pool.py`<br>
-`proxy/resource/p_control_plane.py`<br>
-`instance/pclient/proxy_client.py`<br>
+### 涉及文件
 
-维护者：heyao
-
----
-
-### 260129 一些有关Proxy的功能完善
-
-(1)构建与scheduler对接的proxy交互方法，使得proxy在启动时自动注册，然后动态发心跳包保活，退出后自动注销<br>
-(2)新增`proxy/sclient`目录，用于维护与scheduler交互的client方法<br>
-(3)新增`proxy/metrics`目录，用于后续处理从instance池抓取资源的整合处理，随后通过心跳包上传至scheduler<br>
-(4)proxy依然是一个双平面结构（业务平面+控制平面）业务平面默认端口8001，proxy在初始化时应向scheduler注册的端口。控制平面默认8002，它用于作为instance交互proxy的端口，用于更新instance状态并维护instance池状态。proxy业务平面执行策略时将instance池状态作为输入执行具体策略。<br>
-
-涉及修改文件:<br>
-`proxy/proxy.py`<br>
-`core/config.py`<br>
-
-涉及新增文件:<br>
-`proxy/sclient/scheduler_client.py`<br>
-`proxy/metrics/local_metrics.py`
+- `core/request.py`
+- `scheduler/scheduler.py`
+- `scheduler/scheduler_cli.py`
+- `scheduler/resource/control_plane.py`
+- `scheduler/knowledge/kdn_sync.py`
+- `scheduler/strategy/base.py`
+- `scheduler/strategy/round_robin.py`
+- `store/knowledge_base.py`
 
 维护者：heyao
 
 ---
 
-### 260128 scheduler控制平面维护结构构建，proxy对接接口构建
+## 260202：Proxy、Scheduler 池资源结构优化
 
-(1)新增维护proxy信息的结构体，包含静态信息（如注册时携带的信息`proxy_id/host/port/endpoints/tags/weight/meta`），和动态信息（如`load`，`last_seen`）。scheduler在初始化时会启用业务和控制两个平面，[业务平面]-[池信息结构体]-[控制平面]。scheduler在startup时创建pool。控制平面`control_plane.py`动态修改Proxy资源池信息，后续业务平面执行调度策略时会抓取proxy资源池信息。<br>
-(2)scheduler实现基于轮询的调度策略，根据可用proxy选择轮询。scheduler内新建strategy目录，用于定义后续scheduler各种策略的具体实现方法。<br>
-(3)demo_scheduler，新增`-- strategy`可选项，用于启动scheduler时选择调度策略<br>
-(4)调度策略判定从scheduler主循环迁移至build_request，优化结构<br>
-(5)丰富scheduler的cli功能，能够查看proxy池简易状态<br>
+### 改动
 
-涉及修改文件:<br>
-`core/config.py`<br>
-`core/request.py`<br>
-`scheduler/resource/control_plane.py`<br>
-`scheduler/scheduler.py`<br>
-`scheduler/scheduler_cli.py`<br>
-`test/demo_scheduler.py`<br>
+- 支持 Proxy 策略接入 Instance 池。
+- Proxy 初始化时支持加载策略，不再依赖 Scheduler `build_request` 赋值。
+- Scheduler 通过 KDN 池维护知识清单。
+- 明确启动顺序：Scheduler -> KDN / Proxy -> Instance。
 
-涉及新增文件:<br>
-`scheduler/resource/proxy_pool.py`<br>
-`scheduler/strategy/base.py`<br>
-`scheduler/strategy/factory.py`<br>
-`scheduler/strategy/round_robin.py`<br>
+### 涉及文件
+
+- `core/config.py`
+- `scheduler/scheduler.py`
+- `scheduler/resource/control_plane.py`
+- `scheduler/knowledge/kdn_sync.py`
+- `scheduler/resource/kdn_pool.py`
+- `kdn_server/sclient/scheduler_client.py`
+- `proxy/proxy_cli.py`
+- `proxy/README.md`
+- `test/demo_kdn.py`
+- `README.md`
+- `proxy/strategy/base.py`
+- `proxy/strategy/factory.py`
+- `proxy/strategy/round_robin.py`
 
 维护者：heyao
 
 ---
 
-### 260127 说明性文件更新，scheduler控制平面接口部署，一些接口整理
+## 260201：Proxy CLI 显示输出功能
 
-(1)更新env/README.md: 构建新版本的vllm+LMcache镜像的操作步骤<br>
-(2)新增启动脚本，支持容器容器和多开窗口，提升测试效率<br>
-(3)抽离demo_scheduler.py本地配置参数，统一送入core/config文件<br>
-(4)调整了scheduler内目录结构，按功能新增knowledge（用于维护知识清单）和resource（维护可用proxy及其计算网络资源）<br>
-(5)新增scheduler的控制平面接口，它在scheduler初始化时被自动拉起监听，用于与proxy交互进行proxy注册以及后续的资源同步。
+### 改动
 
-涉及修改文件:<br>
-`env/README.md`<br>
-`core/config.py`<br>
-`test/demo_scheduler.py`<br>
-`scheduler/scheduler.py`<br>
+- 支持 `proxy_cli.py` 显示 Instance 池和 Proxy 信息。
+- 补充 Proxy README 使用方法。
 
-涉及新增文件:<br>
-`test/quick_start_docker.sh`<br>
-`scheduler/resource/control_plane.py`<br>
+### 涉及文件
 
+- `proxy/proxy_cli.py`
+- `proxy/README.md`
+
+维护者：heyao
+
+---
+
+## 260131：Instance 功能完善
+
+### 改动
+
+- Instance 支持启动多个不同端口，解决多个 Instance 下 Proxy 注册覆盖问题。
+- 优化 Proxy 和 Instance 之间的交互日志。
+
+### 涉及文件
+
+- `proxy/resource/p_control_plane.py`
+- `instance/instance_api.py`
+- `test/demo_instance.py`
+
+维护者：heyao
+
+---
+
+## 260130：v0.1.1 Proxy 与 Instance 接口功能完善
+
+### 改动
+
+- 实现 Proxy 控制平面 FastAPI，默认端口 `8002`。
+- 构建 `InstancePool` 维护 Instance 静态信息、负载和 `last_seen`。
+- Proxy lifespan 构建 InstancePool、注入控制平面并启动控制平面。
+- Instance 支持向 Proxy register / heartbeat / unregister。
+
+### 涉及文件
+
+- `proxy/proxy.py`
+- `core/config.py`
+- `instance/instance_api.py`
+- `test/demo_instance.py`
+- `proxy/resource/instance_pool.py`
+- `proxy/resource/p_control_plane.py`
+- `instance/pclient/proxy_client.py`
+
+维护者：heyao
+
+---
+
+## 260129：Proxy 功能完善
+
+### 改动
+
+- Proxy 启动时自动注册 Scheduler，周期心跳，退出注销。
+- 新增 `proxy/sclient` 维护 Scheduler client。
+- 新增 `proxy/metrics` 预留本地资源整合。
+- 明确 Proxy 双平面结构：业务平面 `8001`，控制平面 `8002`。
+
+### 涉及文件
+
+- `proxy/proxy.py`
+- `core/config.py`
+- `proxy/sclient/scheduler_client.py`
+- `proxy/metrics/local_metrics.py`
+
+维护者：heyao
+
+---
+
+## 260128：Scheduler 控制平面维护结构构建，Proxy 对接接口构建
+
+### 改动
+
+- 新增 Proxy pool 静态 / 动态信息结构体。
+- Scheduler 启动业务平面、资源池和控制平面。
+- Scheduler 实现轮询调度策略。
+- `demo_scheduler.py` 增加 `--strategy` 参数。
+- 调度策略判定迁移至 `build_request`。
+- 丰富 Scheduler CLI。
+
+### 涉及文件
+
+- `core/config.py`
+- `core/request.py`
+- `scheduler/resource/control_plane.py`
+- `scheduler/scheduler.py`
+- `scheduler/scheduler_cli.py`
+- `test/demo_scheduler.py`
+- `scheduler/resource/proxy_pool.py`
+- `scheduler/strategy/base.py`
+- `scheduler/strategy/factory.py`
+- `scheduler/strategy/round_robin.py`
+
+维护者：heyao
+
+---
+
+## 260127：说明性文件更新，Scheduler 控制平面接口部署
+
+### 改动
+
+- 更新 `env/README.md`，记录 vLLM + LMCache 镜像构建步骤。
+- 新增启动脚本，支持容器和多窗口测试。
+- `demo_scheduler.py` 本地配置参数抽离到 `core/config.py`。
+- Scheduler 目录按 knowledge / resource 调整。
+- 新增 Scheduler 控制平面接口。
+
+### 涉及文件
+
+- `env/README.md`
+- `core/config.py`
+- `test/demo_scheduler.py`
+- `scheduler/scheduler.py`
+- `test/quick_start_docker.sh`
+- `scheduler/resource/control_plane.py`
 
 维护者：chen, heyao
 
 ---
 
-### 260126 大更新(v0.1.0)：重构scheduler，proxy和request部分的知识库维护部分，不再依赖本地yaml预设值。而是实现scheduler启动时抓取KDN服务器中的知识索引，构建自己的知识清单。
+## 260126：v0.1.0 重构 Scheduler / Proxy / Request 的知识库维护
 
-(1)KDN_server的/search/text支持按field回传，而不是每次都回传整个结构体<br>
-(2)KDN_server支持/snapshot整个知识库状态用于scheduler更新<br>
-(3)更新scheduler，摒弃之前的本地yaml构建方式，支持启动初始化从kdn进行snapshot抓取并构建知识清单。<br>
-(4)更新knowledge_base，支持sha256至int64映射（注：Faiss是通过INT64检索，而KDN形成的是sha256的str表达格式，所以在snap后需要进行映射。）<br>
-(5)优化scheduler_CLI，增强信息维护和交互命令行接口<br>
-(6)scheduler新增功能，动态同步KDN知识库状态，采用两阶段增量刷新，第一阶段拉轻量元信息，对于变更项才拉取二阶段<br>
+### 改动
 
-涉及修改文件:<br>
-`kdn_server/text_db.py`<br>
-`kdn_server/kdn_api.py`<br>
-`scheduler/__init__.py`<br>
-`scheduler/scheduler.py`<br>
-`scheduler/kdn_client.py`<br>
-`scheduler/scheduler_cli`<br>
-`store/knowledge_base.py`<br>
-`core/request.py`<br>
-`proxy/proxy.py`<br>
-`test/demo_scheduler.py`<br>
+- KDN `/search/text` 支持按 field 回传。
+- KDN 支持 `/snapshot` 返回知识库状态。
+- Scheduler 初始化从 KDN snapshot 抓取知识索引并构建知识清单。
+- `knowledge_base` 支持 sha256 到 int64 映射。
+- 优化 Scheduler CLI。
+- Scheduler 支持动态同步 KDN 知识库状态，采用两阶段增量刷新。
 
-涉及新增文件:<br>
-`scheduler/kdn_sync.py`<br>
+### 涉及文件
 
-维护者：heyao
-
----
-
-### 260123：完善了一些KDN服务器功能
-
-(1)集成`kv_builder`状态位，扩展文本块的数据位，能够通过kid查到有无KVCache。
-在 SQLite 里加 KV 元字段，并让 kv_builder 在完成 build 后回写。<br>
-(2)将所有接口都集成到了`kdn_register_cli.py`，可以通过它统一注册、查询文本知识和KVCache块。<br>
-
-涉及修改文件:<br>
-`kdn_server/text_db.py`<br>
-`kdn_server/kdn_api.py`<br>
-`kdn_server/kv_builder.py`<br>
-`kdn_server/kdn_register_cli.py`<br>
-`scheduler/kdn_client.py`<br>
+- `kdn_server/text_db.py`
+- `kdn_server/kdn_api.py`
+- `scheduler/__init__.py`
+- `scheduler/scheduler.py`
+- `scheduler/kdn_client.py`
+- `scheduler/scheduler_cli`
+- `store/knowledge_base.py`
+- `core/request.py`
+- `proxy/proxy.py`
+- `test/demo_scheduler.py`
+- `scheduler/kdn_sync.py`
 
 维护者：heyao
 
 ---
 
-### 260121：构建了KDN服务器数据结构
+## 260123：完善 KDN 服务器功能
 
-(1)规范化KDN的知识块存储与命名,更新KDN结构，将文本块hash生成唯一id，同时采用sqlite3进行索引构建。<br>
-(2)构造KVCache库,支持从Redis将CacheGen压缩的KVCache数据存储到本地，便于后续再利用。<br>
-(3)实现对KV_database中KVCache向Redis服务器的重新注入。<br>
-(4)维护kdn_server的`README.md`
+### 改动
 
-涉及修改文件:<br>
-`test/demo_kdn.py`<br>
-`kdn_server/kdn_api.py`<br>
+- 集成 `kv_builder` 状态位，扩展文本块数据位，可通过 `kid` 查询是否已有 KVCache。
+- SQLite 增加 KV 元字段，`kv_builder` 完成后回写。
+- `kdn_register_cli.py` 集成注册、查询文本知识和 KVCache 块。
 
-涉及新增文件:<br>
-`kdn_server/text_db.py`<br>
-`kdn_server/kdn_register_cli.py`<br>
-`kdn_server/kv_builder.py`<br>
-`kdn_server/kv_injector.py`<br>
-`util/kdn_build_kv.py`<br>
+### 涉及文件
+
+- `kdn_server/text_db.py`
+- `kdn_server/kdn_api.py`
+- `kdn_server/kv_builder.py`
+- `kdn_server/kdn_register_cli.py`
+- `scheduler/kdn_client.py`
 
 维护者：heyao
 
 ---
 
-### 260120：一些系统优化
+## 260121：构建 KDN 服务器数据结构
 
-(1)优化client.py的流式传输显示。<br>
-(2)解决proxy在chat/completion模式下，无法嵌入知识的问题。<br>
+### 改动
 
-涉及修改文件:<br>
-`client/client.py`<br>
-`proxy/proxy.py`<br>
+- 规范化 KDN 知识块存储与命名，采用文本 hash 生成唯一 ID。
+- 使用 SQLite 构建索引。
+- 构造 KVCache 库，支持从 Redis 存储 CacheGen 压缩 KVCache。
+- 实现 KVCache 向 Redis 重新注入。
+- 维护 KDN Server README。
+
+### 涉及文件
+
+- `test/demo_kdn.py`
+- `kdn_server/kdn_api.py`
+- `kdn_server/text_db.py`
+- `kdn_server/kdn_register_cli.py`
+- `kdn_server/kv_builder.py`
+- `kdn_server/kv_injector.py`
+- `util/kdn_build_kv.py`
 
 维护者：heyao
 
 ---
 
+## 260120：系统优化
 
+### 改动
 
+- 优化 `client.py` 流式传输显示。
+- 解决 Proxy 在 chat / completion 模式下无法嵌入知识的问题。
+
+### 涉及文件
+
+- `client/client.py`
+- `proxy/proxy.py`
+
+维护者：heyao
