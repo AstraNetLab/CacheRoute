@@ -99,7 +99,7 @@ The resource state is still observational. Proxy Instance selection does not yet
 3. Replace `nvidia-smi` polling with a lower-overhead GPU collection path.
 4. Continue improving the Resource Dashboard UI for multi-GPU machines.
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -121,7 +121,7 @@ The global knowledge-injection Scheduler has a working prototype. The local reso
    - The current KDN Server supports knowledge registration, query, and feedback.
    - A future KDN control plane should maintain knowledge resources more precisely and support KVCache placement strategy.
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -153,7 +153,7 @@ Owner: heyao
 - Maintain pool-level business flow state with dual inflight accounting.
 - Update the knowledge manifest with live LLM-system state.
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -172,7 +172,7 @@ Owner: heyao
 - `client/client.py`
 - `client/perf_client.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -191,7 +191,7 @@ Owner: heyao
 - `kdn_server/kdn_register_cli.py`
 - `kdn_server/text_db.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -232,7 +232,7 @@ python3 perf_client.py \
 - `scheduler/scheduler.py`
 - `proxy/proxy.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -258,7 +258,7 @@ Owner: heyao
 - `core/config.py`
 - `kdn_server/kdn_api.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -284,7 +284,7 @@ Owner: heyao
 - `scheduler/scheduler.py`
 - `proxy/proxy.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -306,7 +306,7 @@ Owner: heyao
 - `scheduler/knowledge/kdn_sync.py`
 - `proxy/proxy.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -329,7 +329,7 @@ Owner: heyao
 - `proxy/proxy.py`
 - `proxy/sclient/scheduler_client.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -353,7 +353,7 @@ Owner: heyao
 - `scheduler/strategy/round_robin.py`
 - `store/knowledge_base.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -388,7 +388,7 @@ Owner: heyao
 - `proxy/strategy/factory.py`
 - `proxy/strategy/round_robin.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -404,7 +404,7 @@ Owner: heyao
 - `proxy/proxy_cli.py`
 - `proxy/README.md`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -421,7 +421,7 @@ Owner: heyao
 - `instance/instance_api.py`
 - `test/demo_instance.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -444,7 +444,7 @@ Owner: heyao
 - `proxy/resource/p_control_plane.py`
 - `instance/pclient/proxy_client.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -466,7 +466,7 @@ Owner: heyao
 - `proxy/sclient/scheduler_client.py`
 - `proxy/metrics/local_metrics.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -494,7 +494,7 @@ Owner: heyao
 - `scheduler/strategy/factory.py`
 - `scheduler/strategy/round_robin.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -517,7 +517,7 @@ Owner: heyao
 - `test/quick_start_docker.sh`
 - `scheduler/resource/control_plane.py`
 
-Owners: chen, heyao
+Owners: chen, yao
 
 ---
 
@@ -546,7 +546,7 @@ Owners: chen, heyao
 - `test/demo_scheduler.py`
 - `scheduler/kdn_sync.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -566,7 +566,7 @@ Owner: heyao
 - `kdn_server/kdn_register_cli.py`
 - `scheduler/kdn_client.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -591,7 +591,7 @@ Owner: heyao
 - `kdn_server/kv_injector.py`
 - `util/kdn_build_kv.py`
 
-Owner: heyao
+Owner: yao
 
 ---
 
@@ -607,4 +607,4 @@ Owner: heyao
 - `client/client.py`
 - `proxy/proxy.py`
 
-Owner: heyao
+Owner: yao
