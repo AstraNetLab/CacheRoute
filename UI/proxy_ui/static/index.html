@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CacheRoute Proxy UI</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+  <header><div><h1>CacheRoute Proxy Observability</h1><p>Browser dashboard for Proxy control-plane and Instance resource state.</p></div><button id="refreshBtn">Refresh now</button></header>
+  <main>
+    <section class="cards" id="summaryCards"></section>
+    <section><h2>Proxy / Scheduler Status</h2><pre id="statusPanel">Loading...</pre></section>
+    <section><h2>Instance Pool</h2><div id="instanceSummary" class="muted"></div><div class="table-wrap"><table id="instanceTable"></table></div></section>
+    <section><h2>Resource Snapshots</h2><div id="resourceSummary" class="muted"></div><div class="table-wrap"><table id="resourceTable"></table></div></section>
+    <section><h2>KDN Topology Links</h2><pre id="topologyPanel">Loading...</pre></section>
+  </main>
+  <footer><span id="lastUpdated">Never updated</span><span id="errorBox"></span></footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>
