@@ -106,6 +106,24 @@ async def healthz() -> Dict[str, Any]:
     return {"ok": True, "ttl_s": pool.ttl_s}
 
 
+
+
+@_control_plane.get("/debug/status")
+async def debug_status() -> Dict[str, Any]:
+    pool = get_pool()
+    alive_items = pool.list(include_dead=False)
+    all_items = pool.list(include_dead=True)
+    return {
+        "ok": True,
+        "ttl_s": pool.ttl_s,
+        "alive_instances": len(alive_items),
+        "total_instances": len(all_items),
+        "expired_instances": max(0, len(all_items) - len(alive_items)),
+        "sample_ids": [it.instance_id for it in alive_items[:10]],
+        "topology_kdn_links": len(_kdn_links),
+    }
+
+
 @_control_plane.post("/v1/instance/register")
 async def register(req: InstanceRegisterReq) -> Dict[str, Any]:
     pool = get_pool()
