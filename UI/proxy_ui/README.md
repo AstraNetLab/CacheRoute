@@ -60,6 +60,22 @@ python3 -m uvicorn UI.proxy_ui.proxy_ui_server:app --host 127.0.0.1 --port 8202
 
 The UI polls the Proxy control plane through the UI server, so the browser does not need direct CORS access to Proxy APIs. Optional Scheduler/topology failures are shown as unavailable states and do not block the local Proxy and Instance panels from rendering.
 
+## Polished dashboard features
+
+upgrades the first Proxy UI into a richer frontend-only dashboard while keeping the same observability-only contract.
+
+- Sticky top navigation with Proxy/Scheduler badges, last refresh time, refresh, pause/resume, and theme controls.
+- Auto-refresh interval selector for 1s / 3s / 5s / 10s polling.
+- Local filters for alive-only, stale-only, resources-only, and instance-id/host search.
+- Short in-browser chart history for CPU, memory, GPU utilization, network RX/TX, and alive/stale counts.
+- Per-instance cards with liveness badges, resource freshness badges, progress bars, network mini-metrics, and admission state.
+- Sortable Instance table by state, age, CPU, memory, GPU, or resource report time.
+- Topology, Scheduler, and Raw JSON tabs so raw payloads remain available without dominating the main dashboard.
+- Copy buttons for diagnostics JSON and individual raw payloads.
+- Optional Scheduler/topology failures render as unavailable/degraded states and do not block local Proxy/Instance panels.
+
+All controls are browser-local display controls only. They do not mutate Scheduler routing, Proxy instance selection, Proxy injection strategy, KDN behavior, KVCache behavior, Instance forwarding, or Resource Agent reporting semantics.
+
 ## Validation steps
 
 Compile check:
