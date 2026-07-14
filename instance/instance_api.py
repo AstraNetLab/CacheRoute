@@ -1,16 +1,16 @@
 """
 instance.py
 
-vllm实例与proxy之间的适配层instance：
-  - 接收来自 Proxy 的 OpenAI 风格 HTTP 请求，
-    始终暴露稳定的 /v1/chat/completions、/v1/completions 和 /control/***，兼容 Proxy/Scheduler；
-  - 将用户请求转发到真实 vLLM（或后端引擎），无论 vLLM 返回什么格式，都尽量“按原样”往上透传
-  - /v1/completions：返回一个非流式 JSON，字段为 prompt（模拟 completion 输出）
-  - /v1/chat/completions：返回预设的流式响应（text/event-stream）
+Adapter layer between vLLM instances and Proxy:
+  - Receives OpenAI-style HTTP requests from Proxy,
+    always exposes stable /v1/chat/completions, /v1/completions, and /control/*** endpoints for Proxy/Scheduler compatibility;
+  - Forwards user requests to the real vLLM or backend engine and passes responses through as unchanged as possible;
+  - /v1/completions returns non-streaming JSON with a prompt field in mock completion output;
+  - /v1/chat/completions returns the preset streaming response (text/event-stream).
 
-!!! 注意：
-  当前版本只是“假装推理”，后续你只需要在这里对接 vLLM 的 generator，
-  把下面的 mock 逻辑替换掉即可。
+Note:
+  The current version still uses mock inference; later, wire the vLLM generator here,
+  and replace the mock logic below.
 """
 
 from __future__ import annotations
@@ -20,8 +20,6 @@ import os
 import asyncio
 import json
 import subprocess
-# import time
-
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
@@ -203,7 +201,7 @@ async def lifespan(app: FastAPI):
             f"hb={reg.heartbeat_interval_s}s ttl={reg.ttl_s}s"
         )
     except Exception as e:
-        # 不阻塞 instance 业务启动：注册失败时 proxy 看不到，但 instance 自己仍可跑
+        # Do not block Instance startup; if registration fails, Proxy cannot see it but Instance can still run.
         interval = 10.0
         runtime_instance_id = INSTANCE_ID
         print(f"[Instance][WARN] register failed: proxy_cp={PROXY_CP_URL} err={e}")
@@ -216,13 +214,22 @@ async def lifespan(app: FastAPI):
                 fail = 0
             except Exception as e:
                 fail += 1
-                # 每 6 次失败打一次，避免刷屏
+                # Log every 6 failures to avoid noisy output.
                 if fail % 6 == 0:
                     print(f"[Instance][WARN] heartbeat failed x{fail}: proxy_cp={PROXY_CP_URL} err={e}")
             await asyncio.sleep(interval)
 
     task = asyncio.create_task(_hb())
     app.state._hb_task = task # type: ignore
+
+    resource_monitor = getattr(app.state, "_demo_resource_monitor", None)  # type: ignore
+    registration_ok = runtime_instance_id == getattr(reg, "instance_id", None) if "reg" in locals() else False
+    if resource_monitor is not None:
+        if registration_ok:
+            await resource_monitor.start_after_registration(runtime_instance_id=runtime_instance_id, stop_event=stop, logger=logger)
+        else:
+            resource_monitor.skip_after_registration_failure(logger=logger)
+
     app.state._topology_task = asyncio.create_task(  # type: ignore
         _run_topology_discovery(client=client, instance_id=runtime_instance_id, logger=logger)
     )
@@ -239,6 +246,12 @@ async def lifespan(app: FastAPI):
             topo_task = getattr(app.state, "_topology_task", None)  # type: ignore
             if topo_task is not None:
                 topo_task.cancel()
+        except Exception:
+            pass
+        try:
+            resource_monitor = getattr(app.state, "_demo_resource_monitor", None)  # type: ignore
+            if resource_monitor is not None:
+                await resource_monitor.stop(logger=logger)
         except Exception:
             pass
         try:
@@ -269,15 +282,15 @@ instance = FastAPI(title="Instance v1", lifespan=lifespan)
 
 
 
-# ============== 基本配置 & 模式开关 ==============
+# ============== Basic configuration and mode switches ==============
 
 def _use_real_vllm() -> bool:
-    """当前是否启用真实 vLLM 模式"""
+    """Return whether real vLLM mode is currently enabled."""
     return (not use_mock) and bool(vllm_base_url)
 
-# ========================= 处理“未知格式”的 vLLM 返回 =========================
+# ========================= Handle vLLM responses with unknown formats =========================
 def _safe_json_from_bytes(content_bytes: bytes) -> Dict[str, Any]:
-    """尝试把 bytes 解析成 JSON；失败则用 raw_text 包装一层"""
+    """Try to parse bytes as JSON; wrap in raw_text on failure."""
     try:
         text = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -289,40 +302,40 @@ def _safe_json_from_bytes(content_bytes: bytes) -> Dict[str, Any]:
         return {"raw_text": text}
 
 
-# ================ vLLM 接口 ===============
+# ================ vLLM API helpers ===============
 async def _vllm_stream_chat(payload: Dict[str, Any]) -> AsyncGenerator[bytes, None]:
     """
-    调用真实 vLLM 的 /v1/chat/completions（stream 模式），
-    并把 SSE 字节流原样返回。
+    Call the real vLLM /v1/chat/completions endpoint in stream mode,
+    and return the SSE byte stream unchanged.
     """
     if not _use_real_vllm():
-        # 回退到 mock
-        print("模拟流式chat回复")
+        # Fall back to mock mode.
+        print("mock streaming chat response")
         async for chunk in mock_chat_stream(payload):
             yield chunk
         return
 
-    print(f"[Instance] 发送到vllm实例：{vllm_base_url}，等待响应")
+    print(f"[Instance] send to vLLM instance: {vllm_base_url}, waiting for response")
     assert forward_request is not None
     url = f"{vllm_base_url}/v1/chat/completions"
-    # 直接把 Proxy 给过来的 OpenAI 风格 body 转发下去
+    # Forward the OpenAI-style body from Proxy directly downstream.
     upstream_stream = forward_request(url, data=payload, use_chunked=True)  # type: ignore
 
     async for chunk in upstream_stream:
-        # 不解析、不改写，直接透传
+        # Pass through directly without parsing or rewriting.
         if chunk:
             yield chunk
 
 
 async def _vllm_chat_completion(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    调用真实 vLLM 的 /v1/chat/completions（非流式），返回 JSON。
+    Call the real vLLM /v1/chat/completions endpoint in non-streaming mode and return JSON.
     """
     if not _use_real_vllm():
-        print("模拟非流式chat回复")
+        print("mock non-streaming chat response")
         return await mock_chat_completion(payload)
 
-    print(f"[Instance] 发送到vllm实例：{vllm_base_url}，等待响应")
+    print(f"[Instance] send to vLLM instance: {vllm_base_url}, waiting for response")
     assert forward_request is not None
     url = f"{vllm_base_url}/v1/chat/completions"
 
@@ -336,13 +349,13 @@ async def _vllm_chat_completion(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 async def _vllm_text_completion(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    调用真实 vLLM 的 /v1/completions（非流式），返回 JSON。
+    Call the real vLLM /v1/completions endpoint in non-streaming mode and return JSON.
     """
     if not _use_real_vllm():
-        print("模拟completion回复")
+        print("mock completion response")
         return await mock_text_completion(payload)
 
-    print(f"[Instance] 发送到vllm实例：{vllm_base_url}，等待响应")
+    print(f"[Instance] send to vLLM instance: {vllm_base_url}, waiting for response")
     assert forward_request is not None
     url = f"{vllm_base_url}/v1/completions"
 
@@ -354,14 +367,14 @@ async def _vllm_text_completion(payload: Dict[str, Any]) -> Dict[str, Any]:
     return _safe_json_from_bytes(content_bytes)
 
 
-# ======================= 调度器方法路由 =======================
+# ======================= Scheduler-compatible routes =======================
 @instance.post("/v1/chat/completions")
 async def instance_chat_completions(request: FastAPIRequest):
     """
-    chat/completions：
-      - 请求体格式：{"model": "...", "messages": [...], "stream": bool, ...}
-      - stream=True  : 返回 SSE 流
-      - stream=False : 返回一次性 JSON
+    chat/completions:
+      - Request body format: {"model": "...", "messages": [...], "stream": bool, ...}
+      - stream=True  : return an SSE stream
+      - stream=False : return one JSON response
     """
     try:
         print(f"USE_MOCK={use_mock},VLLM={vllm_base_url},_use_real_vllm={_use_real_vllm()}")
@@ -375,7 +388,7 @@ async def instance_chat_completions(request: FastAPIRequest):
     stream = parse_stream_flag(payload.get("stream"))
     print(f"[Instance] stream={stream}")
 
-    # 流式：统一走 SSE 字节流
+    # Streaming responses always use SSE byte streams.
     if stream:
         async def event_stream():
             async for chunk in _vllm_stream_chat(payload):
@@ -390,9 +403,9 @@ async def instance_chat_completions(request: FastAPIRequest):
 @instance.post("/v1/completions")
 async def instance_completions(request: FastAPIRequest):
     """
-    completions：
-      - 请求体格式：{"model": "...", "prompt": "...", ...}
-      - 当前版本仅非流式，如需流式可在此仿照 chat/completions 实现
+    completions:
+      - Request body format: {"model": "...", "prompt": "...", ...}
+      - Current version is non-streaming only; mirror chat/completions here if streaming is needed.
     """
     try:
         payload: Dict[str, Any] = await request.json()

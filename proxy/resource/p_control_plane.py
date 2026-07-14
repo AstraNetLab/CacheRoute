@@ -1,3 +1,4 @@
+"""Proxy control-plane API for Instance registration, resource reports, and topology debug data."""
 # proxy/resource/p_control_plane.py
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ _pool: Optional[InstancePool] = None
 _kdn_links: Dict[str, Dict[str, Any]] = {}
 _instance_kdn_links: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _kdn_links_lock = asyncio.Lock()
+_resource_snapshot_seen: set[str] = set()
+_unknown_resource_warn_at: Dict[str, float] = {}
 
 
 def set_pool(pool: InstancePool) -> None:
@@ -56,6 +59,7 @@ class InstanceUnregisterReq(BaseModel):
 class InstanceResourceSnapshotReq(BaseModel):
     instance_id: str
     snapshot: Dict[str, Any]
+    metadata: Dict[str, Any] = {}
 
 
 class TopologyReportReq(BaseModel):
@@ -70,8 +74,8 @@ async def get_kdn_links_snapshot() -> Dict[str, Dict[str, Any]]:
 
 def _is_better_link(new_item: Dict[str, Any], old_item: Dict[str, Any]) -> bool:
     """
-    比较两个 Instance->KDN 链路，返回 new_item 是否更优。
-    规则：带宽更高优先；带宽相同时时延更低优先。
+    Compare two Instance->KDN links and return whether new_item is better.
+    Rule: prefer higher bandwidth; when bandwidth ties, prefer lower latency.
     """
     new_bw = float(new_item.get("bandwidth_mbps", 0.0) or 0.0)
     old_bw = float(old_item.get("bandwidth_mbps", 0.0) or 0.0)
@@ -122,7 +126,7 @@ async def register(req: InstanceRegisterReq) -> Dict[str, Any]:
         it.instance_id, it.host, it.port, it.endpoints, it.tags, it.weight, it.meta
     )
 
-    # 给 instance 建议心跳周期：固定 10s，或 ttl/3（取较小）
+    # Suggest an instance heartbeat interval: fixed 10s or ttl/3, whichever is smaller.
     hb = min(10, max(1, pool.ttl_s // 3))
     return {
         "instance_id": it.instance_id,
@@ -152,11 +156,20 @@ async def report_resource_snapshot(req: InstanceResourceSnapshotReq) -> Dict[str
     ok = pool.report_resource_snapshot(
         instance_id=req.instance_id,
         snapshot=req.snapshot,
+        metadata=req.metadata,
     )
     if not ok:
-        logger.warning("[ProxyCP] resource snapshot for unknown instance_id=%s", req.instance_id)
+        now = asyncio.get_running_loop().time()
+        last = _unknown_resource_warn_at.get(req.instance_id, 0.0)
+        if now - last >= 30.0:
+            _unknown_resource_warn_at[req.instance_id] = now
+            logger.warning("[ProxyCP] resource snapshot for unknown instance_id=%s", req.instance_id)
         return {"ok": False, "error": "unknown_instance"}
-    logger.info("[ProxyCP] resource snapshot updated: instance_id=%s", req.instance_id)
+    if req.instance_id not in _resource_snapshot_seen:
+        _resource_snapshot_seen.add(req.instance_id)
+        logger.info("[ProxyCP] first resource snapshot updated: instance_id=%s", req.instance_id)
+    else:
+        logger.debug("[ProxyCP] resource snapshot updated: instance_id=%s", req.instance_id)
     return {"ok": True}
 
 
@@ -206,13 +219,50 @@ async def list_instances(include_dead: bool = False) -> List[Dict[str, Any]]:
                 "admission_state": it.resource.admission_state,
                 "resource_ts_ms": it.resource.resource_ts_ms,
                 "resource_reported_at": it.resource.resource_reported_at,
+                "resource_report_monotonic_ms": it.resource.resource_report_monotonic_ms,
+                "resource_report_wall_time_ms": it.resource.resource_report_wall_time_ms,
+                "reported_instance_id": it.resource.reported_instance_id,
                 "raw_resource": it.resource.raw_resource,
             },
-            # 由 include_dead 决定返回集合，alive 在这里标记方便调试
+            # include_dead controls the returned set; this marker is kept for debugging.
             "is_alive": True if not include_dead else None,
         })
     return out
 
+
+
+
+@_control_plane.get("/debug/instance_resources")
+async def debug_instance_resources(include_dead: bool = True) -> Dict[str, Any]:
+    pool = get_pool()
+    items = pool.list(include_dead=include_dead)
+    resources: List[Dict[str, Any]] = []
+    for it in items:
+        resources.append({
+            "instance_id": it.instance_id,
+            "host": it.host,
+            "port": it.port,
+            "last_seen_at": it.last_seen_at,
+            "resource": {
+                "cpu_util": it.resource.cpu_util,
+                "memory_used_mb": it.resource.memory_used_mb,
+                "memory_total_mb": it.resource.memory_total_mb,
+                "memory_free_mb": it.resource.memory_free_mb,
+                "memory_free_ratio": it.resource.memory_free_ratio,
+                "gpu_util_avg": it.resource.gpu_util_avg,
+                "gpu_mem_used_mb": it.resource.gpu_mem_used_mb,
+                "gpu_mem_total_mb": it.resource.gpu_mem_total_mb,
+                "network_rx_mbps": it.resource.network_rx_mbps,
+                "network_tx_mbps": it.resource.network_tx_mbps,
+                "admission_state": it.resource.admission_state,
+                "resource_ts_ms": it.resource.resource_ts_ms,
+                "resource_reported_at": it.resource.resource_reported_at,
+                "resource_report_monotonic_ms": it.resource.resource_report_monotonic_ms,
+                "resource_report_wall_time_ms": it.resource.resource_report_wall_time_ms,
+                "reported_instance_id": it.resource.reported_instance_id,
+            },
+        })
+    return {"instances": resources}
 
 @_control_plane.post("/v1/topology/report")
 async def report_topology(req: TopologyReportReq) -> Dict[str, Any]:
@@ -235,5 +285,5 @@ async def list_topology_links() -> Dict[str, Any]:
     return {"kdn_links": await get_kdn_links_snapshot()}
 
 
-# 对外导出 app
+# Export the app.
 control_plane = _control_plane

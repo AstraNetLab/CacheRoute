@@ -1,3 +1,4 @@
+"""In-memory InstancePool and resource snapshot normalization for Proxy control plane."""
 # proxy/resource/instance_pool.py
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class InstanceLoad:
-    # 先预留，当前阶段不强依赖
+    # Reserved for future use; not strongly required in the current phase.
     inflight: Optional[int] = None
     qps_1m: Optional[float] = None
     gpu_util: Optional[float] = None
@@ -30,6 +31,9 @@ class InstanceResource:
     admission_state: Optional[str] = None
     resource_ts_ms: Optional[int] = None
     resource_reported_at: Optional[int] = None
+    resource_report_monotonic_ms: Optional[int] = None
+    resource_report_wall_time_ms: Optional[int] = None
+    reported_instance_id: Optional[str] = None
     raw_resource: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -116,7 +120,7 @@ class InstancePool:
             if not it:
                 return False
             it.last_seen_at = now
-            # 只在传入时更新，避免覆盖为 0/None
+            # Update only when provided to avoid overwriting values with 0/None.
             if inflight is not None:
                 it.load.inflight = int(inflight)
             if qps_1m is not None:
@@ -125,14 +129,19 @@ class InstancePool:
                 it.load.gpu_util = float(gpu_util)
             return True
 
-    def report_resource_snapshot(self, instance_id: str, snapshot: Dict[str, Any]) -> bool:
+    def report_resource_snapshot(
+        self,
+        instance_id: str,
+        snapshot: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         now = int(time.time())
         with self._lock:
             it = self._items.get(instance_id)
             if not it:
                 return False
             it.last_seen_at = now
-            it.resource = _resource_from_snapshot(snapshot=snapshot, reported_at=now)
+            it.resource = _resource_from_snapshot(snapshot=snapshot, reported_at=now, metadata=metadata or {})
             return True
 
     def remove(self, instance_id: str) -> bool:
@@ -172,7 +181,7 @@ def _as_int(value: Any) -> Optional[int]:
         return None
 
 
-def _resource_from_snapshot(snapshot: Dict[str, Any], reported_at: int) -> InstanceResource:
+def _resource_from_snapshot(snapshot: Dict[str, Any], reported_at: int, metadata: Dict[str, Any]) -> InstanceResource:
     devices = snapshot.get("devices") if isinstance(snapshot, dict) else {}
     devices = devices if isinstance(devices, dict) else {}
     cpu = devices.get("cpu") if isinstance(devices.get("cpu"), dict) else {}
@@ -209,5 +218,8 @@ def _resource_from_snapshot(snapshot: Dict[str, Any], reported_at: int) -> Insta
         admission_state=str(capacity.get("admission_state")) if capacity.get("admission_state") is not None else None,
         resource_ts_ms=_as_int(snapshot.get("timestamp_ms")),
         resource_reported_at=reported_at,
+        resource_report_monotonic_ms=_as_int(metadata.get("report_monotonic_ms")),
+        resource_report_wall_time_ms=_as_int(metadata.get("report_wall_time_ms")),
+        reported_instance_id=str(metadata.get("reported_instance_id")) if metadata.get("reported_instance_id") is not None else None,
         raw_resource=dict(snapshot) if isinstance(snapshot, dict) else {},
     )
