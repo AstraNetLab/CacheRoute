@@ -14,25 +14,56 @@ from store import EmbeddingModel, KnowledgeTable
 from util import parse_stream_flag
 
 """
-Core request data structures shared by the scheduler and local Proxy.
+Defines the scheduler-to-local-Proxy interaction data structure -> Class Request.
+The scheduler builds a request through scheduling strategies and sends it to the
+local Proxy; the Proxy then performs the required actions to complete pool
+selection and inference.
 
-The scheduler builds a Request through its strategy path and forwards it to the
-selected Proxy. The Proxy then executes the required action, including
-knowledge selection, optional injection, and inference routing.
-
-Request layout:
-    Request_ID: Unique user-task identifier.
-    Request_type: Request category, such as request, control, or update.
-
-    Prompt: User-content metadata including model, prompt text, token length,
-        generation limit, streaming flag, temperature, and top_p.
-
-    Service: Service-level requirements including PD disaggregation, knowledge
-        injection settings, compression flags, security placeholder, selected
-        knowledge ids, knowledge length, SLO targets, and endpoint type.
-
-    Task: Scheduling metadata including user address, selected KDN, selected
-        Proxy, assigned instances, and batch order.
+    Class Request:
+      |  Request_ID: unique identifier for the user task
+      |__Request_type: request type, such as request, control, update, etc.
+      |
+      |__Class Prompt: records basic user-question information, such as the
+      |   specific question, model type, and question length.
+      |   |  model                      model type
+      |   |  user_prompt                user question
+      |   |  token_length               token length of the question
+      |   |  max_token                  maximum number of generated tokens
+      |   |  stream                     whether streaming is enabled
+      |   |  temperature                sampling temperature, default 1.0
+      |   |__top_p                      nucleus sampling truncation threshold, default 1.0
+      |
+      |__Class Service: maps user-question service requirements, such as whether
+      |   PD disaggregation and knowledge injection are supported, plus TTFT,
+      |   E2E, and TPOT SLO requirements.
+      |   |  Enable_PD_Disaggregation   whether PD disaggregation is enabled
+      |   |  Enable_know_injection      whether knowledge injection is enabled
+      |   |  Injection_type             knowledge injection type (text or KV)
+      |   |  Enable_compress            whether KVCache compression is allowed
+      |   |  Compress_factor            compression ratio
+      |   |  Enable_security            whether security mode is enabled (reserved)
+      |   |  Knowledge_block_num        number of knowledge blocks
+      |   |  Knowledge_List             knowledge list required by the question
+      |   |  Knowledge_length           knowledge injection length
+      |   |  SLO_TTFT                   time to first token
+      |   |  SLO_E2E                    end-to-end latency
+      |   |  SLO_TPOT                   token-per-output-token latency target
+      |   |__Endpoint_type              request type forwarded to vLLM, including
+      |                              chat/completions or completions
+      |
+      |__Class Task: records scheduling-related task information, such as KDN
+      |   knowledge-server IP address, PD-pool Proxy IP address, and ports.
+          |  User_addr                  user IP address
+          |  KDN_server_addr            KDN server address
+          |  default_know_addr          default text-injection server address
+          |  P_proxy_id                 selected Proxy id
+          |  P_proxy_addr               P-pool Proxy IP address
+          |  D_proxy_addr               D-pool Proxy IP address
+          |  P_proxy_port               P-pool Proxy port
+          |  D_proxy_port               D-pool Proxy port
+          |  prefill_instance           Prefill instance IP address and port assigned to this request
+          |  decode_instance            Decode instance IP address and port assigned to this request
+          |__batch_order                batch order of this request on its assigned instance
 """
 
 # ========================================================================================================================
@@ -40,7 +71,17 @@ Request layout:
 # ========================================================================================================================
 @dataclass
 class Prompt:
-    """User prompt metadata used by scheduling and downstream inference."""
+    """
+        Defines basic information for the user question.
+            model<task model, str>
+            user_prompt<user question, str>
+            token_length<token length of the question>
+            bs<batch_size of the task group, usually defaults to 1>
+            max_token<maximum number of generated tokens supported by the task>
+            stream<whether streaming is enabled>
+            temperature<sampling temperature, default 1.0>
+            top_p<nucleus sampling truncation threshold, default 1.0>
+    """
     model: str
     user_prompt: str
     token_length: int
@@ -54,7 +95,11 @@ class Prompt:
 
     @classmethod
     def extract_prompt_info(cls, model: str, user_prompt: str) -> int:
-        """Estimate and return token_length from the model name and user prompt."""
+        """
+            Automatically calculates token_length from user_prompt and returns it.
+            Input: model, user_prompt
+            Output: token_length
+        """
         seq_length = estimate_tokens(user_prompt, model)
         print(f"[Prompt-tokenizer]: get task prompt_length complete, prompt_length={seq_length}")
 
@@ -66,7 +111,24 @@ class Prompt:
 # ========================================================================================================================
 @dataclass
 class Service:
-    """Service requirements, SLO targets, and knowledge-injection metadata."""
+    """
+        Defines basic SLO information for question service requirements. The user
+        IP address maps to a concrete service level, and the mapping module can
+        later be extended for security, personalization, and related features.
+            Enable_PD_Disaggregation<whether PD disaggregation is allowed, default True>
+            Enable_know_injection<whether remote knowledge is allowed, default True>
+            Injection_type<knowledge injection type, default text; Proxy may adjust it later by policy>
+            Enable_compress<whether KVCache compression is allowed, default True>
+            Compress_factor<KVCache compression ratio, default 0.3; options include 0.3, 0.5, and 0.7>
+            Enable_security<whether security mode is enabled, default false; reserved for later security features>
+            Knowledge_block_num<top number of knowledge blocks injected for the task, default 3>
+            Knowledge_List<knowledge block list whose elements are Knowledge_ID values for concrete blocks>
+            Knowledge_length<token length of the task-injected knowledge, default 0>
+            SLO_TTFT<TTFT SLO requirement for the task group, from inference start to first token, default 2000ms>
+            SLO_E2E<full time from Prefill start to Decode end, in ms>
+            SLO_TPOT<TPOT SLO requirement for the task group, average autoregressive decode latency, default 20ms>
+            Endpoint_type<request type forwarded to vLLM, including chat/completions or completions>
+    """
     Enable_PD_Disaggregation: bool
     Enable_know_injection: bool
     Injection_type: str
@@ -84,7 +146,13 @@ class Service:
 
     @classmethod
     def mapping_slo_info(cls, user_addr: str) -> Dict[str, Any]:
-        """Map a user IP address to service SLO targets and feature flags."""
+        """
+            Maps the user IP address to concrete service SLOs and enabled features.
+            Input: user_addr
+            Output: service SLOs such as TTFT, TPOT, and E2E, plus feature flags
+                    such as whether PD disaggregation, compression, and security
+                    are enabled.
+        """
         if user_addr.startswith("10.0."):
             return {
                 "Enable_PD_Disaggregation": False,
@@ -118,17 +186,18 @@ class Service:
             model_name: str,
     ) -> Tuple[List[str], int]:
         """
-        Retrieve the most relevant knowledge ids for a user prompt.
+            Retrieves the most relevant knowledge list from the knowledge base
+            according to the user question.
 
-        Args:
-            user_prompt: User query text used to build the query embedding.
-            knowledge_block_num: Desired top-k knowledge block count.
-            embedder: Injected embedding model used for query encoding.
-            knowledge_table: KnowledgeTable instance with a prepared FAISS index.
-            model_name: Model name used when tokenizing retrieved full content.
+            Args:
+                user_prompt: str -> user question used to generate the query embedding
+                knowledge_block_num: int -> desired number of returned knowledge blocks (top-k)
+                embedder: EmbeddingModel -> externally injected embedding model
+                knowledge_table: KnowledgeTable -> instance whose FAISS index has already been built
 
-        Returns:
-            A pair of knowledge id list and total retrieved knowledge token length.
+            Returns:
+                knowledge_ids: list of retrieved knowledge block IDs (length <= knowledge_block_num)
+                total_knowledge_length: total token length of these knowledge blocks
         """
         user_prompt = (user_prompt or "").strip()
         if not user_prompt:
@@ -223,7 +292,20 @@ def normalize_injection_type(value: Any) -> str:
 # ========================================================================================================================
 @dataclass
 class Task:
-    """Scheduling metadata for selected KDN, Proxy, instances, and batch order."""
+    """
+        Defines basic task-scheduling information.
+            User_addr<user IP address, representing user identity>
+            KDN_server_addr<best KDN server address selected for the task according to knowledge needs>
+            default_know_addr<default knowledge-injection server, using text injection>
+            P_proxy_id<Proxy ID that handles the task, used for flow tracing>
+            P_proxy_addr<P-pool Proxy IP address that handles the task, defaulting to local loopback>
+            P_proxy_port<P-pool Proxy port that handles the task, defaulting to 8001>
+            D_proxy_addr<D-pool Proxy IP address that handles the task, defaulting to local loopback>
+            D_proxy_port<D-pool Proxy port that handles the task, defaulting to 8001>
+            prefill_instance<Prefill instance IP address and port assigned to this request>
+            decode_instance<Decode instance IP address and port assigned to this request>
+            batch_order<batch order of this request on its assigned instance>
+    """
     User_addr: str
     KDN_server_addr: str
     default_know_addr: str
@@ -243,7 +325,14 @@ class Task:
 # ========================================================================================================================
 @dataclass
 class Request:
-    """Complete task request containing prompt, service, and scheduling metadata."""
+    """
+        Main structure that describes all task requirements.
+            Request_ID<unique identifier for the user task>
+            Request_type<request type, such as request, control, update, etc.>
+            Prompt<information used to process user content>
+            Service<information used to process user service requirements>
+            Task<information used when scheduling the task>
+    """
     Request_ID: int
     Request_type: str
     Prompt: Prompt
@@ -266,22 +355,32 @@ class Request:
             kdn_knowledge_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     ) -> "Request":
         """
-        Convert a raw user payload into a complete Request object.
-
-        Supported payload formats:
-            1. Legacy TCP payload: {"model": "...", "user_prompt": "..."}.
-            2. /v1/chat/completions style payload with model, messages, and
-               optional generation parameters.
-            3. /v1/completions style payload with model, prompt, and optional
-               generation parameters.
-
-        Args:
-            url_path: User request URL path, for example
-                http://127.0.0.1:7001/v1/chat/completions.
-            payload: Raw request payload.
-            user_addr: Client IP obtained by scheduler from TCP or HTTP layer.
-            request_id: Scheduler-assigned request id; callers may keep 0 and
-                let the scheduler overwrite it later.
+            Converts the raw user request payload into a complete Request object.
+            url_path: URL address sent by the user, for example http://127.0.0.1:7001/v1/chat/completions
+            Compatible payload formats:
+                1) Legacy TCP protocol plain payload: {"model": "...", "user_prompt": "..."}
+                2) /v1/chat/completions style: {
+                    "model": "...",
+                    "messages": [
+                        {"role": "system", "content": "..."},
+                        {"role": "user",   "content": "..."},
+                        ...],
+                    "max_tokens": 1024,
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "stream": true,
+                    ...}
+                3) /v1/completions style: {
+                    "model": "...",
+                    "prompt": "...." or ["...","..."],
+                    "max_tokens": 1024,
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "stream": false,
+                    ...}
+            user_addr: client IP obtained by the scheduler from the TCP / HTTP layer
+            request_id: request ID assigned by the scheduler (can remain default 0,
+                        then be overwritten by the scheduler later)
         """
 
         # print("[BuildRequest] Receive user request payload:", payload)
@@ -521,7 +620,17 @@ class Request:
 
 
     def to_payload(self) -> Dict[str, Any]:
-        """Serialize the Request into an HTTP-sendable payload preserving dataclass structure."""
+        """
+            Serializes the Request object into a payload that can be sent over HTTP.
+                Uses dataclasses by default to preserve the full structure:
+                  {
+                    "Request_ID": ...,
+                    "Request_type": ...,
+                    "Prompt": { ... },
+                    "Service": { ... },
+                    "Task": { ... }
+                  }
+        """
         return asdict(self)
 
 

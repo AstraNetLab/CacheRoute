@@ -114,18 +114,18 @@ INSTANCE_TOPOLOGY_KDN_TARGETS = ""                             # Instance auto t
 INSTANCE_DEFAULT_LINK_BW_MBPS = 1000.0                         # Fallback link bandwidth when NIC speed cannot be read
 
 # Instance resource monitoring, enabled by default in demos; disable with --no-resource-monitor or INSTANCE_RESOURCE_MONITOR_ENABLE=0
-INSTANCE_RESOURCE_MONITOR_ENABLE = True
-INSTANCE_RESOURCE_AUTO_START_AGENT = True
-INSTANCE_RESOURCE_AGENT_HOST = "127.0.0.1"
-INSTANCE_RESOURCE_AGENT_PORT = 9201
-INSTANCE_RESOURCE_AGENT_LISTEN = "127.0.0.1:9201"
-INSTANCE_RESOURCE_AGENT_URL = "http://127.0.0.1:9201"
-INSTANCE_RESOURCE_AGENT_SAMPLE_INTERVAL_MS = 1000
-INSTANCE_RESOURCE_AGENT_START_TIMEOUT_S = 60.0
-INSTANCE_RESOURCE_REPORT_ENABLE = False
-INSTANCE_RESOURCE_REPORT_HZ = 1.0
-INSTANCE_RESOURCE_REPORT_INTERVAL_MS = 1000
-INSTANCE_RESOURCE_REPORT_TIMEOUT_S = 2.0
+INSTANCE_RESOURCE_MONITOR_ENABLE = True                         # Enable Instance-side resource monitoring by default.
+INSTANCE_RESOURCE_AUTO_START_AGENT = True                       # Auto-start the local resource agent when the Instance starts.
+INSTANCE_RESOURCE_AGENT_HOST = "127.0.0.1"                      # Host address used by the Instance resource agent.
+INSTANCE_RESOURCE_AGENT_PORT = 9201                             # Port used by the Instance resource agent.
+INSTANCE_RESOURCE_AGENT_LISTEN = "127.0.0.1:9201"               # Listen address for the Instance resource agent.
+INSTANCE_RESOURCE_AGENT_URL = "http://127.0.0.1:9201"           # Base URL used by Instance to query the resource agent.
+INSTANCE_RESOURCE_AGENT_SAMPLE_INTERVAL_MS = 1000               # Resource agent sampling interval in milliseconds.
+INSTANCE_RESOURCE_AGENT_START_TIMEOUT_S = 60.0                  # Maximum wait time for the resource agent to become ready.
+INSTANCE_RESOURCE_REPORT_ENABLE = False                         # Enable periodic Instance resource reports to the control plane.
+INSTANCE_RESOURCE_REPORT_HZ = 1.0                               # Resource report frequency in reports per second.
+INSTANCE_RESOURCE_REPORT_INTERVAL_MS = 1000                     # Resource report interval in milliseconds.
+INSTANCE_RESOURCE_REPORT_TIMEOUT_S = 2.0                        # Timeout for sending one resource report.
 
 # ====================================================================#
 #                               Other                                 #
