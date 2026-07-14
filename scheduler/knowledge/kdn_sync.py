@@ -30,22 +30,7 @@ def _format_kdn_addr(host: str, port: int) -> str:
 
 
 async def refresh_kdn_knowledge_index(app) -> Dict[str, Dict[str, Dict[str, int]]]:
-    """
-    为 scheduler 构建一个轻量级 per-KDN 知识元数据索引。
-
-    返回结构：
-      {
-        <kdn_id>: {
-          <kid>: {"length": 123, "kv_ready": 1},
-          ...
-        },
-        "kdn://host:port": {...}  # 兼容地址查询
-      }
-
-    说明：
-    - 这里只拉 metadata，不拉 embedding，避免把知识表构建逻辑和 KDN 选择逻辑混在一起。
-    - 先顺序实现，保持最小改动；后续若 KDN 数量增多，可再并发化。
-    """
+    """Synchronizes KDN metadata into Scheduler-side knowledge indexes used by scheduling strategies."""
     pool = getattr(app.state, "kdn_pool", None)
     if pool is None:
         app.state.kdn_knowledge_index = {}
@@ -227,10 +212,10 @@ async def kdn_refresh_once(app) -> dict:
                 unit = KnowledgeUnit(
                     embedding=list(emb),
                     length=int(it.get("length") or 0),
-                    # 当前 KnowledgeTable 继续保留“哪些 KDN 可用”的全局视角；
-                    # 精确到每个 KDN 的覆盖信息由 kdn_knowledge_index 维护，供 cacheroute 使用。
+                    # Knowledge/KDN-related state used by scheduling and injection.
+                    # Knowledge/KDN-related state used by scheduling and injection.
                     avail_kdn_servers=list(alive_addrs),
-                    # 这里保留完整正文，供 scheduler 侧按目标模型 tokenizer 估算 token 长度。
+                    # Maintains the existing proxy/scheduler experiment flow.
                     text_abstract=str(it.get("content") or ""),
                     full_content=str(it.get("content") or ""),
                     kv_ready=int(it.get("kv_ready") or 0),
@@ -290,10 +275,10 @@ async def kdn_auto_refresh_loop(app, stop_event: asyncio.Event):
             try:
                 await _hb_agg.record_kdn_refresh(r)
             except Exception:
-                # 输出层故障不能影响业务
+                # Maintains the existing proxy/scheduler experiment flow.
                 logger.debug("[Scheduler] record_kdn_refresh failed", exc_info=True)
 
-            # 不再刷屏：降为 debug
+            # Maintains the existing proxy/scheduler experiment flow.
             if r.get("ok"):
                 logger.debug("[Scheduler] KDN auto-refresh OK: entries=%s, added=%s, updated=%s, removed=%s",
                              r.get("entries"), r.get("added"), r.get("updated"), r.get("removed"))

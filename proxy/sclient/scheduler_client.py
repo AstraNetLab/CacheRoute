@@ -1,6 +1,8 @@
 # proxy/sclient/scheduler_client.py
 from __future__ import annotations
 
+"""Wraps proxy-to-Scheduler control-plane registration and heartbeat calls."""
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -15,11 +17,7 @@ class RegisterResult:
 
 
 class SchedulerControlClient:
-    """
-    Proxy -> Scheduler(Control Plane) 的客户端封装：
-      - register / heartbeat / unregister
-    只负责协议交互，不关心 Proxy 的业务转发。
-    """
+    """Wraps proxy-to-Scheduler control-plane registration and heartbeat calls."""
 
     def __init__(self, base_url: str, timeout_s: float = 5.0):
         self.base_url = base_url.rstrip("/")
@@ -74,7 +72,7 @@ class SchedulerControlClient:
         meta_patch: Optional[Dict[str, Any]] = None,
     ) -> None:
         payload: Dict[str, Any] = {"proxy_id": proxy_id}
-        # 只在有值时携带，避免触发服务端“全量覆盖为 0”
+        # Keep logs and state updates bounded for experiments.
         if inflight is not None:
             payload["inflight"] = inflight
         if qps_1m is not None:

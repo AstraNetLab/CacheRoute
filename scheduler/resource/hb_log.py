@@ -26,12 +26,12 @@ from .kdn_pool import KDNInfo
 
 @dataclass
 class _HBEntry:
-    """单个实体（proxy 或 kdn）在一个窗口内的统计信息。"""
+    """Aggregates heartbeat and refresh outcomes into compact periodic status logs."""
     total: int = 0
     ok: int = 0
     err: int = 0
 
-    # 下面是“最新一次心跳上报”的附加信息（可选）
+    # Heartbeat-related bookkeeping.
     last_inflight: Optional[int] = None
     last_qps_1m: Optional[float] = None
     last_gpu_util: Optional[float] = None
@@ -47,11 +47,7 @@ class _RefreshEntry:
 
 
 class HeartbeatLogAggregator:
-    """
-    仅用于日志聚合：
-    - record_proxy / record_kdn：在请求成功/失败时被调用，更新窗口内计数
-    - snapshot_and_reset：取出窗口统计并清空，用于定期简报
-    """
+    """Aggregates heartbeat and refresh outcomes into compact periodic status logs."""
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._window_start = time.time()
@@ -115,10 +111,7 @@ class HeartbeatLogAggregator:
             return dur, proxy, kdn, refresh
 
     async def record_kdn_refresh(self, r: Dict[str, Any]) -> None:
-        """
-        记录一次知识刷新结果（来自 kdn_refresh_once 的返回字典）。
-        只做统计，绝不影响刷新逻辑。
-        """
+        """Aggregates heartbeat and refresh outcomes into compact periodic status logs."""
         ok = bool(r.get("ok"))
         async with self._lock:
             if ok:
@@ -137,11 +130,7 @@ async def hb_report_loop(
     get_proxies: Optional[Callable[[], Awaitable[List[ProxyInfo]]]] = None,
     get_kdns: Optional[Callable[[], Awaitable[List[KDNInfo]]]] = None,
 ) -> None:
-    """
-    周期性输出心跳简报：
-    - 每 interval_s 秒取一次 snapshot 并输出
-    - 如果窗口内无数据则不输出
-    """
+    """Aggregates heartbeat and refresh outcomes into compact periodic status logs."""
     interval_s = int(interval_s)
     while True:
         await asyncio.sleep(interval_s)
@@ -149,7 +138,7 @@ async def hb_report_loop(
         try:
             dur, proxy, kdn, refresh = await agg.snapshot_and_reset()
 
-            # ---- pool snapshot：用于输出“当前负载/存活状态” ----
+            # Load-related state used by scheduling decisions.
             proxy_pool_map: Dict[str, ProxyInfo] = {}
             kdn_pool_map: Dict[str, KDNInfo] = {}
 
@@ -187,9 +176,9 @@ async def hb_report_loop(
                 if p is None:
                     lines.append(f"  - proxy_id={pid} ok/total={e.ok}/{e.total} err={e.err} load=n/a")
                 else:
-                    # 注意：ttl_s 在 ProxyPool 里，用于 is_alive 判定
-                    # p.is_alive(pool.ttl_s) 需要 ttl_s，但我们这里只拿到 ProxyInfo，拿不到 pool 对象
-                    # 所以这里输出 last_seen_at + “alive未知”。如果你希望 alive，也可以在 get_proxies 返回时一并计算。
+                    # Maintains the existing proxy/scheduler experiment flow.
+                    # Maintains the existing proxy/scheduler experiment flow.
+                    # Maintains the existing proxy/scheduler experiment flow.
                     lines.append(
                         f"  - proxy_id={pid} ok/total={e.ok}/{e.total} err={e.err} "
                         f"load(inflight={int(p.load.inflight)} qps_1m={float(p.load.qps_1m)} gpu_util={float(p.load.gpu_util)}) "

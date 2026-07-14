@@ -1,5 +1,8 @@
+"""Defines per-instance proxy queues and concurrency controls."""
 # proxy/queue/instance_queues.py
 from __future__ import annotations
+
+"""Defines per-instance proxy queues and concurrency controls."""
 
 import asyncio
 from dataclasses import dataclass, field
@@ -10,19 +13,14 @@ from .task import ProxyTask
 
 @dataclass
 class InstanceQueues:
-    """
-    每个 instance 的本地队列与并发控制：
-    - prepare_q：知识准备阶段
-    - ready_q：知识已就绪，等待推理转发阶段
-    - prepare_sem：限制同一 instance 上 prepare/inject 的并发数
-    """
+    """Defines per-instance proxy queues and concurrency controls."""
     prepare_q: "asyncio.Queue[ProxyTask]" = field(default_factory=lambda: asyncio.Queue(maxsize=256))
     ready_q: "asyncio.Queue[ProxyTask]" = field(default_factory=lambda: asyncio.Queue(maxsize=256))
 
-    # 运行时由 PerInstanceQueueMap 注入具体并发度
+    # Maintains the existing proxy/scheduler experiment flow.
     prepare_sem: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
 
-    # 仅用于观测
+    # Maintains the existing proxy/scheduler experiment flow.
     active_prepare: int = 0
     active_ready: int = 0
 

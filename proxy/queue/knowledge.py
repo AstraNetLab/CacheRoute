@@ -1,7 +1,5 @@
 # proxy/queue/knowledge.py
-"""
-proxy维护的知识注入方法，由准备队列调用
-"""
+"""Provides KDN knowledge fetch, classification, and request-body injection helpers used by the proxy queue."""
 from __future__ import annotations
 
 import json
@@ -23,10 +21,7 @@ def format_retrieved_context(items: List[Dict[str, Any]]) -> str:
 
 
 async def fetch_knowledge_from_kdn(kdn_base_url: str, knowledge_ids: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """
-    向 KDN 请求知识（非流式）。
-    返回：(items, miss)
-    """
+    """Provides KDN knowledge fetch, classification, and request-body injection helpers used by the proxy queue."""
     if not knowledge_ids:
         return [], []
 
@@ -62,11 +57,7 @@ async def fetch_knowledge_from_kdn(kdn_base_url: str, knowledge_ids: List[str]) 
 
 
 def inject_rag_into_instance_body(instance_body: Dict[str, Any], endpoint_type: str, retrieved_context: str, injection_type: str = "text") -> Dict[str, Any]:
-    """
-    将 retrieved_context 注入 instance_body（OpenAI 风格），返回新 dict。
-    - text: 保持现有 instruction 包装
-    - kvcache: 使用纯文本 system 前缀，尽量贴近 KV 预构建格式
-    """
+    """Provides KDN knowledge fetch, classification, and request-body injection helpers used by the proxy queue."""
     if not retrieved_context:
         return instance_body
 
@@ -77,10 +68,10 @@ def inject_rag_into_instance_body(instance_body: Dict[str, Any], endpoint_type: 
         msgs = list(new_body.get("messages") or [])
 
         if injection_type == "kvcache":
-            # KVCache 模式：system 直接放纯知识文本，不加额外包装
+            # Knowledge/KDN-related state used by scheduling and injection.
             msgs.insert(0, {"role": "system", "content": retrieved_context})
         else:
-            # text 模式：保持现有模板
+            # Maintains the existing proxy/scheduler experiment flow.
             system_prompt = (
                 "You are a helpful assistant.\n"
                 "Use the following retrieved context to answer the user. "
@@ -96,8 +87,8 @@ def inject_rag_into_instance_body(instance_body: Dict[str, Any], endpoint_type: 
     prompt = str(new_body.get("prompt") or "")
 
     if injection_type == "kvcache":
-        # completions 下没有 role 结构，只能尽量贴近：
-        # 把纯知识文本直接放在 prompt 最前面
+        # Maintains the existing proxy/scheduler experiment flow.
+        # Knowledge/KDN-related state used by scheduling and injection.
         new_body["prompt"] = retrieved_context + "\n" + prompt
     else:
         rag_prefix = (
@@ -117,22 +108,16 @@ def classify_kdn_items(
     items: List[Dict[str, Any]],
     miss: List[str],
 ) -> Dict[str, Any]:
-    """
-    按 KDN 返回结果对知识块分类：
-      - kv_ready_items: 已有 KV，可用于后续 KV 注入
-      - text_only_items: 只有文本，没有现成 KV
-      - miss_ids: KDN 未命中的 kid
-    并保持输入顺序稳定。
-    """
+    """Provides KDN knowledge fetch, classification, and request-body injection helpers used by the proxy queue."""
     miss_set = {str(x) for x in (miss or [])}
 
-    # KDN 返回 items 不保证我们想要的顺序，这里先建索引
+    # Knowledge/KDN-related state used by scheduling and injection.
     item_map: Dict[str, Dict[str, Any]] = {}
     for it in items or []:
         kid = str(it.get("knowledge_id") or it.get("kid") or it.get("id") or "")
         rel_path = it.get("rel_path")
         if not kid and rel_path:
-            # 兜底：从 rel_path 推断 kid（如 knowledge/a.txt -> a）
+            # Maintains the existing proxy/scheduler experiment flow.
             try:
                 kid = str(rel_path).split("/")[-1].split(".")[0]
             except Exception:
@@ -151,7 +136,7 @@ def classify_kdn_items(
 
         it = item_map.get(kid)
         if not it:
-            # KDN 没明确放进 miss，但也没返回 item，当 miss 处理
+            # Knowledge/KDN-related state used by scheduling and injection.
             miss_ids.append(kid)
             continue
 
@@ -171,9 +156,6 @@ def build_ordered_context(
     kv_ready_items: List[Dict[str, Any]],
     text_only_items: List[Dict[str, Any]],
 ) -> str:
-    """
-    构造注入文本：
-    先放 kv_ready 的文本，再放 text_only 的文本。
-    """
+    """Provides KDN knowledge fetch, classification, and request-body injection helpers used by the proxy queue."""
     ordered = list(kv_ready_items) + list(text_only_items)
     return format_retrieved_context(ordered)
