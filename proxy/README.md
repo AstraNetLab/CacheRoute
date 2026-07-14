@@ -21,8 +21,9 @@ Client
 |---|---:|---|
 | Service plane | `8001` | Receives Scheduler-forwarded OpenAI-compatible requests. |
 | Control plane | `8002` | Receives Instance registration, heartbeat, topology reports, resource snapshots, and debug queries. |
+| Browser UI | `8202` | Displays Proxy health, Instance liveness, resources, topology, Scheduler registration, charts, filters, and raw diagnostics. |
 
-The Proxy can run without a Scheduler during local demos. In that case, Scheduler registration may fail non-fatally, but Instance registration and resource reporting can still be validated through the Proxy control plane.
+The Proxy can run without a Scheduler during local demos. In that case, Scheduler registration may fail non-fatally, but Instance registration and resource reporting can still be validated through the Proxy control plane and Proxy UI.
 
 ## Directory structure
 
@@ -49,6 +50,8 @@ proxy/
 └── README.md
 ```
 
+The browser UI implementation lives outside this directory under [`UI/proxy_ui/`](../UI/proxy_ui/).
+
 ## Quick start
 
 Start Proxy from the `test` directory:
@@ -62,6 +65,18 @@ python3 demo_proxy.py \
   --injection-strategy iws
 ```
 
+`demo_proxy.py` starts the Proxy browser UI by default and prints:
+
+```text
+[demo_proxy] Proxy UI available at: http://127.0.0.1:8202
+```
+
+Open:
+
+```text
+http://127.0.0.1:8202
+```
+
 Common options:
 
 | Option | Description |
@@ -72,6 +87,36 @@ Common options:
 | `--injection-strategy` | Knowledge injection strategy. Use `default` or `iws`. |
 | `--ready-release-policy` | Ready queue release policy: `ordered` or `text_bypass`. |
 | `--kdn-links-json` | Optional static KDN topology metadata. |
+| `--proxy-ui` | Explicitly enable the browser Proxy UI. This is already the default. |
+| `--no-proxy-ui` | Disable the browser Proxy UI subprocess. |
+| `--proxy-ui-listen HOST:PORT` | UI server listen address, default `127.0.0.1:8202`. |
+| `--proxy-ui-url URL` | Browser-facing URL printed in logs, useful for tunnels / forwarded ports. |
+
+## Proxy browser UI
+
+The Proxy UI is the main browser observability dashboard for the Proxy runtime. It is frontend-only and does not mutate Scheduler routing, Proxy Instance selection, injection strategy, KDN behavior, KVCache behavior, or Instance forwarding.
+
+Default URL:
+
+```text
+http://127.0.0.1:8202
+```
+
+It shows:
+
+- Proxy health and `/debug/status`.
+- Scheduler registration state, best effort.
+- Instance pool and TTL-derived alive / stale state.
+- Instance resource snapshots reported by demo Instances.
+- Per-Instance resource cards and sortable tables.
+- CPU, memory, GPU, network, and alive/stale trend charts.
+- KDN topology links.
+- Raw diagnostic JSON with copy actions.
+- Local controls for refresh, pause/resume, polling interval, filters, search, sort, chart history, and theme.
+
+The UI server proxies requests through `UI/proxy_ui/proxy_ui_server.py` so the browser does not need direct CORS access to Proxy or Scheduler APIs.
+
+See [`UI/proxy_ui/README.md`](../UI/proxy_ui/README.md) for details.
 
 ## Startup lifecycle
 
@@ -79,13 +124,14 @@ Common options:
 Proxy startup
   ├── initialize InstancePool
   ├── start Proxy control plane on :8002
+  ├── start Proxy browser UI on :8202 in demo mode, unless disabled
   ├── load Instance selection strategy
   ├── register to Scheduler control plane, non-fatal for local demos
   ├── report topology metadata to Scheduler, if configured
   └── start heartbeat loop
 ```
 
-During shutdown, the Proxy tries to unregister from the Scheduler. If the process is killed directly, Scheduler removes it after heartbeat expiry.
+During shutdown, the Proxy tries to unregister from the Scheduler. If the process is killed directly, Scheduler removes it after heartbeat expiry. In demo mode, the UI subprocess started by `demo_proxy.py` is cleaned up on exit.
 
 ## Control-plane APIs
 
@@ -93,6 +139,7 @@ During shutdown, the Proxy tries to unregister from the Scheduler. If the proces
 
 ```text
 GET /healthz
+GET /debug/status
 ```
 
 ### Instance management
@@ -310,6 +357,8 @@ Useful commands:
 | `:scheduler` | Query Scheduler control plane. |
 | `:exit` / `:quit` | Exit. |
 
+The browser Proxy UI covers the same observability surface and adds charts, cards, filters, and raw diagnostic copy actions.
+
 ## Validation
 
 ### 1. Start Proxy
@@ -321,6 +370,12 @@ python3 demo_proxy.py \
   --port 8001 \
   --strategy round_robin \
   --injection-strategy iws
+```
+
+Open the Proxy UI printed by the demo:
+
+```text
+http://127.0.0.1:8202
 ```
 
 ### 2. Start Instance with default demo resource monitoring
@@ -337,6 +392,12 @@ python3 demo_instance.py \
 
 ```bash
 curl -sS "http://127.0.0.1:8002/debug/instance_resources" | python3 -m json.tool
+```
+
+Or use the browser UI:
+
+```text
+http://127.0.0.1:8202
 ```
 
 ### 4. Run the e2e smoke validation
@@ -366,9 +427,12 @@ Common environment variables:
 | `PROXY_INSTANCE_TTL_S` | Instance alive TTL. |
 | `PREPARE_CONCURRENCY` | Prepare queue concurrency. |
 | `READY_CONCURRENCY` | Ready worker concurrency. |
+| `PROXY_UI_LISTEN` | Optional default for the Proxy UI listen address. |
+| `PROXY_UI_URL` | Optional browser-facing URL printed by `demo_proxy.py`. |
 
 ## Notes
 
 - Resource snapshots are visible in Proxy state but do not yet drive routing.
 - Repeated successful resource reports are intentionally quiet to avoid log flooding.
 - `unknown_instance` warnings usually mean a stale or external Instance process is still heartbeating to the Proxy control plane.
+- The Proxy UI is the preferred visual entry point for Proxy observability during demos and experiments.
