@@ -268,6 +268,18 @@ async def debug_pool_resource() -> Dict[str, Any]:
     return {"ok": True, "pool_resource": pool.build_pool_resource_snapshot(proxy_id=_proxy_id, capacity=_proxy_capacity)}
 
 
+@_control_plane.get("/debug/pool_resource_sources")
+async def debug_pool_resource_sources() -> Dict[str, Any]:
+    pool = get_pool()
+    snapshot = pool.build_pool_resource_snapshot(proxy_id=_proxy_id, capacity=_proxy_capacity)
+    return {
+        "ok": True,
+        "metric_source": snapshot.get("metric_source", {}),
+        "metric_quality": snapshot.get("metric_quality", {}),
+        "null_semantics": "0 means measured zero; null means unavailable, not wired, or unknown",
+    }
+
+
 @_control_plane.get("/debug/instance_resources")
 async def debug_instance_resources(include_dead: bool = True) -> Dict[str, Any]:
     pool = get_pool()
