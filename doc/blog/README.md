@@ -11,6 +11,25 @@ This document records major engineering milestones for the CacheRoute prototype.
 
 ---
 
+## 260716: Least-Load Instance Selection Strategy
+
+### Changes
+
+- Added an experimental `least_load` Proxy Instance selection strategy using `load.inflight` as the primary signal and `load.qps_1m` as a fallback.
+- Preserved unknown metrics as unknown and fall back to round-robin when no usable load information is available.
+- Added round-robin tie-breaking and strategy aliases without changing the default `round_robin` behavior.
+- Documented CLI and environment configuration for reproducible load-aware scheduling experiments.
+
+### Files
+
+- `proxy/strategy/least_load.py`
+- `proxy/strategy/factory.py`
+- `proxy/README.md`
+
+Owner: yao
+
+---
+
 ## 260715: Proxy Pool Resource Reporting and Metric Contract
 
 ### Changes
