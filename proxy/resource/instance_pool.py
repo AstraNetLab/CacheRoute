@@ -57,7 +57,7 @@ class InstancePool:
     """
     In-memory instance pool (TTL based).
     - upsert: register/update instance static fields
-    - heartbeat: refresh last_seen and optionally update load fields
+    - heartbeat: refresh last_seen and optionally update non-lifecycle load fields
     - list(include_dead=False): returns alive instances by default
     """
     def __init__(self, ttl_s: int = 30):
@@ -120,9 +120,8 @@ class InstancePool:
             if not it:
                 return False
             it.last_seen_at = now
-            # Only update when provided to avoid overwriting with 0/None
-            if inflight is not None:
-                it.load.inflight = int(inflight)
+            # Inflight is Proxy-maintained via begin_request/end_request.
+            # Keep heartbeat load updates for non-lifecycle signals only.
             if qps_1m is not None:
                 it.load.qps_1m = float(qps_1m)
             if gpu_util is not None:
@@ -144,6 +143,81 @@ class InstancePool:
             it.resource = _resource_from_snapshot(snapshot=snapshot, reported_at=now, metadata=metadata or {})
             return True
 
+
+    def begin_request(self, instance_id: str) -> bool:
+        """Increment the Proxy-maintained inflight counter for an Instance."""
+        with self._lock:
+            it = self._items.get(instance_id)
+            if not it:
+                return False
+            current = int(it.load.inflight or 0)
+            it.load.inflight = current + 1
+            return True
+
+    def end_request(self, instance_id: str) -> bool:
+        """Decrement the Proxy-maintained inflight counter without going below zero."""
+        with self._lock:
+            it = self._items.get(instance_id)
+            if not it:
+                return False
+            current = int(it.load.inflight or 0)
+            it.load.inflight = max(0, current - 1)
+            return True
+
+    def snapshot_instance_loads(
+        self,
+        queue_depths: Optional[Dict[str, Any]] = None,
+        include_dead: bool = True,
+    ) -> Dict[str, Any]:
+        """Return per-Instance load inputs used by Proxy-local strategies and debug views."""
+        now = int(time.time())
+        per_instance_queue = {}
+        if queue_depths:
+            raw = queue_depths.get("per_instance", {})
+            if isinstance(raw, dict):
+                per_instance_queue = raw
+
+        with self._lock:
+            items = list(self._items.values())
+
+        instances: List[Dict[str, Any]] = []
+        for it in items:
+            is_alive = (now - int(it.last_seen_at)) <= self._ttl_s
+            if not include_dead and not is_alive:
+                continue
+            queue_item = per_instance_queue.get(it.instance_id, {})
+            inflight = it.load.inflight
+            qps_1m = it.load.qps_1m
+            score = {
+                "primary": "inflight" if inflight is not None else None,
+                "primary_value": inflight,
+                "primary_source": "proxy_lifecycle_counter" if inflight is not None else "unavailable",
+                "secondary": "qps_1m" if qps_1m is not None else None,
+                "secondary_value": qps_1m,
+                "secondary_source": "instance_heartbeat" if qps_1m is not None else "unavailable",
+            }
+            instances.append({
+                "instance_id": it.instance_id,
+                "is_alive": is_alive,
+                "inflight": inflight,
+                "qps_1m": qps_1m,
+                "prepare_queue_depth": queue_item.get("prepare_queue_depth"),
+                "ready_queue_depth": queue_item.get("ready_queue_depth"),
+                "active_prepare": queue_item.get("active_prepare"),
+                "active_ready": queue_item.get("active_ready"),
+                "least_load_score": score,
+            })
+
+        return {
+            "ttl_s": self._ttl_s,
+            "generated_at": time.time(),
+            "metric_source": {
+                "inflight": "proxy_lifecycle_counter",
+                "qps_1m": "instance_heartbeat",
+                "queue_depth": "proxy_queue_manager" if queue_depths is not None else "unavailable",
+            },
+            "instances": instances,
+        }
 
     def build_pool_resource_snapshot(
         self,
@@ -216,7 +290,7 @@ class InstancePool:
         metric_source = {
             "instances": "proxy_instance_pool_ttl",
             "resource": "instance_resource_snapshot" if reporting else "unavailable",
-            "inflight_total": "instance_heartbeat" if inflight_values else "unavailable",
+            "inflight_total": "proxy_lifecycle_counter" if inflight_values else "unavailable",
             "qps_1m_total": "instance_heartbeat" if qps_values else "unavailable",
             "load_ratio": "derived_from_inflight_capacity" if load_ratio is not None else "unavailable",
             "capacity": "proxy_config",
