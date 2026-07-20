@@ -325,7 +325,7 @@ curl http://127.0.0.1:7001/v1/chat/completions \
   -d '{
     "model": "llama3-70b",
     "messages": [{"role": "user", "content": "What is DeepSeek"}],
-    "max_tokens": 64,
+    "max_tokens": 1,
     "stream": false,
     "RAG": true
   }'
@@ -339,7 +339,7 @@ curl http://127.0.0.1:7001/v1/completions \
   -d '{
     "model": "llama3-70b",
     "prompt": "What is DeepSeek",
-    "max_tokens": 64,
+    "max_tokens": 1,
     "RAG": true
   }'
 ```
