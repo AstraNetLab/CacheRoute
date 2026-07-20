@@ -332,9 +332,9 @@ function renderSummaryCards(summary, status, scheduler) {
 
   $('summaryCards').innerHTML = cards.map(([title, value, tone, detail]) => `
     <article class="summary-card ${tone}">
-      <span>${title}</span>
-      <strong>${value}</strong>
-      <small>${detail}</small>
+      <span>${escapeHtml(title)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(detail)}</small>
     </article>
   `).join('');
 }
@@ -394,15 +394,15 @@ function renderInstanceTable(instances) {
   const filtered = sortInstances(applyFilters(instances));
   const rows = filtered.map((item) => `
     <tr>
-      <td>${item.instance_id || '—'}</td>
-      <td>${item.host || '—'}:${item.port || '—'}</td>
+      <td>${escapeHtml(item.instance_id || '—')}</td>
+      <td>${escapeHtml(item.host || '—')}:${escapeHtml(item.port || '—')}</td>
       <td>${instanceStateBadge(item)}</td>
       <td>${formatAge(item.last_seen_at)}<br><span class="muted">${formatTimestamp(item.last_seen_at)}</span></td>
       <td>${fmt(item.resource?.cpu_util)}%</td>
       <td>${fmt(item.resource?.memory_used_mb, 0)} / ${fmt(item.resource?.memory_total_mb, 0)} MB</td>
       <td>${fmt(item.resource?.gpu_util_avg)}%</td>
       <td>${badge(resourceAgeTone(item.resource || {})[0], resourceAgeTone(item.resource || {})[1])}</td>
-      <td><code>${JSON.stringify(item.meta || {})}</code></td>
+      <td><code>${escapeHtml(JSON.stringify(item.meta || {}))}</code></td>
     </tr>
   `).join('');
 
@@ -420,15 +420,15 @@ function renderResourceTable(resources) {
     const resource = item.resource || {};
     return `
       <tr>
-        <td>${item.instance_id}</td>
-        <td>${item.host}:${item.port}</td>
+        <td>${escapeHtml(item.instance_id)}</td>
+        <td>${escapeHtml(item.host)}:${escapeHtml(item.port)}</td>
         <td>${formatTimestamp(item.last_seen_at)}</td>
         <td>${fmt(resource.cpu_util)}%</td>
         <td>${fmt(resource.memory_used_mb, 0)} / ${fmt(resource.memory_total_mb, 0)} MB</td>
         <td>${fmt(resource.gpu_util_avg)}%</td>
         <td>${fmt(resource.gpu_mem_used_mb, 0)} / ${fmt(resource.gpu_mem_total_mb, 0)} MB</td>
         <td>rx ${fmt(resource.network_rx_mbps, 2)}<br>tx ${fmt(resource.network_tx_mbps, 2)}</td>
-        <td>${resource.admission_state || '—'}</td>
+        <td>${escapeHtml(resource.admission_state || '—')}</td>
         <td>${badge(resourceAgeTone(resource)[0], resourceAgeTone(resource)[1])}</td>
       </tr>
     `;
@@ -480,12 +480,12 @@ function renderInstanceDetail(instances) {
   panel.innerHTML = `
     <div class="panel-heading"><div><h2>Instance Detail: ${escapeHtml(instance.instance_id)}</h2>${staleNote}</div><button id="backToOverviewBtn">← Back to overview</button></div>
     <div class="detail-grid">
-      <section><h3>Identity</h3><p>${escapeHtml(instance.host)}:${escapeHtml(instance.port)}</p><pre>${stableJson({ endpoints: instance.endpoints, tags: instance.tags, weight: instance.weight, metadata: instance.meta })}</pre></section>
+      <section><h3>Identity</h3><p>${escapeHtml(instance.host)}:${escapeHtml(instance.port)}</p><pre>${escapeHtml(stableJson({ endpoints: instance.endpoints, tags: instance.tags, weight: instance.weight, metadata: instance.meta }))}</pre></section>
       <section><h3>Liveness</h3><p>${instanceStateBadge(instance)} ${badge(`registered: ${formatTimestamp(instance.registered_at)}`, 'muted')} ${badge(`last seen age: ${formatAge(instance.last_seen_at)}`, instance.is_alive === false ? 'bad' : 'muted')}</p></section>
       <section><h3>Current Load</h3><p>inflight ${fmt(instance.load?.inflight, 0)} · qps ${fmt(instance.load?.qps_1m, 2)} · heartbeat GPU ${fmt(instance.load?.gpu_util)}%</p></section>
       <section><h3>Resource Snapshot</h3><p>CPU ${fmt(resource.cpu_util)}% · memory ${fmt(resource.memory_used_mb,0)}/${fmt(resource.memory_total_mb,0)} MB · GPU ${fmt(resource.gpu_util_avg)}% · GPU memory ${fmt(resource.gpu_mem_used_mb,0)}/${fmt(resource.gpu_mem_total_mb,0)} MB · RX ${fmt(resource.network_rx_mbps,2)} Mbps · TX ${fmt(resource.network_tx_mbps,2)} Mbps · admission ${escapeHtml(resource.admission_state || '—')} · ${resourceAgeTone(resource)[0]}</p></section>
       <section><h3>Hardware Summary</h3><p>${escapeHtml([hw.cpu, hw.gpu, hw.nic].filter(Boolean).join(' · ') || 'device: unknown')}</p></section>
-      <section class="wide"><h3>Raw Instance JSON</h3><pre>${stableJson(instance)}</pre></section>
+      <section class="wide"><h3>Raw Instance JSON</h3><pre>${escapeHtml(stableJson(instance))}</pre></section>
     </div>
   `;
 }
@@ -515,9 +515,9 @@ function renderRawPanels() {
   $('toggleRawBtn').textContent = state.rawExpanded ? 'Collapse raw JSON' : 'Expand raw JSON';
   $('rawJsonPanels').innerHTML = entries.map(([title, payload]) => `
     <details ${state.rawExpanded ? 'open' : ''}>
-      <summary>${title}</summary>
-      <button class="copy-inline" data-copy-key="${title}">Copy</button>
-      <pre>${stableJson(payload || {})}</pre>
+      <summary>${escapeHtml(title)}</summary>
+      <button class="copy-inline" data-copy-key="${escapeHtml(title)}">Copy</button>
+      <pre>${escapeHtml(stableJson(payload || {}))}</pre>
     </details>
   `).join('');
 }

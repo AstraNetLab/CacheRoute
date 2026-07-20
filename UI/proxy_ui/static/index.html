@@ -62,11 +62,11 @@
           <span id="pollingState" class="badge ok-badge">Polling</span>
         </div>
         <div class="chart-grid">
-          <article class="chart-card"><h3>CPU average</h3><p class="chart-caption">Y: %, X: wall-clock poll time</p><canvas id="chartCpu" width="460" height="160"></canvas></article>
-          <article class="chart-card"><h3>Memory used ratio</h3><p class="chart-caption">Y: %, X: wall-clock poll time</p><canvas id="chartMemory" width="460" height="160"></canvas></article>
-          <article class="chart-card"><h3>GPU average</h3><p class="chart-caption">Y: %, X: wall-clock poll time</p><canvas id="chartGpu" width="460" height="160"></canvas></article>
-          <article class="chart-card"><h3>Alive / stale instances</h3><p class="chart-caption">Y: count, X: wall-clock poll time</p><div class="legend"><span class="swatch ok"></span>alive <span class="swatch bad"></span>stale</div><canvas id="chartLiveness" width="460" height="160"></canvas></article>
-          <article class="chart-card wide"><h3>Network RX / TX</h3><p class="chart-caption">Y: Mbps, X: wall-clock poll time</p><div class="legend"><span class="swatch rx"></span>RX <span class="swatch tx"></span>TX</div><canvas id="chartNetwork" width="940" height="160"></canvas></article>
+          <article class="chart-card"><h3>CPU average</h3><p class="chart-caption">Y: %, X: recent polling samples</p><canvas id="chartCpu" width="460" height="160"></canvas></article>
+          <article class="chart-card"><h3>Memory used ratio</h3><p class="chart-caption">Y: %, X: recent polling samples</p><canvas id="chartMemory" width="460" height="160"></canvas></article>
+          <article class="chart-card"><h3>GPU average</h3><p class="chart-caption">Y: %, X: recent polling samples</p><canvas id="chartGpu" width="460" height="160"></canvas></article>
+          <article class="chart-card"><h3>Alive / stale instances</h3><p class="chart-caption">Y: count, X: recent polling samples</p><div class="legend"><span class="swatch ok"></span>alive <span class="swatch bad"></span>stale</div><canvas id="chartLiveness" width="460" height="160"></canvas></article>
+          <article class="chart-card wide"><h3>Network RX / TX</h3><p class="chart-caption">Y: Mbps, X: recent polling samples</p><div class="legend"><span class="swatch rx"></span>RX <span class="swatch tx"></span>TX</div><canvas id="chartNetwork" width="940" height="160"></canvas></article>
         </div>
       </section>
       <section class="panel topology-card" aria-label="System topology">
