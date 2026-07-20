@@ -80,7 +80,7 @@ Inside the REPL, enter a curl-like request line.
 ```text
 http://127.0.0.1:7001/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"llama3-70b","messages":[{"role":"user","content":"What is vLLM?"}],"max_tokens":64,"stream":true,"RAG":true,"Injection_type":"kvcache"}'
+  -d '{"model":"llama3-70b","messages":[{"role":"user","content":"What is vLLM?"}],"max_tokens":1,"stream":true,"RAG":true,"Injection_type":"kvcache"}'
 ```
 
 ### Completion example
@@ -88,7 +88,7 @@ http://127.0.0.1:7001/v1/chat/completions \
 ```text
 http://127.0.0.1:7001/v1/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"llama3-70b","prompt":"What is DeepSeek?","max_tokens":64,"RAG":true,"Injection_type":"text"}'
+  -d '{"model":"llama3-70b","prompt":"What is DeepSeek?","max_tokens":1,"RAG":true,"Injection_type":"text"}'
 ```
 
 Supported REPL commands:
@@ -485,7 +485,7 @@ curl http://127.0.0.1:7001/v1/chat/completions \
     "stream": true,
     "RAG": true,
     "Injection_type": "text",
-    "max_tokens": 64
+    "max_tokens": 1
   }'
 ```
 
