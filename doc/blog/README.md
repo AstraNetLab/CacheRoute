@@ -11,6 +11,30 @@ This document records major engineering milestones for the CacheRoute prototype.
 
 ---
 
+## 260720: Queue-Aware Least-Load Scheduling and Proxy UI Visualization
+
+### Changes
+
+- Added Proxy-maintained per-Instance `inflight` lifecycle counters and `/debug/instance_loads` for consistent load-aware selection and diagnostics.
+- Extended `least_load` scoring with active prepare/ready work and prepare/ready queue depths, while preserving unknown-metric handling and round-robin fallback semantics.
+- Rebuilt the Proxy UI topology as a responsive ONOS-style SVG and added a visual Instance detail dashboard with KPIs, resource bars, GPU/memory charts, queue/load views, accessibility, and raw-data diagnostics.
+- Added an LMCache configuration reference and simplified README request examples for lightweight validation.
+
+### Files
+
+- `proxy/strategy/least_load.py`
+- `proxy/proxy.py`
+- `proxy/resource/instance_pool.py`
+- `proxy/resource/p_control_plane.py`
+- `UI/proxy_ui/`
+- `doc/LMCache_config_para.md`
+- `README.md`
+- `client/README.md`
+
+Owner: yao
+
+---
+
 ## 260716: Least-Load Instance Selection Strategy
 
 ### Changes
