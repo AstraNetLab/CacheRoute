@@ -1307,11 +1307,27 @@ function renderUtilizationDonutChart({ label, value, detail = '' }) {
   return `<article class="donut-card utilization-donut" aria-label="${escapeHtml(label)} utilized ${util.toFixed(1)} percent"><h3>${escapeHtml(label)}</h3><svg class="donut" viewBox="0 0 42 42" role="img"><title>${escapeHtml(label)}: utilized ${util.toFixed(1)} percent</title><circle class="donut-free" cx="21" cy="21" r="15.9155"></circle><circle class="donut-used" cx="21" cy="21" r="15.9155" stroke-dasharray="${dash}"></circle><text x="21" y="22">${escapeHtml(text)}</text></svg><p><span class="dot used"></span> Utilized ${util.toFixed(0)}% · <span class="dot free"></span> Idle ${idle.toFixed(0)}%</p>${detail ? `<small>${escapeHtml(detail)}</small>` : ''}</article>`;
 }
 
-function renderGpuUtilizationDonuts(instance, aggregateGpuUtil) {
+function gpuUtilizationDetailText(result) {
+  if (!result || result.value === null) return `No valid GPU utilization sample · ${result?.quality || 'unavailable'}`;
+  const windowText = result.windowMs ? `${(result.windowMs / 1000).toFixed(0)}s average` : 'average';
+  const age = finiteNumber(result.sampleAgeMs);
+  return `Source: ${result.source || '—'} · Current ${displayNumber(result.current, 1)}% · ${windowText} ${displayNumber(result.average, 1)}% · maximum ${displayNumber(result.maximum, 1)}% · ${displayNumber(result.sampleCount, 0)} samples${age === null ? '' : ` · last sample ${displayNumber(age, 0)} ms ago`} · quality ${result.quality || '—'}`;
+}
+
+function resolveGpuUtilizationForDevice(gpu) {
+  if (!gpuSampleOk(gpu)) return { value: null, source: gpu.utilization_source || 'per-gpu', quality: gpu.utilization_sample_quality || gpu.utilization_error || 'unavailable', current: null, average: null, maximum: null, sampleCount: finiteNumber(gpu.utilization_sample_count), windowMs: finiteNumber(gpu.utilization_window_ms), sampleAgeMs: null };
+  const averageValue = finiteNumber(gpu.utilization_pct_avg ?? gpu.utilization_pct ?? gpu.utilization_gpu_pct ?? gpu.gpu_util ?? gpu.util);
+  return { value: averageValue, source: gpu.utilization_source || 'per-gpu', quality: gpu.utilization_sample_quality || (gpu.utilization_sample_ok === true ? 'ok' : 'unknown'), current: finiteNumber(gpu.utilization_pct_current), average: averageValue, maximum: finiteNumber(gpu.utilization_pct_max), sampleCount: finiteNumber(gpu.utilization_sample_count), windowMs: finiteNumber(gpu.utilization_window_ms), sampleAgeMs: null };
+}
+
+function renderGpuUtilizationDonuts(instance, aggregateGpuResult) {
+  const aggregateGpuUtil = typeof aggregateGpuResult === 'object' && aggregateGpuResult !== null ? aggregateGpuResult.value : aggregateGpuResult;
+  const aggregateDetail = typeof aggregateGpuResult === 'object' && aggregateGpuResult !== null ? gpuUtilizationDetailText(aggregateGpuResult) : 'Instance-level scheduling signal';
   const hw = hardwareDetails(instance);
   const sortedGpus = [...hw.gpus].sort((a, b) => (finiteNumber(a.index) ?? 0) - (finiteNumber(b.index) ?? 0));
   const deviceCards = sortedGpus.map((gpu, order) => {
-    const util = gpuUtil(gpu);
+    const resolved = resolveGpuUtilizationForDevice(gpu);
+    const util = resolved.value;
     if (util === null) return '';
     const index = gpu.index ?? order;
     const name = gpuName(gpu);
@@ -1321,9 +1337,10 @@ function renderGpuUtilizationDonuts(instance, aggregateGpuUtil) {
       gpu.power_w !== undefined ? `${displayNumber(gpu.power_w, 1)} W` : null,
       finiteNumber(gpu.memory_used_mb) !== null && finiteNumber(gpu.memory_total_mb) !== null ? `memory ${displayNumber(gpu.memory_used_mb, 0)}/${displayNumber(gpu.memory_total_mb, 0)} MB` : null,
     ].filter(Boolean).join(' · ');
-    return renderUtilizationDonutChart({ label: `GPU #${index} ${name} utilization`, value: util, detail: details });
+    const detail = [gpuUtilizationDetailText(resolved), details].filter(Boolean).join(' · ');
+    return renderUtilizationDonutChart({ label: `GPU #${index} ${name} utilization`, value: util, detail });
   }).filter(Boolean);
-  return `<section><h3>GPU utilization</h3><div class="donut-grid gpu-utilization-grid">${renderUtilizationDonutChart({ label: 'Aggregate GPU utilization', value: aggregateGpuUtil, detail: 'Instance-level scheduling signal' })}${deviceCards.length ? deviceCards.join('') : '<div class="empty-state compact">No per-GPU utilization data is exposed by the current resource snapshot.</div>'}</div></section>`;
+  return `<section><h3>GPU utilization</h3><div class="donut-grid gpu-utilization-grid">${renderUtilizationDonutChart({ label: 'Aggregate GPU utilization', value: aggregateGpuUtil, detail: aggregateDetail })}${deviceCards.length ? deviceCards.join('') : '<div class="empty-state compact">No per-GPU utilization data is exposed by the current resource snapshot.</div>'}</div></section>`;
 }
 
 function extractQueueMetrics(instance) {
@@ -1428,14 +1445,52 @@ function gpuUtil(gpu) {
 }
 
 
-function aggregateGpuUtilization(instance, load = mergedInstanceLoad(instance), hardware = hardwareDetails(instance)) {
+function gpuSampleFresh(sampledAt, sampleAgeMs, maxAgeMs = 10000) {
+  const explicitAge = finiteNumber(sampleAgeMs);
+  if (explicitAge !== null) return explicitAge <= maxAgeMs;
+  const sampled = finiteNumber(sampledAt);
+  if (sampled === null) return true;
+  const ms = sampled > 1e12 ? sampled : sampled * 1000;
+  return Math.max(0, Date.now() - ms) <= maxAgeMs;
+}
+
+function gpuSampleOk(payload = {}) {
+  const quality = String(payload.gpu_sample_quality ?? payload.utilization_sample_quality ?? '').toLowerCase();
+  if (payload.gpu_sample_ok === false || payload.utilization_sample_ok === false) return false;
+  if (['invalid', 'failed', 'error', 'command_error', 'parse_error', 'unsupported', 'stale'].includes(quality)) return false;
+  return true;
+}
+
+function resolveAggregateGpuUtilization(instance, load = mergedInstanceLoad(instance), hardware = hardwareDetails(instance)) {
   const resource = instance?.resource || {};
-  const resourceValue = finiteNumber(resource.gpu_util_avg);
-  if (resourceValue !== null) return resourceValue;
-  const loadValue = finiteNumber(load?.gpu_util);
-  if (loadValue !== null) return loadValue;
-  const perGpu = Array.isArray(hardware?.gpus) ? hardware.gpus.map(gpuUtil).filter((value) => value !== null) : [];
-  return average(perGpu);
+  const sampledAt = resource.resource_report_wall_time_ms ?? resource.resource_ts_ms ?? resource.resource_reported_at;
+  const sampleAgeMs = resource.gpu_sample_age_ms;
+  const resourceAverage = finiteNumber(resource.gpu_util_avg);
+  const resourceCurrent = finiteNumber(resource.gpu_util_current);
+  const resourceMax = finiteNumber(resource.gpu_util_max);
+  const resourcePayload = { ...resource, gpu_sample_ok: resource.gpu_sample_quality ? resource.gpu_sample_quality === 'ok' : undefined };
+  if (resourceAverage !== null && gpuSampleOk(resourcePayload) && gpuSampleFresh(sampledAt, sampleAgeMs)) {
+    return { value: resourceAverage, source: resource.gpu_sample_source || 'resource-agent', quality: resource.gpu_sample_quality || 'ok', sampledAt, sampleAgeMs, current: resourceCurrent, average: resourceAverage, maximum: resourceMax, sampleCount: finiteNumber(resource.gpu_sample_count), windowMs: finiteNumber(resource.gpu_sample_window_ms) };
+  }
+  const heartbeat = finiteNumber(load?.gpu_util);
+  if (heartbeat !== null && gpuSampleFresh(load?.sampled_at ?? load?.timestamp_ms ?? instance?.last_seen_at, load?.gpu_sample_age_ms)) {
+    return { value: heartbeat, source: 'heartbeat', quality: 'ok', sampledAt: load?.sampled_at ?? load?.timestamp_ms ?? instance?.last_seen_at, sampleAgeMs: load?.gpu_sample_age_ms, current: heartbeat, average: heartbeat, maximum: heartbeat, sampleCount: null, windowMs: null };
+  }
+  const validGpuValues = Array.isArray(hardware?.gpus) ? hardware.gpus.map((gpu) => {
+    const average = finiteNumber(gpu.utilization_pct_avg ?? gpu.utilization_pct ?? gpu.utilization_gpu_pct ?? gpu.gpu_util ?? gpu.util);
+    if (average === null || !gpuSampleOk(gpu) || !gpuSampleFresh(gpu.utilization_sample_timestamp_ms, gpu.gpu_sample_age_ms)) return null;
+    return { average, current: finiteNumber(gpu.utilization_pct_current), maximum: finiteNumber(gpu.utilization_pct_max), source: gpu.utilization_source || 'per-gpu', quality: gpu.utilization_sample_quality || (gpu.utilization_sample_ok === true ? 'ok' : 'unknown'), sampledAt: gpu.utilization_sample_timestamp_ms, sampleCount: finiteNumber(gpu.utilization_sample_count), windowMs: finiteNumber(gpu.utilization_window_ms) };
+  }).filter(Boolean) : [];
+  if (validGpuValues.length) {
+    const value = average(validGpuValues.map((item) => item.average));
+    return { value, source: validGpuValues[0].source, quality: validGpuValues.every((item) => item.quality === 'ok') ? 'ok' : validGpuValues[0].quality, sampledAt: validGpuValues[0].sampledAt, sampleAgeMs: null, current: average(validGpuValues.map((item) => item.current)), average: value, maximum: Math.max(...validGpuValues.map((item) => item.maximum ?? item.average)), sampleCount: validGpuValues.reduce((sum, item) => sum + (item.sampleCount || 0), 0) || null, windowMs: Math.max(...validGpuValues.map((item) => item.windowMs || 0)) || null };
+  }
+  const failed = resource.gpu_sample_quality || hardware?.gpus?.find?.((gpu) => gpu.utilization_error)?.utilization_error;
+  return { value: null, source: 'unavailable', quality: failed || 'missing', sampledAt: null, sampleAgeMs: null, current: null, average: null, maximum: null, sampleCount: null, windowMs: null };
+}
+
+function aggregateGpuUtilization(instance, load = mergedInstanceLoad(instance), hardware = hardwareDetails(instance)) {
+  return resolveAggregateGpuUtilization(instance, load, hardware).value;
 }
 
 function nicName(nic) {
@@ -1455,7 +1510,8 @@ function renderInstanceDetail(instances) {
   const load = mergedInstanceLoad(instance);
   const memPercent = percentOf(resource.memory_used_mb, resource.memory_total_mb);
   const gpuMemPercent = percentOf(resource.gpu_mem_used_mb, resource.gpu_mem_total_mb);
-  const aggregateGpuUtil = aggregateGpuUtilization(instance, load, hardwareDetails(instance));
+  const gpuUtilResolved = resolveAggregateGpuUtilization(instance, load, hardwareDetails(instance));
+  const aggregateGpuUtil = gpuUtilResolved.value;
   const networkMax = Math.max(finiteNumber(resource.network_rx_mbps) || 0, finiteNumber(resource.network_tx_mbps) || 0, 1);
   const loadMetrics = explicitLoadMetrics(load);
   const queues = queueMetricsForInstance(instance);
@@ -1470,7 +1526,7 @@ function renderInstanceDetail(instances) {
     <div class="detail-grid visual-detail">
       <section><h3>Resource utilization</h3>${renderMetricBar({ label:'CPU utilization', value:resource.cpu_util, max:100, unit:'%', secondaryText:'reported resource.cpu_util' })}${renderMetricBar({ label:'System memory', value:resource.memory_used_mb, max:resource.memory_total_mb, unit:' MB', secondaryText:`${displayNumber(resource.memory_used_mb,0)} / ${displayNumber(resource.memory_total_mb,0)} MB (${memPercent === null ? '—' : memPercent.toFixed(1)+'%'})` })}${renderMetricBar({ label:'GPU utilization', value:aggregateGpuUtil, max:100, unit:'%', secondaryText:'aggregateGpuUtilization priority: resource, load, per-GPU average' })}${renderMetricBar({ label:'GPU memory', value:resource.gpu_mem_used_mb, max:resource.gpu_mem_total_mb, unit:' MB', secondaryText:`${displayNumber(resource.gpu_mem_used_mb,0)} / ${displayNumber(resource.gpu_mem_total_mb,0)} MB (${gpuMemPercent === null ? '—' : gpuMemPercent.toFixed(1)+'%'})` })}${renderMetricBar({ label:'Network RX', value:resource.network_rx_mbps, max:networkMax, unit:' Mbps', secondaryText:'relative to current RX/TX max' })}${renderMetricBar({ label:'Network TX', value:resource.network_tx_mbps, max:networkMax, unit:' Mbps', secondaryText:'relative to current RX/TX max' })}</section>
       <section><h3>Resource composition</h3><div class="donut-grid">${renderDonutChart({ label:'System memory', used:resource.memory_used_mb, total:resource.memory_total_mb, unit:' MB' })}${renderDonutChart({ label:'Aggregate GPU memory', used:resource.gpu_mem_used_mb, total:resource.gpu_mem_total_mb, unit:' MB' })}</div></section>
-      ${renderGpuUtilizationDonuts(instance, aggregateGpuUtil)}
+      ${renderGpuUtilizationDonuts(instance, gpuUtilResolved)}
       <section><h3>Load metrics</h3>${loadMetrics.length ? loadMetrics.map((metric) => `<article class="kpi-card inline-kpi"><span>${escapeHtml(metric.label)}</span><strong>${escapeHtml(displayNumber(metric.value, 2))}</strong><small>${escapeHtml(metric.key)}</small></article>`).join('') : '<div class="empty-state compact">No load metrics are exposed by the current Instance load snapshot.</div>'}</section>
       <section><h3>Detailed queue counters</h3>${queues.length ? queues.map((q) => renderMetricBar({ label:q.label, value:q.value, max:maxQueue, unit:'', secondaryText:q.key })).join('') : '<div class="empty-state compact">No detailed queue counters are exposed by the current Instance load snapshot.</div>'}</section>
       <section><h3>Hardware</h3><div class="hardware-grid"><article><h4>CPU</h4><p>${escapeHtml(firstString(hw.cpu.model, hw.cpu.model_name, hw.cpu.name, instance.meta?.cpu_model) || 'No CPU details')}</p>${hw.cpu.cores || hw.cpu.logical_cpus ? `<small>${escapeHtml(`cores ${hw.cpu.cores || '—'} · logical ${hw.cpu.logical_cpus || '—'}`)}</small>` : ''}</article><article><h4>GPU</h4>${hw.gpus.length ? hw.gpus.map((gpu, i) => `<p>${escapeHtml(`#${gpu.index ?? i} ${gpuName(gpu) || 'GPU'}`)}${gpu.uuid ? ` · ${escapeHtml(gpu.uuid)}` : ''} · mem ${escapeHtml(displayNumber(gpu.memory_used_mb,0))}/${escapeHtml(displayNumber(gpu.memory_total_mb,0))} MB${gpu.memory_free_mb !== undefined ? ` · free ${escapeHtml(displayNumber(gpu.memory_free_mb,0))} MB` : ''} · util ${escapeHtml(displayNumber(gpuUtil(gpu),1))}%${gpu.temperature_c !== undefined ? ` · ${escapeHtml(displayNumber(gpu.temperature_c,1))}°C` : ''}${gpu.power_w !== undefined ? ` · ${escapeHtml(displayNumber(gpu.power_w,1))} W` : ''}</p>`).join('') : '<p>No GPU details</p>'}</article><article><h4>NIC</h4>${hw.nics.length ? hw.nics.map((nic) => `<p>${escapeHtml(nicName(nic) || 'NIC')}${nic.driver ? ` · ${escapeHtml(nic.driver)}` : ''}${nic.speed_mbps ? ` · ${escapeHtml(displayNumber(nic.speed_mbps,0))} Mbps` : (nic.speed ? ` · ${escapeHtml(nic.speed)}` : '')}${nic.rx_mbps !== undefined ? ` · RX ${escapeHtml(displayNumber(nic.rx_mbps,2))} Mbps` : ''}${nic.tx_mbps !== undefined ? ` · TX ${escapeHtml(displayNumber(nic.tx_mbps,2))} Mbps` : ''}</p>`).join('') : '<p>No NIC details</p>'}</article></div></section>
@@ -1786,7 +1842,7 @@ async function copyText(text) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { PROXY_UI_BUILD, buildTopologyModel, topologySignature, stableHash, seededUnitValue, preferredTopologyAngle, triangleArea, applyAngularForce, createInitialTopologyPositions, pruneTopologyState, cleanPositionsForModel, resolveCollisions, relaxTopologyLayout, clampTopologyPosition, normalizeVector, edgePoint, deterministicLinkCurvature, computeLinkPath, computeHoverRelationships, shouldAnimateTopologyParticles, shouldSuppressTopologyClick, setSuppressedTopologyClick, clearSuppressedTopologyClick, handleTopologyPointerOut, cleanupTopologyDrag, cleanupTopologyPan, cleanupTopologyPointerState, buildTooltipModel, fitTopologyToView, clampZoom, dragExceededThreshold, computeTopologyLayout, renderMetricBar, renderDonutChart, renderUtilizationDonutChart, renderGpuUtilizationDonuts, aggregateGpuUtilization, extractQueueMetrics, queueMetricsForInstance, computeMetrics, hasResourceReport, finiteNumber, clampPercent, percentOf, fmt, stateLabel, hardwareDetails, mergedInstanceLoad, applyPausedTopologyState, renderInstanceDetail, renderSystemTopology, state };
+  module.exports = { PROXY_UI_BUILD, buildTopologyModel, topologySignature, stableHash, seededUnitValue, preferredTopologyAngle, triangleArea, applyAngularForce, createInitialTopologyPositions, pruneTopologyState, cleanPositionsForModel, resolveCollisions, relaxTopologyLayout, clampTopologyPosition, normalizeVector, edgePoint, deterministicLinkCurvature, computeLinkPath, computeHoverRelationships, shouldAnimateTopologyParticles, shouldSuppressTopologyClick, setSuppressedTopologyClick, clearSuppressedTopologyClick, handleTopologyPointerOut, cleanupTopologyDrag, cleanupTopologyPan, cleanupTopologyPointerState, buildTooltipModel, fitTopologyToView, clampZoom, dragExceededThreshold, computeTopologyLayout, renderMetricBar, renderDonutChart, renderUtilizationDonutChart, renderGpuUtilizationDonuts, resolveAggregateGpuUtilization, resolveGpuUtilizationForDevice, aggregateGpuUtilization, extractQueueMetrics, queueMetricsForInstance, computeMetrics, hasResourceReport, finiteNumber, clampPercent, percentOf, fmt, stateLabel, hardwareDetails, mergedInstanceLoad, applyPausedTopologyState, renderInstanceDetail, renderSystemTopology, state };
 } else {
   setTheme(state.theme);
   setupEventHandlers();

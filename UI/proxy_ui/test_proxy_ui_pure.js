@@ -563,6 +563,9 @@ function testGpuUtilizationAggregationAndDonuts() {
   assert.strictEqual(ui.aggregateGpuUtilization(inst('load', true, { resource: { gpu_util_avg: null } }), { gpu_util: 44 }, gpuHardware), 44);
   assert.strictEqual(ui.aggregateGpuUtilization(inst('devices', true, { resource: { gpu_util_avg: null } }), { gpu_util: null }, gpuHardware), 40);
   assert.strictEqual(ui.aggregateGpuUtilization(inst('none', true, { resource: { gpu_util_avg: null } }), { gpu_util: null }, { gpus: [{ index: 0 }] }), null);
+  assert.strictEqual(ui.resolveAggregateGpuUtilization(inst('zero', true, { resource: { gpu_util_avg: 0, gpu_sample_quality: 'ok' } }), { gpu_util: 88 }, gpuHardware).value, 0);
+  assert.strictEqual(ui.resolveAggregateGpuUtilization(inst('failed-zero', true, { resource: { gpu_util_avg: 0, gpu_sample_quality: 'command_error' } }), { gpu_util: 88 }, gpuHardware).value, 88);
+  assert.strictEqual(ui.resolveAggregateGpuUtilization(inst('stale-resource', true, { resource: { gpu_util_avg: 0, gpu_sample_quality: 'ok', resource_report_wall_time_ms: 1 } }), { gpu_util: null }, { gpus: [{ utilization_pct_avg: 77, utilization_sample_ok: true }] }).value, 77);
   const donut = ui.renderUtilizationDonutChart({ label: 'Aggregate GPU utilization', value: 68, detail: 'detail' });
   assert(donut.includes('68%'));
   assert(donut.includes('Utilized 68%'));
