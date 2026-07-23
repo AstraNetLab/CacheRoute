@@ -348,7 +348,7 @@ function withTopologyDom(fn) {
   global.CSS = { escape: (value) => String(value).replace(/"/g, '\\"') };
   global.requestAnimationFrame = (cb) => { cb(Date.now() + 300); return 1; };
   global.cancelAnimationFrame = () => {};
-  global.matchMedia = () => ({ matches: true });
+  global.matchMedia = () => ({ matches: false });
   try { fn(container); } finally { global.document = originalDocument; global.CSS = originalCss; global.requestAnimationFrame = originalRaf; global.cancelAnimationFrame = originalCancel; global.matchMedia = originalMatchMedia; }
 }
 
@@ -373,7 +373,7 @@ function testRenderSystemTopologyEffectiveShell() {
     assert.strictEqual(container.handlers.pointerover.length, handlers, 'handlers are not installed twice');
     assert.deepStrictEqual(ui.state.topology.positions, oldPositions, 'metric-only changes preserve positions');
     assert(container.querySelectorAll('.topology-particle').some((item) => item.className.baseVal.includes('active')));
-    assert(container.querySelectorAll('.topology-particle').some((item) => item.className.baseVal.includes('stale')));
+    assert(!container.querySelectorAll('.topology-particle').some((item) => item.dataset.linkId === 'proxy-dom-b'), 'stale links should not create particles');
     ui.renderSystemTopology([inst('dom-a', true)], { ok: true });
     assert(!container.querySelector('.topology-svg-node[data-node-id="instance:dom-b"]'), 'removed nodes are removed');
   });
@@ -447,4 +447,74 @@ testRenderSystemTopologyEffectiveShell();
 testPauseAnimationsDomFixture();
 testHoverLifecycleHelpers();
 testProxyTooltipCountsAndPinnedCollisions();
+
+function testScopedSuppressedClick() {
+  const nodeA = new FakeElement('g', 'topology-svg-node');
+  nodeA.dataset.nodeId = 'instance:a';
+  nodeA.dataset.instanceId = 'a';
+  const nodeB = new FakeElement('g', 'topology-svg-node');
+  nodeB.dataset.nodeId = 'instance:b';
+  nodeB.dataset.instanceId = 'b';
+  const reset = new FakeElement('button', 'topology-control');
+  ui.setSuppressedTopologyClick('instance:a', 'a', 1, 450);
+  assert.strictEqual(ui.shouldSuppressTopologyClick(nodeA), true, 'drag click on same node is suppressed');
+  ui.setSuppressedTopologyClick('instance:a', 'a', 1, 450);
+  assert.strictEqual(ui.shouldSuppressTopologyClick(reset), false, 'reset/control click is not suppressed');
+  assert(ui.state.topology.suppressedClick, 'unrelated click does not consume suppression');
+  assert.strictEqual(ui.shouldSuppressTopologyClick(nodeB), false, 'another instance click is not suppressed');
+  assert(ui.state.topology.suppressedClick, 'another instance does not consume suppression');
+  assert.strictEqual(ui.shouldSuppressTopologyClick(nodeA, Date.now() + 1000), false, 'suppression expires');
+  ui.setSuppressedTopologyClick('instance:a', 'a', 1, 450);
+  ui.clearSuppressedTopologyClick();
+  assert.strictEqual(ui.shouldSuppressTopologyClick(nodeA), false, 'explicit cleanup clears suppression');
+  ui.setSuppressedTopologyClick('instance:a', 'a', 1, 450);
+  ui.cleanupTopologyPointerState(new FakeElement('div', 'topology-diagram'));
+  assert.strictEqual(ui.shouldSuppressTopologyClick(nodeA), false, 'pointercancel/window cleanup clears suppression');
+  assert.strictEqual(ui.shouldSuppressTopologyClick(nodeA), false, 'ordinary click without drag navigates');
+}
+
+function testPruneTopologyStateAndParticleLifecycle() {
+  withTopologyDom((container) => {
+    ui.state.latest.status = { ok: true, proxy_id: 'proxy-a' };
+    ui.state.topology.positions = {};
+    ui.state.topology.previousPositions = {};
+    ui.state.topology.linkPaths = {};
+    ui.state.topology.pinnedNodeIds = new Set();
+    ui.state.topology.signature = '';
+    ui.state.topology.handlersInstalled = false;
+    ui.state.topology.hoveredNodeId = null;
+    ui.renderSystemTopology([inst('keep', true), inst('gone', true), inst('stale', false), inst('unknown', undefined)], { ok: false });
+    assert(container.querySelector('.topology-particle[data-link-id="proxy-keep"]'), 'active link has particle');
+    assert(container.querySelector('.topology-particle[data-link-id="proxy-gone"]'), 'second active link has particle');
+    assert(!container.querySelector('.topology-particle[data-link-id="scheduler-proxy"]'), 'inactive scheduler link has no particle');
+    assert(!container.querySelector('.topology-particle[data-link-id="proxy-stale"]'), 'stale link has no particle');
+    assert(!container.querySelector('.topology-particle[data-link-id="proxy-unknown"]'), 'unknown link has no particle');
+    ui.state.topology.previousPositions['instance:gone'] = { x: 1, y: 1 };
+    ui.state.topology.pinnedNodeIds.add('instance:gone');
+    ui.state.topology.linkPaths['proxy-gone'] = 'M 0 0';
+    ui.state.topology.hoveredNodeId = 'instance:gone';
+    container.querySelector('.topology-tooltip').classList.remove('hidden');
+    ui.renderSystemTopology([inst('keep', true), inst('stale', false), inst('unknown', undefined)], { ok: false });
+    assert(!container.querySelector('.topology-svg-node[data-node-id="instance:gone"]'), 'removed DOM node is removed');
+    assert(!container.querySelector('.topology-link[data-link-id="proxy-gone"]'), 'removed link is removed');
+    assert(!container.querySelector('.topology-particle[data-link-id="proxy-gone"]'), 'removed particle is removed');
+    assert(!ui.state.topology.positions['instance:gone'], 'removed position is pruned');
+    assert(!ui.state.topology.previousPositions['instance:gone'], 'removed previous position is pruned');
+    assert(!ui.state.topology.pinnedNodeIds.has('instance:gone'), 'removed pinned ID is pruned');
+    assert(!ui.state.topology.linkPaths['proxy-gone'], 'removed link path is pruned');
+    assert.strictEqual(ui.state.topology.hoveredNodeId, null, 'removed hovered node clears hover');
+    assert(container.querySelector('.topology-tooltip').classList.contains('hidden'), 'removed hovered node hides tooltip');
+    const fit = ui.fitTopologyToView(ui.state.topology.positions, { width: 980, height: 560 });
+    assert(fit.zoom >= 0.45 && fit.zoom <= 2.5, 'fit ignores removed node and remains valid');
+    ui.renderSystemTopology([inst('keep', true), inst('gone', true), inst('stale', true)], { ok: true });
+    assert(ui.state.topology.positions['instance:gone'], 're-added node receives position');
+    assert(container.querySelector('.topology-particle[data-link-id="scheduler-proxy"]'), 'scheduler active link creates particle');
+    assert(container.querySelector('.topology-particle[data-link-id="proxy-stale"]'), 'stale-to-active creates particle');
+    ui.renderSystemTopology([inst('keep', true), inst('gone', true), inst('stale', false)], { ok: true });
+    assert(!container.querySelector('.topology-particle[data-link-id="proxy-stale"]'), 'active-to-stale removes particle');
+  });
+}
+
+testScopedSuppressedClick();
+testPruneTopologyStateAndParticleLifecycle();
 console.log('proxy-ui pure function tests passed');

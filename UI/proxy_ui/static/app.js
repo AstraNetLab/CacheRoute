@@ -32,7 +32,7 @@ const state = {
     model: null,
     linkPaths: {},
     fitRequested: true,
-    suppressNextClick: false,
+    suppressedClick: null,
     handlersInstalled: false,
     animationFrame: null,
   },
@@ -797,6 +797,58 @@ function fitTopologyToView(positions, viewport, padding = 60) {
   return { zoom, panX: (width - graphWidth * zoom) / 2 - minX * zoom, panY: (height - graphHeight * zoom) / 2 - minY * zoom };
 }
 
+
+function pruneTopologyMapByIds(map, validIds) {
+  Object.keys(map || {}).forEach((id) => {
+    if (!validIds.has(id)) delete map[id];
+  });
+}
+
+function pruneTopologyState(model) {
+  const validNodeIds = new Set(model.nodes.map((node) => node.id));
+  const validLinkIds = new Set(model.links.map((link) => link.id));
+  pruneTopologyMapByIds(state.topology.positions, validNodeIds);
+  pruneTopologyMapByIds(state.topology.previousPositions, validNodeIds);
+  pruneTopologyMapByIds(state.topology.linkPaths, validLinkIds);
+  [...state.topology.pinnedNodeIds].forEach((id) => { if (!validNodeIds.has(id)) state.topology.pinnedNodeIds.delete(id); });
+  if (state.topology.hoveredNodeId && !validNodeIds.has(state.topology.hoveredNodeId)) {
+    state.topology.hoveredNodeId = null;
+  }
+  if (state.topology.suppressedClick && !validNodeIds.has(state.topology.suppressedClick.nodeId)) {
+    state.topology.suppressedClick = null;
+  }
+}
+
+function cleanPositionsForModel(positions, model) {
+  const validNodeIds = new Set(model.nodes.map((node) => node.id));
+  return Object.fromEntries(Object.entries(positions || {}).filter(([id]) => validNodeIds.has(id)));
+}
+
+function shouldAnimateTopologyParticles() {
+  return !(typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+function setSuppressedTopologyClick(nodeId, instanceId, pointerId, ttlMs = 450) {
+  state.topology.suppressedClick = { nodeId, instanceId: instanceId || null, pointerId, expiresAt: Date.now() + ttlMs };
+}
+
+function clearSuppressedTopologyClick() {
+  state.topology.suppressedClick = null;
+}
+
+function shouldSuppressTopologyClick(target, now = Date.now()) {
+  const suppressed = state.topology.suppressedClick;
+  if (!suppressed) return false;
+  if (now > suppressed.expiresAt) {
+    clearSuppressedTopologyClick();
+    return false;
+  }
+  const node = target?.closest?.('.topology-svg-node[data-node-id]');
+  if (!node || node.dataset.nodeId !== suppressed.nodeId) return false;
+  clearSuppressedTopologyClick();
+  return true;
+}
+
 function tooltipValue(value) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'boolean' || Array.isArray(value) || typeof value === 'object') return '—';
@@ -879,7 +931,6 @@ function renderTopologyStructure(container, model) {
   model.links.forEach((link) => {
     if (!linksGroup.querySelector(`[data-link-id="${CSS.escape(link.id)}"]`)) {
       linksGroup.insertAdjacentHTML('beforeend', `<path id="topology-path-${escapeHtml(link.id)}" class="topology-link" data-link-id="${escapeHtml(link.id)}"><title></title></path>`);
-      particlesGroup.insertAdjacentHTML('beforeend', `<circle r="4" class="topology-particle" data-link-id="${escapeHtml(link.id)}"><animateMotion dur="3s" repeatCount="indefinite" rotate="auto"><mpath href="#topology-path-${escapeHtml(link.id)}"></mpath></animateMotion></circle>`);
     }
   });
   [...linksGroup.querySelectorAll('.topology-link')].forEach((el) => { if (!model.links.some((l) => l.id === el.dataset.linkId)) el.remove(); });
@@ -890,6 +941,24 @@ function renderTopologyStructure(container, model) {
     nodesGroup.insertAdjacentHTML('beforeend', `<g class="topology-svg-node ${escapeHtml(node.type)}" data-node-id="${escapeHtml(node.id)}" ${isInstance ? `role="button" tabindex="0" data-instance-id="${escapeHtml(node.instanceId)}"` : 'tabindex="0"'}><title></title><g class="topology-node-visual"><circle class="node-halo" r="38"></circle><use href="#icon-${escapeHtml(node.type)}" x="-20" y="-24" width="40" height="40"></use><text class="node-label" y="32"></text><text class="node-status" y="48"></text></g></g>`);
   });
   [...nodesGroup.querySelectorAll('.topology-svg-node')].forEach((el) => { if (!model.nodes.some((n) => n.id === el.dataset.nodeId)) el.remove(); });
+}
+
+
+function createTopologyParticle(particlesGroup, link) {
+  if (!shouldAnimateTopologyParticles()) return;
+  if (particlesGroup.querySelector(`[data-link-id="${CSS.escape(link.id)}"]`)) return;
+  particlesGroup.insertAdjacentHTML('beforeend', `<circle r="4" class="topology-particle active" data-link-id="${escapeHtml(link.id)}"><animateMotion dur="3s" repeatCount="indefinite" rotate="auto"><mpath href="#topology-path-${escapeHtml(link.id)}"></mpath></animateMotion></circle>`);
+}
+
+function syncTopologyParticles(container, model) {
+  const particlesGroup = container.querySelector('.topology-particles');
+  if (!particlesGroup) return;
+  const activeLinkIds = new Set(model.links.filter((link) => link.status === 'active').map((link) => link.id));
+  [...particlesGroup.querySelectorAll('.topology-particle')].forEach((el) => {
+    if (!activeLinkIds.has(el.dataset.linkId) || !shouldAnimateTopologyParticles()) el.remove();
+  });
+  if (!shouldAnimateTopologyParticles()) return;
+  model.links.filter((link) => link.status === 'active').forEach((link) => createTopologyParticle(particlesGroup, link));
 }
 
 function updateTopologyMetrics(container, model) {
@@ -906,7 +975,7 @@ function updateTopologyMetrics(container, model) {
     const el = container.querySelector(`.topology-link[data-link-id="${CSS.escape(link.id)}"]`);
     const particle = container.querySelector(`.topology-particle[data-link-id="${CSS.escape(link.id)}"]`);
     if (el) { el.className.baseVal = `topology-link ${link.status}`; el.querySelector('title').textContent = `${link.source} to ${link.target}: ${link.status}`; }
-    if (particle) particle.className.baseVal = `topology-particle ${link.status}`;
+    if (particle) particle.className.baseVal = `topology-particle active`;
   });
 }
 
@@ -935,7 +1004,7 @@ function applyTopologyPositions(container) {
 
 function animateTopologyPositions(container, nextPositions) {
   const reduced = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (reduced) { state.topology.positions = nextPositions; applyTopologyPositions(container); return; }
+  if (reduced) { state.topology.positions = cleanPositionsForModel(nextPositions, state.topology.model); applyTopologyPositions(container); return; }
   const start = { ...state.topology.positions };
   const started = performance.now();
   cancelAnimationFrame(state.topology.animationFrame);
@@ -948,6 +1017,7 @@ function animateTopologyPositions(container, nextPositions) {
     });
     applyTopologyPositions(container);
     if (t < 1) state.topology.animationFrame = requestAnimationFrame(frame);
+    else state.topology.positions = cleanPositionsForModel(nextPositions, state.topology.model);
   }
   state.topology.animationFrame = requestAnimationFrame(frame);
 }
@@ -1016,7 +1086,7 @@ function cleanupTopologyDrag(container, options = {}) {
   if (!drag) return false;
   if (drag.active && options.pinDraggedNode) {
     state.topology.pinnedNodeIds.add(drag.nodeId);
-    state.topology.suppressNextClick = true;
+    setSuppressedTopologyClick(drag.nodeId, drag.node?.dataset?.instanceId, drag.pointerId);
   }
   drag.node?.classList?.remove('is-dragging');
   if (typeof document !== 'undefined') document.body?.classList?.remove('topology-no-select');
@@ -1037,6 +1107,7 @@ function cleanupTopologyPan(container) {
 function cleanupTopologyPointerState(container) {
   cleanupTopologyDrag(container, { pinDraggedNode: false });
   cleanupTopologyPan(container);
+  clearSuppressedTopologyClick();
 }
 
 
@@ -1089,7 +1160,7 @@ function installTopologyHandlers(container) {
     if (action === 'zoom-in') zoomTopology(container, 1.18);
     if (action === 'zoom-out') zoomTopology(container, 0.84);
     if (action === 'fit') applyFitToView(container);
-    if (action === 'reset') { state.topology.pinnedNodeIds.clear(); state.topology.positions = {}; state.topology.signature = ''; state.topology.fitRequested = true; renderSystemTopology(Array.isArray(state.latest.instances) ? state.latest.instances : [], state.latest.scheduler); }
+    if (action === 'reset') { state.topology.pinnedNodeIds.clear(); state.topology.positions = {}; state.topology.previousPositions = {}; state.topology.linkPaths = {}; clearSuppressedTopologyClick(); state.topology.signature = ''; state.topology.fitRequested = true; renderSystemTopology(Array.isArray(state.latest.instances) ? state.latest.instances : [], state.latest.scheduler); }
   });
 }
 
@@ -1114,6 +1185,9 @@ function renderSystemTopology(instances, scheduler) {
   ensureTopologyShell(container);
   const model = buildTopologyModel(instances, scheduler, state.latest.status || {});
   state.topology.model = model;
+  const hoveredBeforePrune = state.topology.hoveredNodeId;
+  pruneTopologyState(model);
+  if (hoveredBeforePrune && !state.topology.hoveredNodeId) hideTopologyTooltip(container);
   const viewport = topologyViewportSize(container);
   const signature = topologySignature(model);
   const viewportSignature = `${Math.round(viewport.width / 40)}x${Math.round(viewport.height / 40)}`;
@@ -1131,6 +1205,7 @@ function renderSystemTopology(instances, scheduler) {
     applyTopologyPositions(container);
   }
   updateTopologyMetrics(container, model);
+  syncTopologyParticles(container, model);
   updateTopologyTransforms(container);
   applyTopologyHover(container, state.topology.hoveredNodeId);
   container.classList.toggle('paused', state.paused);
@@ -1537,7 +1612,7 @@ function setupEventHandlers() {
     tab.addEventListener('click', () => activateTab(tab.dataset.tab));
   });
   document.addEventListener('click', (event) => {
-    if (state.topology.suppressNextClick) { state.topology.suppressNextClick = false; event.preventDefault(); return; }
+    if (shouldSuppressTopologyClick(event.target)) { event.preventDefault(); return; }
     const card = event.target.closest('.instance-card[data-instance-id], .topology-svg-node[data-instance-id]');
     if (card) {
       window.location.hash = `#/instances/${encodeURIComponent(card.dataset.instanceId)}`;
@@ -1607,7 +1682,7 @@ async function copyText(text) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { buildTopologyModel, topologySignature, stableHash, seededUnitValue, createInitialTopologyPositions, resolveCollisions, relaxTopologyLayout, clampTopologyPosition, normalizeVector, edgePoint, deterministicLinkCurvature, computeLinkPath, computeHoverRelationships, handleTopologyPointerOut, cleanupTopologyDrag, cleanupTopologyPan, buildTooltipModel, fitTopologyToView, clampZoom, dragExceededThreshold, computeTopologyLayout, renderMetricBar, renderDonutChart, extractQueueMetrics, queueMetricsForInstance, computeMetrics, hasResourceReport, finiteNumber, clampPercent, percentOf, fmt, stateLabel, hardwareDetails, mergedInstanceLoad, applyPausedTopologyState, renderInstanceDetail, renderSystemTopology, state };
+  module.exports = { buildTopologyModel, topologySignature, stableHash, seededUnitValue, createInitialTopologyPositions, pruneTopologyState, cleanPositionsForModel, resolveCollisions, relaxTopologyLayout, clampTopologyPosition, normalizeVector, edgePoint, deterministicLinkCurvature, computeLinkPath, computeHoverRelationships, shouldAnimateTopologyParticles, shouldSuppressTopologyClick, setSuppressedTopologyClick, clearSuppressedTopologyClick, handleTopologyPointerOut, cleanupTopologyDrag, cleanupTopologyPan, cleanupTopologyPointerState, buildTooltipModel, fitTopologyToView, clampZoom, dragExceededThreshold, computeTopologyLayout, renderMetricBar, renderDonutChart, extractQueueMetrics, queueMetricsForInstance, computeMetrics, hasResourceReport, finiteNumber, clampPercent, percentOf, fmt, stateLabel, hardwareDetails, mergedInstanceLoad, applyPausedTopologyState, renderInstanceDetail, renderSystemTopology, state };
 } else {
   setTheme(state.theme);
   setupEventHandlers();
