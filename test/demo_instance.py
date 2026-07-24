@@ -40,6 +40,10 @@ def _set_bool_env(name: str, enabled: bool) -> None:
     os.environ[name] = "1" if enabled else "0"
 
 
+def _interval_from_hz(hz: float) -> int:
+    return max(1, int(round(1000.0 / max(float(hz), 0.001))))
+
+
 def parse_listen(value: str) -> tuple[str, int]:
     raw = (value or "").strip()
     if raw.startswith("["):

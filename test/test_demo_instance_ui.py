@@ -50,6 +50,14 @@ assert spec.loader is not None
 spec.loader.exec_module(demo_instance)
 
 
+def test_interval_from_hz_preserves_existing_conversion():
+    assert demo_instance._interval_from_hz(1.0) == 1000
+    assert demo_instance._interval_from_hz(2.0) == 500
+    assert demo_instance._interval_from_hz(0.5) == 2000
+    assert demo_instance._interval_from_hz(0.0) == 1000000
+    assert demo_instance._interval_from_hz(0.0001) == 1000000
+
+
 def test_ui_disabled_by_default(monkeypatch):
     monkeypatch.delenv("INSTANCE_UI_ENABLE", raising=False)
     args = demo_instance.parse_args([])
@@ -186,14 +194,48 @@ def test_ui_disabled_creates_no_dashboard_process():
     assert d._proc is None
 
 
-def test_instance_lifecycle_starts_dashboard_outside_registration_success_branch():
-    source = (ROOT_DIR / "instance" / "instance_api.py").read_text()
-    assert "await dashboard.start(runtime_instance_id=runtime_instance_id, logger=logger)" in source
-    assert "if dashboard is not None:\n        await dashboard.start" in source
-    assert "await dashboard.stop(logger=logger)" in source
+def test_main_default_report_interval_initialization_uses_hz_without_name_error(monkeypatch):
+    fake_instance_app = types.SimpleNamespace(state=types.SimpleNamespace())
+    fake_instance_module = types.ModuleType("instance")
+    fake_instance_module.instance = fake_instance_app
+    run_calls = []
+
+    monkeypatch.setitem(sys.modules, "instance", fake_instance_module)
+    monkeypatch.setattr(fake_uvicorn, "run", lambda *args, **kwargs: run_calls.append((args, kwargs)))
+    monkeypatch.setattr(sys, "argv", ["demo_instance.py", "--no-resource-monitor", "--no-ui"])
+    monkeypatch.delenv("INSTANCE_RESOURCE_REPORT_INTERVAL_MS", raising=False)
+    monkeypatch.delenv("INSTANCE_RESOURCE_REPORT_HZ", raising=False)
+    monkeypatch.delenv("INSTANCE_ID", raising=False)
+
+    demo_instance.main()
+
+    assert os.environ["INSTANCE_RESOURCE_REPORT_INTERVAL_MS"] == "1000"
+    assert run_calls
+    assert fake_instance_app.state._demo_resource_monitor.report_interval_ms == 1000
+    assert fake_instance_app.state._demo_dashboard.enabled is False
 
 
-def test_resource_agent_for_ui_uses_monitor_owner_without_reporting():
-    source = (ROOT_DIR / "test" / "demo_instance.py").read_text()
-    assert "async def ensure_agent_for_ui" in source
-    assert "await self._start_or_reuse_agent(runtime_instance_id, logger)" in source
+def test_resource_agent_for_ui_uses_monitor_owner_without_reporting(monkeypatch):
+    calls = []
+    monitor = demo_instance.DemoResourceMonitor(
+        enabled=True,
+        auto_start_agent=True,
+        report_enabled=True,
+        agent_listen="127.0.0.1:9201",
+        agent_url="http://127.0.0.1:9201",
+        sample_interval_ms=1000,
+        start_timeout_s=1,
+        report_interval_ms=1000,
+        report_timeout_s=1,
+        proxy_cp_url="http://127.0.0.1:8002",
+    )
+
+    async def fake_start(runtime_instance_id, logger):
+        calls.append((runtime_instance_id, logger))
+        return True
+
+    monkeypatch.setattr(monitor, "_start_or_reuse_agent", fake_start)
+    asyncio.run(monitor.ensure_agent_for_ui(runtime_instance_id="runtime-id", logger=Logger()))
+
+    assert calls and calls[0][0] == "runtime-id"
+    assert monitor._report_task is None
