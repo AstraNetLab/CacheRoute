@@ -152,7 +152,7 @@ CacheRoute provides two ways to get started.
 
 ### Option 1: Lightweight Demo without a vLLM model
 
-Set `USE_MOCK = True` in `core/config.py`, then start the demo components in separate terminals:
+Set `USE_MOCK = True` in `core/config.py`, then start the demo components in separate terminals. The main demo entrypoints can be executed directly from `test/`; they add the repository root to Python's module search path automatically.
 
 ```bash
 cd test
@@ -308,13 +308,13 @@ The Scheduler selects KDN and Proxy according to knowledge coverage, topology, a
 
 ### Proxy task scheduling
 
-The Proxy maintains local task queues and prepares requests for Instance-level execution.
+The Proxy maintains local task queues and prepares requests for instance-level execution.
 <img width="1200" height="288" alt="image" src="https://github.com/user-attachments/assets/bc24230e-0167-469b-9e6a-a7be9f5d26f0" />
 
 ### Injection strategy selection
 
 The Proxy dynamically chooses between text-based injection and KVCache-based injection.
-<img width="1200" height="746" alt="image" src="https://github.com/user-attachments/assets/930575a6-dba2-465d-aff2-b511099a25a4" />
+<img width="1200" height="746" alt="image" src="https://github.com/user-attachments/assets/930575a6-dba2-465d-aff2-b511099ae25a4" />
 
 ### vLLM + LMCache reuse
 
@@ -374,11 +374,11 @@ curl -s http://127.0.0.1:7001/debug/strategy
 | Document | Description |
 |---|---|
 | [`core/README.md`](core/README.md) | Shared configuration, request model, and multi-machine deployment settings. |
-| [`scheduler/README.md`](scheduler/README.md) | Global routing, KDN/Proxy pool management, and Scheduler control plane. |
-| [`proxy/README.md`](proxy/README.md) | Local Instance pool, prepare/ready queues, injection strategy, and Proxy resource APIs. |
+| [`scheduler/README.md`](scheduler/README.md) | Global routing, KDN / Proxy pool management, and Scheduler control plane. |
+| [`proxy/README.md`](proxy/README.md) | Local Instance pool, prepare / ready queues, injection strategy, and Proxy resource APIs. |
 | [`instance/README.md`](instance/README.md) | Instance service and control planes, KVCache signaling, resource monitoring, and TTFT predictor. |
 | [`kdn_server/README.md`](kdn_server/README.md) | KDN service, knowledge registration, KVCache build, and injection utilities. |
 | [`client/README.md`](client/README.md) | Client CLI, OpenAI-compatible request examples, and workload tools. |
-| [`env/README.md`](env/README.md) | Docker environment, source build, Tkinter/X11, Redis, and vLLM + LMCache setup. |
+| [`env/README.md`](env/README.md) | Docker environment setup and vLLM + LMCache installation. |
 | [`test/README.md`](test/README.md) | Demo scripts, smoke-validation entry points, and local test helpers. |
 | [`doc/blog/README.md`](doc/blog/README.md) | Engineering changelog and milestone notes. |
