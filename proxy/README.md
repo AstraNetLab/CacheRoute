@@ -482,3 +482,34 @@ Common environment variables:
 - Repeated successful resource reports are intentionally quiet to avoid log flooding.
 - `unknown_instance` warnings usually mean a stale or external Instance process is still heartbeating to the Proxy control plane.
 - The Proxy UI is the preferred visual entry point for Proxy observability during demos and experiments.
+# Instance capability contract
+
+`POST /v1/instance/register` accepts optional `capabilities` and
+`capability_fingerprint` fields. For example:
+
+```json
+{"instance_id":"instance-1","host":"127.0.0.1","port":9001,
+ "capabilities":{"schema_version":"1","model":{"identifier":"model-a"},
+ "tokenizer":{"identifier":"model-a"},"kv_cache":{"layout":"paged","dtype":"fp16"},
+ "parallelism":{"tensor_parallel_size":1,"pipeline_parallel_size":1,"data_parallel_size":1}}}
+```
+
+The Proxy always recomputes the fingerprint and replaces any client-provided value;
+the registration response and `GET /v1/instance/list` expose the accepted value.
+A fresh registration replaces capability state, so re-registering an existing ID
+without `capabilities` clears capabilities and its fingerprint from the previous
+process. In contrast, heartbeat omission preserves registered capability state.
+
+Heartbeat requests may omit both fields, send only the fingerprint, or resend a
+changed capability object. A matching fingerprint refreshes liveness. A mismatch,
+or a fingerprint received when the Proxy has no stored fingerprint, returns
+`ok: false`, `requires_capabilities: true`, the expected/reported values, and a
+`capability_fingerprint_mismatch` or `capability_fingerprint_unknown` error. Such a
+heartbeat does not refresh `last_seen_at` and does not overwrite capabilities; the
+Instance resolves it by sending the complete capability object. Legacy registration,
+`meta`, and instance-ID-only heartbeat payloads remain valid.
+
+The shared comparison utility returns `compatible`, `incompatible`, or `unknown`,
+plus both fingerprints and machine-readable mismatch entries. Missing legacy or
+incomplete data is `unknown`; v0.1.10 records this status contract but does not use
+it to alter routing or cache placement.

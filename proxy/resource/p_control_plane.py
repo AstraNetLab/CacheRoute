@@ -9,7 +9,9 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from core.instance_capability import InstanceCapability
 
 from .instance_pool import InstancePool
 
@@ -78,10 +80,12 @@ class InstanceRegisterReq(BaseModel):
     instance_id: Optional[str] = None
     host: str
     port: int
-    endpoints: List[str] = []
-    tags: List[str] = []
+    endpoints: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
     weight: float = 1.0
-    meta: Dict[str, Any] = {}
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    capabilities: Optional[InstanceCapability] = None
+    capability_fingerprint: Optional[str] = None
 
 
 class InstanceHeartbeatReq(BaseModel):
@@ -89,6 +93,8 @@ class InstanceHeartbeatReq(BaseModel):
     inflight: Optional[int] = None
     qps_1m: Optional[float] = None
     gpu_util: Optional[float] = None
+    capabilities: Optional[InstanceCapability] = None
+    capability_fingerprint: Optional[str] = None
 
 
 class InstanceUnregisterReq(BaseModel):
@@ -176,6 +182,7 @@ async def register(req: InstanceRegisterReq) -> Dict[str, Any]:
         tags=req.tags,
         weight=req.weight,
         meta=req.meta,
+        capabilities=req.capabilities,
     )
 
     logger.info(
@@ -189,22 +196,29 @@ async def register(req: InstanceRegisterReq) -> Dict[str, Any]:
         "instance_id": it.instance_id,
         "heartbeat_interval_s": hb,
         "ttl_s": pool.ttl_s,
+        "capability_fingerprint": it.capability_fingerprint,
     }
 
 
 @_control_plane.post("/v1/instance/heartbeat")
 async def heartbeat(req: InstanceHeartbeatReq) -> Dict[str, Any]:
     pool = get_pool()
-    ok = pool.heartbeat(
+    result = pool.heartbeat(
         instance_id=req.instance_id,
         inflight=req.inflight,
         qps_1m=req.qps_1m,
         gpu_util=req.gpu_util,
+        capabilities=req.capabilities,
+        capability_fingerprint_value=req.capability_fingerprint,
     )
-    if not ok:
-        logger.warning("[ProxyCP] heartbeat for unknown instance_id=%s", req.instance_id)
+    if not result.ok:
+        logger.warning(
+            "[ProxyCP] heartbeat rejected: instance_id=%s error=%s",
+            req.instance_id,
+            result.error,
+        )
 
-    return {"ok": ok}
+    return result.to_dict()
 
 
 @_control_plane.post("/v1/instance/resource_snapshot")
@@ -257,6 +271,8 @@ async def list_instances(include_dead: bool = False) -> List[Dict[str, Any]]:
             "tags": it.tags,
             "weight": it.weight,
             "meta": it.meta,
+            "capabilities": it.capabilities.model_dump(mode="json") if it.capabilities else None,
+            "capability_fingerprint": it.capability_fingerprint,
             "registered_at": it.registered_at,
             "last_seen_at": it.last_seen_at,
             "load": {

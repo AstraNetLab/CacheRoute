@@ -32,6 +32,8 @@ from .mock_resp import (mock_text_completion,
 from util import parse_stream_flag
 from instance import control_plane
 from instance.pclient.proxy_client import ProxyControlClient
+from instance.capability_builder import build_instance_capability
+from core.instance_capability import capability_fingerprint
 
 
 PROXY_CP_URL = os.environ.get("PROXY_CP_URL", config.PROXY_CP_URL).rstrip("/")
@@ -167,6 +169,8 @@ async def lifespan(app: FastAPI):
     cp_host = os.environ.get("INSTANCE_CP_HOST", config.INSTANCE_CP_HOST)
     cp_port = int(os.environ.get("INSTANCE_CP_PORT", config.INSTANCE_CP_PORT))
     logger = logging.getLogger("instance")
+    capabilities = build_instance_capability()
+    local_capability_fingerprint = capability_fingerprint(capabilities)
 
     cp_config = uvicorn.Config(
         control_plane.control_plane,
@@ -190,6 +194,8 @@ async def lifespan(app: FastAPI):
             port=INSTANCE_ADVERTISE_PORT,
             endpoints=["chat/completions", "completions"],
             meta={"version": "instance_v1"},
+            capabilities=capabilities,
+            capability_fingerprint=local_capability_fingerprint,
         )
         runtime_instance_id = reg.instance_id
         interval = float(reg.heartbeat_interval_s) if reg.heartbeat_interval_s else 10.0
@@ -208,7 +214,14 @@ async def lifespan(app: FastAPI):
         fail = 0
         while not stop.is_set():
             try:
-                await client.heartbeat(runtime_instance_id)
+                heartbeat_result = await client.heartbeat(
+                    runtime_instance_id,
+                    capability_fingerprint=local_capability_fingerprint,
+                )
+                if heartbeat_result.get("requires_capabilities"):
+                    # Resolve a restarted Proxy or changed local capability contract
+                    # without making every regular heartbeat carry the full object.
+                    await client.heartbeat(runtime_instance_id, capabilities=capabilities)
                 fail = 0
             except Exception as e:
                 fail += 1
@@ -425,4 +438,3 @@ async def instance_completions(request: FastAPIRequest):
 
     resp_json = await _vllm_text_completion(payload)
     return JSONResponse(content=resp_json)
-

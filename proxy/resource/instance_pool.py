@@ -7,6 +7,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from core.instance_capability import InstanceCapability, capability_fingerprint
+
 from proxy.strategy.least_load import LeastLoadStrategy
 
 
@@ -55,11 +57,35 @@ class InstanceInfo:
     tags: List[str] = field(default_factory=list)
     weight: float = 1.0
     meta: Dict[str, Any] = field(default_factory=dict)
+    capabilities: Optional[InstanceCapability] = None
+    capability_fingerprint: Optional[str] = None
 
     load: InstanceLoad = field(default_factory=InstanceLoad)
     resource: InstanceResource = field(default_factory=InstanceResource)
     registered_at: int = field(default_factory=lambda: int(time.time()))
     last_seen_at: int = field(default_factory=lambda: int(time.time()))
+
+
+@dataclass(frozen=True)
+class HeartbeatResult:
+    """Describe whether a heartbeat refreshed liveness and capability state."""
+
+    ok: bool
+    error: Optional[str] = None
+    requires_capabilities: bool = False
+    expected_fingerprint: Optional[str] = None
+    reported_fingerprint: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"ok": self.ok}
+        if self.error is not None:
+            result.update({
+                "error": self.error,
+                "requires_capabilities": self.requires_capabilities,
+                "expected_fingerprint": self.expected_fingerprint,
+                "reported_fingerprint": self.reported_fingerprint,
+            })
+        return result
 
 
 class InstancePool:
@@ -87,6 +113,7 @@ class InstancePool:
         tags: Optional[List[str]] = None,
         weight: float = 1.0,
         meta: Optional[Dict[str, Any]] = None,
+        capabilities: Optional[InstanceCapability] = None,
     ) -> InstanceInfo:
         now = int(time.time())
         with self._lock:
@@ -99,6 +126,12 @@ class InstancePool:
                 it.weight = float(weight)
                 if meta:
                     it.meta.update(meta)
+                # Registration represents a new process/static-state declaration.
+                # Unlike heartbeat omission, missing capabilities clear old state.
+                it.capabilities = capabilities
+                it.capability_fingerprint = (
+                    capability_fingerprint(capabilities) if capabilities is not None else None
+                )
                 if it.load.inflight is None:
                     it.load.inflight = 0
                 it.last_seen_at = now
@@ -112,6 +145,8 @@ class InstancePool:
                 tags=tags or [],
                 weight=float(weight),
                 meta=meta or {},
+                capabilities=capabilities,
+                capability_fingerprint=capability_fingerprint(capabilities) if capabilities is not None else None,
                 load=InstanceLoad(inflight=0),
                 registered_at=now,
                 last_seen_at=now,
@@ -125,12 +160,29 @@ class InstancePool:
         inflight: Optional[int] = None,
         qps_1m: Optional[float] = None,
         gpu_util: Optional[float] = None,
-    ) -> bool:
+        capabilities: Optional[InstanceCapability] = None,
+        capability_fingerprint_value: Optional[str] = None,
+    ) -> HeartbeatResult:
         now = int(time.time())
         with self._lock:
             it = self._items.get(instance_id)
             if not it:
-                return False
+                return HeartbeatResult(ok=False)
+            if capabilities is None and capability_fingerprint_value is not None:
+                if it.capability_fingerprint != capability_fingerprint_value:
+                    # Do not refresh liveness until the Instance sends the complete
+                    # capability object and resolves the unknown/mismatched state.
+                    return HeartbeatResult(
+                        ok=False,
+                        error=(
+                            "capability_fingerprint_unknown"
+                            if it.capability_fingerprint is None
+                            else "capability_fingerprint_mismatch"
+                        ),
+                        requires_capabilities=True,
+                        expected_fingerprint=it.capability_fingerprint,
+                        reported_fingerprint=capability_fingerprint_value,
+                    )
             it.last_seen_at = now
             # Inflight is Proxy-maintained via begin_request/end_request.
             # Keep heartbeat load updates for non-lifecycle signals only.
@@ -138,7 +190,10 @@ class InstancePool:
                 it.load.qps_1m = float(qps_1m)
             if gpu_util is not None:
                 it.load.gpu_util = float(gpu_util)
-            return True
+            if capabilities is not None:
+                it.capabilities = capabilities
+                it.capability_fingerprint = capability_fingerprint(capabilities)
+            return HeartbeatResult(ok=True)
 
     def report_resource_snapshot(
         self,
