@@ -2,6 +2,13 @@
 
 `test/` contains local entrypoints, smoke scripts, and historical utility tests for CacheRoute development. The main `demo_*.py` entrypoints add the repository root to Python's module search path, so the documented commands can be launched directly from the `test` directory without manually setting `PYTHONPATH`.
 
+Install the complete application and development dependency set from the repository root before running the commands in this document:
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 -m pip check
+```
+
 If an older checkout reports `ModuleNotFoundError: No module named 'core'`, update the checkout or temporarily run:
 
 ```bash
@@ -26,7 +33,7 @@ The default single-machine demo ports are:
 | Component | Default URL | Started by | Notes |
 |---|---|---|---|
 | Proxy UI | `http://127.0.0.1:8202` | `demo_proxy.py` | Enabled by default. Use `--no-proxy-ui` to disable. |
-| Client UI | `http://127.0.0.1:7071/ui/client` | `demo_client.py --with-ui` | Sends OpenAI-compatible requests to Scheduler. |
+| Client UI | `http://127.0.0.1:7071` | `demo_client.py --with-ui` | Sends OpenAI-compatible requests to Scheduler. |
 | Instance Resource Dashboard | `http://127.0.0.1:9202` | `instance/resource_dashboard/dashboard_server.py` | Browser fallback for the Rust Resource Agent. |
 | Scheduler UI | TBD | TBD | Planned. |
 | KDN Server UI | TBD | TBD | Planned. |
@@ -53,10 +60,126 @@ The default single-machine demo ports are:
 | `test.py` | Legacy scratch/test entrypoint. Inspect before use. |
 | `test_kb_kid.py` | Knowledge-base / knowledge-id validation. |
 | `test_injector_reuse.py` | Injector reuse validation. |
-| `test_kv_injector_reuse.py` | KVCache injector reuse validation. |
+| `test_kv_injector_reuse.py` | External-service KVCache reuse script. It requires a reachable vLLM-compatible endpoint at `127.0.0.1:8000` and is not an isolated CPU-only unit test. |
 | `Injection_method_comparison.py` | Compares injection methods for local experiments. |
 | `Prefill_calculation.py` | Prefill-time calculation helper. |
 | `quick_start_docker.sh` | Convenience script for container-oriented startup. |
+
+## Focused Instance capability validation
+
+The Instance capability contract covers deterministic fingerprints, structured compatibility results, capability-aware registration, and heartbeat recovery while preserving legacy payloads.
+
+Run the focused CPU-only suite from the repository root:
+
+```bash
+python3 -m compileall core instance proxy
+
+pytest -q test/test_instance_capability.py
+pytest -q test/test_instance_capability_registration.py
+pytest -q proxy/resource/test_instance_pool_gpu.py
+
+pytest -q \
+  test/test_instance_capability.py \
+  test/test_instance_capability_registration.py \
+  proxy/resource/test_instance_pool_gpu.py
+```
+
+The focused tests verify:
+
+- canonical and deterministic `sha256:` capability fingerprints;
+- model, tokenizer, KV layout, dtype, and parallelism mismatch reporting;
+- legacy registration and instance-ID-only heartbeats;
+- server-authoritative fingerprint calculation;
+- fresh registration replacement versus heartbeat omission preservation;
+- fingerprint-only heartbeat match, mismatch, and full-capability recovery;
+- InstancePool resource behavior.
+
+Validate the previously public imports with:
+
+```bash
+python3 - <<'PY'
+from core import (
+    MLAmodel,
+    Request,
+    Prompt,
+    Service,
+    Task,
+    TokenizerRegistry,
+    forward_request,
+)
+from instance import (
+    instance,
+    mock_chat_stream,
+    mock_chat_completion,
+    mock_text_completion,
+)
+from proxy import proxy
+
+assert all(
+    item is not None
+    for item in (
+        MLAmodel,
+        Request,
+        Prompt,
+        Service,
+        Task,
+        TokenizerRegistry,
+        forward_request,
+        instance,
+        mock_chat_stream,
+        mock_chat_completion,
+        mock_text_completion,
+        proxy,
+    )
+)
+print("public import compatibility: passed")
+PY
+```
+
+For a registration smoke test, start `demo_proxy.py` and launch `demo_instance.py` with explicit capability values:
+
+```bash
+INSTANCE_MODEL_ID=test-model \
+INSTANCE_TOKENIZER_ID=test-tokenizer \
+INSTANCE_KV_LAYOUT=paged \
+INSTANCE_KV_SCHEMA_VERSION=1 \
+INSTANCE_KV_DTYPE=fp16 \
+INSTANCE_KV_BLOCK_SIZE=16 \
+INSTANCE_TENSOR_PARALLEL_SIZE=1 \
+INSTANCE_PIPELINE_PARALLEL_SIZE=1 \
+INSTANCE_DATA_PARALLEL_SIZE=1 \
+python3 test/demo_instance.py \
+  --host 127.0.0.1 \
+  --port 9001 \
+  --proxy-cp-url http://127.0.0.1:8002 \
+  --no-resource-monitor
+```
+
+Then inspect the accepted capability object and server-computed fingerprint:
+
+```bash
+curl -sS \
+  "http://127.0.0.1:8002/v1/instance/list?include_dead=true" \
+  | python3 -m json.tool
+```
+
+The result should expose the model, tokenizer, KV layout/dtype/block size, parallelism values, detected runtime versions when available, and a `capability_fingerprint` beginning with `sha256:`.
+
+### External-service collection note
+
+`test/test_kv_injector_reuse.py` performs requests to `http://127.0.0.1:8000/v1/chat/completions` at module import time. Generic `pytest -q` collection can therefore fail with `ConnectionError` when the external vLLM-compatible endpoint is not running. This is an environment-dependent historical integration script rather than a failure of the capability unit tests.
+
+For a CPU-only local run that does not provide the external endpoint, exclude that script explicitly:
+
+```bash
+pytest -q --ignore=test/test_kv_injector_reuse.py
+```
+
+Run the script directly only after the endpoint and its configured model are ready:
+
+```bash
+python3 test/test_kv_injector_reuse.py
+```
 
 ## Minimal Proxy + Instance resource-monitor demo
 
