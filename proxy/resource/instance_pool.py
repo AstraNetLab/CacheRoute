@@ -7,6 +7,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from core.instance_capability import InstanceCapability, capability_fingerprint
+
 from proxy.strategy.least_load import LeastLoadStrategy
 
 
@@ -55,6 +57,8 @@ class InstanceInfo:
     tags: List[str] = field(default_factory=list)
     weight: float = 1.0
     meta: Dict[str, Any] = field(default_factory=dict)
+    capabilities: Optional[InstanceCapability] = None
+    capability_fingerprint: Optional[str] = None
 
     load: InstanceLoad = field(default_factory=InstanceLoad)
     resource: InstanceResource = field(default_factory=InstanceResource)
@@ -87,6 +91,7 @@ class InstancePool:
         tags: Optional[List[str]] = None,
         weight: float = 1.0,
         meta: Optional[Dict[str, Any]] = None,
+        capabilities: Optional[InstanceCapability] = None,
     ) -> InstanceInfo:
         now = int(time.time())
         with self._lock:
@@ -99,6 +104,9 @@ class InstancePool:
                 it.weight = float(weight)
                 if meta:
                     it.meta.update(meta)
+                if capabilities is not None:
+                    it.capabilities = capabilities
+                    it.capability_fingerprint = capability_fingerprint(capabilities)
                 if it.load.inflight is None:
                     it.load.inflight = 0
                 it.last_seen_at = now
@@ -112,6 +120,8 @@ class InstancePool:
                 tags=tags or [],
                 weight=float(weight),
                 meta=meta or {},
+                capabilities=capabilities,
+                capability_fingerprint=capability_fingerprint(capabilities) if capabilities is not None else None,
                 load=InstanceLoad(inflight=0),
                 registered_at=now,
                 last_seen_at=now,
@@ -125,6 +135,8 @@ class InstancePool:
         inflight: Optional[int] = None,
         qps_1m: Optional[float] = None,
         gpu_util: Optional[float] = None,
+        capabilities: Optional[InstanceCapability] = None,
+        capability_fingerprint_value: Optional[str] = None,
     ) -> bool:
         now = int(time.time())
         with self._lock:
@@ -138,6 +150,13 @@ class InstancePool:
                 it.load.qps_1m = float(qps_1m)
             if gpu_util is not None:
                 it.load.gpu_util = float(gpu_util)
+            if capabilities is not None:
+                it.capabilities = capabilities
+                it.capability_fingerprint = capability_fingerprint(capabilities)
+            elif capability_fingerprint_value is not None and it.capability_fingerprint is not None:
+                # A fingerprint-only heartbeat is an identity assertion, not new capability data.
+                # Keep the server-computed value authoritative.
+                pass
             return True
 
     def report_resource_snapshot(

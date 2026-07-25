@@ -482,3 +482,22 @@ Not yet implemented:
 - detailed vLLM runtime queue metrics;
 - detailed KVCache block residency metrics;
 - lower-overhead GPU collection through NVML or a similar API.
+# Instance capability registration
+
+At startup, the Instance builds a typed capability description without loading a
+model or contacting an external service. It sends the complete object during
+registration and sends only the accepted/local `capability_fingerprint` on normal
+heartbeats. The fingerprint is `sha256:` plus the digest of compact, key-sorted
+canonical JSON. Supported-cache-feature order is set-like; adapter-stack order is
+preserved because it can affect behavior. Missing packages produce null runtime
+versions and do not prevent mock startup.
+
+Configuration precedence is an explicit environment override, existing CacheRoute
+configuration, safely detected package metadata, then null. Supported variables are
+`INSTANCE_MODEL_ID`, `INSTANCE_MODEL_REVISION`, `INSTANCE_TOKENIZER_ID`,
+`INSTANCE_TOKENIZER_REVISION`, `INSTANCE_ADAPTERS_JSON`, `INSTANCE_KV_LAYOUT`,
+`INSTANCE_KV_SCHEMA_VERSION`, `INSTANCE_KV_DTYPE`, `INSTANCE_KV_BLOCK_SIZE`,
+`INSTANCE_TENSOR_PARALLEL_SIZE`, `INSTANCE_PIPELINE_PARALLEL_SIZE`,
+`INSTANCE_DATA_PARALLEL_SIZE`, `INSTANCE_VLLM_VERSION`,
+`INSTANCE_LMCACHE_VERSION`, and comma-separated `INSTANCE_CACHE_FEATURES`.
+`INSTANCE_ADAPTERS_JSON` must be a JSON array of adapter objects.
