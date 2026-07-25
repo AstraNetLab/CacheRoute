@@ -65,6 +65,32 @@ The default single-machine demo ports are:
 | `Prefill_calculation.py` | Prefill-time calculation helper. |
 | `quick_start_docker.sh` | Convenience script for container-oriented startup. |
 
+## Focused state-model validation
+
+Run the CPU-only lifecycle contract and Legacy `kv_ready` adapter tests from the repository root:
+
+```bash
+python3 -m compileall core kdn_server proxy
+pytest -q test/test_state_models.py
+pytest -q test/test_legacy_kv_state_mapping.py
+pytest -q \
+  test/test_state_models.py \
+  test/test_legacy_kv_state_mapping.py \
+  test/test_instance_capability.py \
+  test/test_instance_capability_registration.py \
+  proxy/resource/test_instance_pool_gpu.py
+```
+
+These checks cover exact wire values, deterministic IDs, every allowed transition, structured transition failures, terminal/retryable traits, safe Legacy filesystem mapping, unknown Legacy compatibility, and unchanged Proxy KDN classification. Success is a zero exit status with all listed tests passing. Any validation error, ID instability, unexpected transition acceptance, path-escape acceptance, or changed classification indicates failure.
+
+For the largest practical CPU-only suite, use:
+
+```bash
+pytest -q --ignore=test/test_kv_injector_reuse.py
+```
+
+The ignored historical script contacts an external vLLM-compatible endpoint during collection.
+
 ## Focused Instance capability validation
 
 The Instance capability contract covers deterministic fingerprints, structured compatibility results, capability-aware registration, and heartbeat recovery while preserving legacy payloads.
