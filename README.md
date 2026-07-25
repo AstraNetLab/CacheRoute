@@ -65,6 +65,7 @@ CacheRoute addresses this problem by using dedicated servers to store KVCache bl
 | ⚙️ **Compute-network-aware knowledge injection** | CacheRoute dynamically chooses between text recomputation and KVCache reuse. It predicts task cost at the Proxy and selects the injection strategy based on current task queues, compute load, and network load. |
 | 🧭 **Knowledge-oriented cross-system routing** | CacheRoute parses the knowledge requirement before resource-pool scheduling. The Scheduler jointly considers knowledge availability, system load, and topology information, and routes requests to the LLM system that can serve the required knowledge more efficiently. |
 | 🗂️ **KDN-based KV cache management** | CacheRoute follows the Knowledge Delivery Network concept and uses dedicated KDN servers to register, store, query, and inject KV cache blocks for reusable knowledge. |
+| 🔐 **Compatibility-aware Instance identity** | Instances report deterministic capability fingerprints for model, tokenizer, adapter stack, KV-cache layout/dtype, parallel configuration, and relevant vLLM/LMCache runtime versions. The Proxy recomputes and exposes the accepted identity contract. |
 | 📊 **Proxy browser UI and Instance resource dashboard** | CacheRoute provides a browser-based Proxy observability dashboard and an optional Instance resource dashboard for control-plane state, Instance liveness, resource snapshots, topology information, and short-term trends. |
 
 ---
@@ -78,8 +79,8 @@ CacheRoute separates global routing, local injection decisions, and KV cache man
 </p>
 
 - **Scheduler:** performs global resource-pool selection and knowledge-oriented task routing.
-- **Proxy:** manages local task queues, selects the knowledge-injection strategy, and exposes the main Proxy browser UI.
-- **Instance:** connects CacheRoute to vLLM + LMCache and handles execution signaling.
+- **Proxy:** manages local task queues, selects the knowledge-injection strategy, validates Instance capability identity, and exposes the main Proxy browser UI.
+- **Instance:** connects CacheRoute to vLLM + LMCache, reports a deterministic capability identity, and handles execution signaling.
 - **KDN Server:** stores reusable knowledge and injects KVCache blocks when needed.
 - **Resource Agent/Dashboard:** optionally observes local Instance resource snapshots for validation and future control-plane integration.
 
@@ -116,6 +117,12 @@ The URLs above assume a single-machine deployment with loopback addresses. Conta
 6. Instance resource snapshots can flow through the Proxy control plane. The Proxy aggregates a compact `pool_resource` snapshot and reports it to the Scheduler through registration and heartbeat payloads.
 7. The optional Proxy UI and Instance Resource Dashboard visualize control-plane and resource state for debugging and validation.
 
+### Instance capability identity
+
+At startup, each Instance builds a typed capability description and a deterministic `sha256:` fingerprint without loading a model or contacting an external service. The identity covers model and tokenizer revisions, adapter configuration, KV-cache layout and dtype, parallel configuration, and available vLLM/LMCache runtime information.
+
+The Instance sends the complete capability object during registration and uses lightweight fingerprint-only heartbeats afterward. The Proxy recomputes the server-authoritative fingerprint and exposes the accepted contract through `GET /v1/instance/list`. See [`instance/README.md`](instance/README.md) for capability construction and environment variables, and [`proxy/README.md`](proxy/README.md) for registration, mismatch, and recovery semantics.
+
 ---
 
 ## Requirements
@@ -139,6 +146,8 @@ Install CacheRoute's application dependencies with:
 python3 -m pip install -r requirements.txt
 python3 -m pip check
 ```
+
+`requirements.txt` is the dependency source of truth for the complete CacheRoute application and development environment. `pyproject.toml` provides package metadata and a deliberately smaller install surface; installing the project package alone does not replace the complete requirements installation.
 
 `requirements.txt` intentionally does not pin PyTorch, vLLM, or LMCache. These packages belong to the serving image and must remain compatible with its CUDA environment.
 
@@ -609,6 +618,7 @@ CacheRoute is under active development. The current release supports:
 - Proxy selection based on topology, load safety window, and knowledge history.
 - Proxy-side dynamic injection strategy selection.
 - KDN-based text registration and KVCache registration.
+- Deterministic Instance capability identity and compatibility-aware registration.
 - Proxy browser UI for control-plane, topology, Instance liveness, and resource-snapshot observability.
 - Optional Instance resource snapshots through a Rust agent and dashboard.
 - Debugging APIs such as `/debug/status` and `/debug/strategy`.
@@ -628,6 +638,7 @@ curl -s http://127.0.0.1:7001/debug/strategy
 - [x] Proxy-side dynamic injection strategy selection
 - [x] KDN-based text and KVCache registration
 - [x] OpenAI-compatible request forwarding
+- [x] Compatibility-aware Instance capability identity
 - [x] Proxy browser observability UI
 - [x] Optional Instance resource dashboard
 - [ ] Scheduler browser UI
@@ -645,10 +656,10 @@ curl -s http://127.0.0.1:7001/debug/strategy
 |---|---|
 | [`core/README.md`](core/README.md) | Shared configuration, request model, and multi-machine deployment settings. |
 | [`scheduler/README.md`](scheduler/README.md) | Global routing, KDN / Proxy pool management, and Scheduler control plane. |
-| [`proxy/README.md`](proxy/README.md) | Local Instance pool, prepare / ready queues, injection strategy, and Proxy resource APIs. |
-| [`instance/README.md`](instance/README.md) | Instance service and control planes, KVCache signaling, resource monitoring, and TTFT predictor. |
+| [`proxy/README.md`](proxy/README.md) | Local Instance pool, capability-aware registration, heartbeat recovery, prepare / ready queues, injection strategy, and Proxy resource APIs. |
+| [`instance/README.md`](instance/README.md) | Instance service and control planes, capability construction, KVCache signaling, resource monitoring, and TTFT predictor. |
 | [`kdn_server/README.md`](kdn_server/README.md) | KDN service, knowledge registration, KVCache build, and injection utilities. |
 | [`client/README.md`](client/README.md) | Client CLI, OpenAI-compatible request examples, and workload tools. |
 | [`env/README.md`](env/README.md) | Docker environment setup and vLLM + LMCache installation. |
-| [`test/README.md`](test/README.md) | Demo scripts, smoke-validation entry points, and local test helpers. |
+| [`test/README.md`](test/README.md) | Demo scripts, focused capability validation, smoke-test entry points, and local test helpers. |
 | [`doc/blog/README.md`](doc/blog/README.md) | Engineering changelog and milestone notes. |
