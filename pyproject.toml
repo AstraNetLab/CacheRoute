@@ -1,7 +1,6 @@
-
 [project]
 name = "cacheroute"
-version = "0.1.8"
+version = "0.1.9"
 description = "Compute-network-aware LLM scheduling for flexible KV cache reuse across vLLM and LMCache systems."
 authors = [
   { name = "xxx", email = "xxx" }
@@ -10,6 +9,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 
+# This is the lightweight Python package install surface. Install
+# requirements.txt for the complete CacheRoute application and development
+# environment; serving-image packages such as PyTorch, vLLM, and LMCache remain
+# managed by the CUDA-compatible runtime image.
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn",
@@ -18,7 +21,6 @@ dependencies = [
     "pydantic>=2.6.0",
     "pyyaml>=6.0.0",
     "jinja2>=3.1.0",
-
 ]
 
 [build-system]
@@ -39,4 +41,3 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests*", "docs*", "examples*"]
-
