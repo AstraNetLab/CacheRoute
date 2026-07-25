@@ -214,7 +214,14 @@ async def lifespan(app: FastAPI):
         fail = 0
         while not stop.is_set():
             try:
-                await client.heartbeat(runtime_instance_id, capability_fingerprint=local_capability_fingerprint)
+                heartbeat_result = await client.heartbeat(
+                    runtime_instance_id,
+                    capability_fingerprint=local_capability_fingerprint,
+                )
+                if heartbeat_result.get("requires_capabilities"):
+                    # Resolve a restarted Proxy or changed local capability contract
+                    # without making every regular heartbeat carry the full object.
+                    await client.heartbeat(runtime_instance_id, capabilities=capabilities)
                 fail = 0
             except Exception as e:
                 fail += 1

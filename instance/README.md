@@ -492,6 +492,12 @@ canonical JSON. Supported-cache-feature order is set-like; adapter-stack order i
 preserved because it can affect behavior. Missing packages produce null runtime
 versions and do not prevent mock startup.
 
+A new registration replaces any capability state previously stored under the same
+Instance ID; omitting capabilities there clears the old state. A heartbeat that
+omits capability fields instead preserves that state. If the Proxy rejects a
+fingerprint-only heartbeat as unknown or mismatched, the Instance may resend its
+complete capability object to resolve the mismatch.
+
 Configuration precedence is an explicit environment override, existing CacheRoute
 configuration, safely detected package metadata, then null. Supported variables are
 `INSTANCE_MODEL_ID`, `INSTANCE_MODEL_REVISION`, `INSTANCE_TOKENIZER_ID`,

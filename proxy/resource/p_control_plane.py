@@ -203,7 +203,7 @@ async def register(req: InstanceRegisterReq) -> Dict[str, Any]:
 @_control_plane.post("/v1/instance/heartbeat")
 async def heartbeat(req: InstanceHeartbeatReq) -> Dict[str, Any]:
     pool = get_pool()
-    ok = pool.heartbeat(
+    result = pool.heartbeat(
         instance_id=req.instance_id,
         inflight=req.inflight,
         qps_1m=req.qps_1m,
@@ -211,10 +211,14 @@ async def heartbeat(req: InstanceHeartbeatReq) -> Dict[str, Any]:
         capabilities=req.capabilities,
         capability_fingerprint_value=req.capability_fingerprint,
     )
-    if not ok:
-        logger.warning("[ProxyCP] heartbeat for unknown instance_id=%s", req.instance_id)
+    if not result.ok:
+        logger.warning(
+            "[ProxyCP] heartbeat rejected: instance_id=%s error=%s",
+            req.instance_id,
+            result.error,
+        )
 
-    return {"ok": ok}
+    return result.to_dict()
 
 
 @_control_plane.post("/v1/instance/resource_snapshot")

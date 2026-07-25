@@ -62,7 +62,7 @@ class ProxyControlClient:
         instance_id: str,
         capability_fingerprint: Optional[str] = None,
         capabilities: Optional[InstanceCapability] = None,
-    ) -> None:
+    ) -> Dict[str, Any]:
         payload = {"instance_id": instance_id}
         if capability_fingerprint is not None:
             payload["capability_fingerprint"] = capability_fingerprint
@@ -70,6 +70,7 @@ class ProxyControlClient:
             payload["capabilities"] = capabilities.model_dump(mode="json")
         r = await self._client.post(f"{self.base_url}/v1/instance/heartbeat", json=payload)
         r.raise_for_status()
+        return r.json()
 
     async def unregister(self, instance_id: str) -> None:
         r = await self._client.post(f"{self.base_url}/v1/instance/unregister", json={"instance_id": instance_id})
