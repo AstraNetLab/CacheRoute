@@ -65,7 +65,6 @@ CacheRoute addresses this problem by using dedicated servers to store KVCache bl
 | ⚙️ **Compute-network-aware knowledge injection** | CacheRoute dynamically chooses between text recomputation and KVCache reuse. It predicts task cost at the Proxy and selects the injection strategy based on current task queues, compute load, and network load. |
 | 🧭 **Knowledge-oriented cross-system routing** | CacheRoute parses the knowledge requirement before resource-pool scheduling. The Scheduler jointly considers knowledge availability, system load, and topology information, and routes requests to the LLM system that can serve the required knowledge more efficiently. |
 | 🗂️ **KDN-based KV cache management** | CacheRoute follows the Knowledge Delivery Network concept and uses dedicated KDN servers to register, store, query, and inject KV cache blocks for reusable knowledge. |
-| 🔐 **Compatibility-aware Instance identity** | Instances report deterministic capability fingerprints for model, tokenizer, adapter stack, KV-cache layout/dtype, parallel configuration, and relevant vLLM/LMCache runtime versions. The Proxy recomputes and exposes the accepted identity contract. |
 | 📊 **Proxy browser UI and Instance resource dashboard** | CacheRoute provides a browser-based Proxy observability dashboard and an optional Instance resource dashboard for control-plane state, Instance liveness, resource snapshots, topology information, and short-term trends. |
 
 ---
@@ -116,12 +115,6 @@ The URLs above assume a single-machine deployment with loopback addresses. Conta
 5. The Instance forwards the request to vLLM + LMCache and returns the response.
 6. Instance resource snapshots can flow through the Proxy control plane. The Proxy aggregates a compact `pool_resource` snapshot and reports it to the Scheduler through registration and heartbeat payloads.
 7. The optional Proxy UI and Instance Resource Dashboard visualize control-plane and resource state for debugging and validation.
-
-### Instance capability identity
-
-At startup, each Instance builds a typed capability description and a deterministic `sha256:` fingerprint without loading a model or contacting an external service. The identity covers model and tokenizer revisions, adapter configuration, KV-cache layout and dtype, parallel configuration, and available vLLM/LMCache runtime information.
-
-The Instance sends the complete capability object during registration and uses lightweight fingerprint-only heartbeats afterward. The Proxy recomputes the server-authoritative fingerprint and exposes the accepted contract through `GET /v1/instance/list`. See [`instance/README.md`](instance/README.md) for capability construction and environment variables, and [`proxy/README.md`](proxy/README.md) for registration, mismatch, and recovery semantics.
 
 ---
 
