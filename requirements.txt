@@ -1,4 +1,8 @@
-# CacheRoute application dependencies.
+# CacheRoute application and development dependencies.
+#
+# This file is the dependency source of truth for a complete CacheRoute
+# application/development environment. pyproject.toml intentionally exposes a
+# smaller package install surface and is not a replacement for this file.
 #
 # PyTorch, vLLM, and LMCache belong to the serving environment and are
 # intentionally not pinned here. Installing a different torch build over an
