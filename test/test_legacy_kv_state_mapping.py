@@ -1,4 +1,5 @@
 import importlib.util
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,25 @@ def test_runtime_kid_is_authoritative_and_mismatch_warns(tmp_path):
 def test_matching_metadata_has_no_mismatch_warning(tmp_path):
     (tmp_path / "kid").mkdir()
     assert "legacy_kv_rel_dir_mismatch" not in codes(map_legacy_kv_state(row(), tmp_path))
+
+
+def test_sqlite_row_is_mapped_without_conversion_or_mutation(tmp_path):
+    (tmp_path / "kid").mkdir()
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("CREATE TABLE legacy (kid TEXT, kv_ready INTEGER, kv_rel_dir TEXT)")
+    connection.execute("INSERT INTO legacy VALUES (?, ?, ?)", ("kid", 1, "kid"))
+    sqlite_row = connection.execute("SELECT kid, kv_ready, kv_rel_dir FROM legacy").fetchone()
+    view = map_legacy_kv_state(sqlite_row, tmp_path)
+    assert view.artifact.knowledge_id == "kid"
+    assert view.artifact.state == ArtifactState.READY
+    assert view.replica.state == ReplicaState.READY
+    assert view.replica.health == ReplicaHealth.HEALTHY
+    assert view.replica.location_key == "kid"
+    assert view.artifact.artifact_id and view.replica.replica_id
+    assert codes(view) == set()
+    assert connection.execute("SELECT COUNT(*) FROM legacy").fetchone()[0] == 1
+    connection.close()
 
 
 def test_dot_cannot_make_root_healthy(tmp_path):

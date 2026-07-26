@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from enum import Enum
-from typing import ClassVar, Dict, Mapping, Optional, Set, Tuple, Type, TypeVar
+from typing import ClassVar, Dict, Mapping, Optional, Set, Tuple, Type
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -150,6 +151,8 @@ def validate_state_transition(
     current: LifecycleState, target: LifecycleState, *, entity_type: str, entity_id: str,
 ) -> bool:
     allowed = allowed_target_states(current)
+    if type(target) is type(current) and target == current:
+        return True
     if type(target) is not type(current) or target not in allowed:
         target_value = target.value if isinstance(target, Enum) else str(target)
         raise InvalidStateTransition(InvalidStateTransitionDetail(
@@ -183,9 +186,9 @@ class _StateModel(BaseModel):
 
     def transition_to(self, target_state: LifecycleState):
         current = self.state
+        validate_state_transition(current, target_state, entity_type=self._entity_type, entity_id=getattr(self, self._id_field))
         if type(target_state) is type(current) and target_state == current:
             return self, TransitionResult(previous_state=current.value, state=current.value, changed=False)
-        validate_state_transition(current, target_state, entity_type=self._entity_type, entity_id=getattr(self, self._id_field))
         return self.model_copy(update={"state": target_state}), TransitionResult(
             previous_state=current.value, state=target_state.value, changed=True,
         )
@@ -194,6 +197,22 @@ class _StateModel(BaseModel):
 def _non_empty(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("identifier must not be empty")
+    return value
+
+
+_USER_INFO_PATTERN = re.compile(r"[^/@\s:]+:[^/@\s]+@")
+_SECRET_LOCATION_MARKERS = ("://", "password=", "credential=", "token=")
+
+
+def validate_location_key(value: Optional[str]) -> Optional[str]:
+    """Reject connection strings and obvious secret-bearing Replica identities."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("location_key must be a non-empty opaque value")
+    lowered = value.lower()
+    if any(marker in lowered for marker in _SECRET_LOCATION_MARKERS) or _USER_INFO_PATTERN.search(value):
+        raise ValueError("location_key must not contain credentials or connection strings")
     return value
 
 
@@ -219,6 +238,7 @@ class CacheReplica(_StateModel):
     _entity_type = "cache_replica"
     _id_field = "replica_id"
     _ids = field_validator("replica_id", "artifact_id")(_non_empty)
+    _location = field_validator("location_key")(validate_location_key)
 
 
 def _task_id() -> str:
@@ -273,5 +293,6 @@ def replica_id(
     artifact_id_value: str, data_plane_id: Optional[str] = None,
     backend_type: Optional[str] = None, location_key: Optional[str] = None,
 ) -> str:
+    location_key = validate_location_key(location_key)
     return _digest("replica", {"artifact_id": _non_empty(artifact_id_value),
         "data_plane_id": data_plane_id, "backend_type": backend_type, "location_key": location_key})

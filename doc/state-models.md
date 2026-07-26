@@ -53,7 +53,7 @@ Invalid transitions expose typed detail:
 
 ## Stable IDs
 
-Artifact IDs have format `artifact:sha256:<64 lowercase hex>` and hash canonical schema version, normalized knowledge ID, nullable capability fingerprint, and Artifact variant. The Legacy helper uses a null capability fingerprint. Replica IDs have format `replica:sha256:<64 lowercase hex>` and hash Artifact ID, nullable data-plane ID, nullable backend type, and nullable opaque non-secret location key. Generated IDs are `dpt:<32 lowercase UUID4 hex>` and `qwork:<32 lowercase UUID4 hex>`; restored non-empty IDs are accepted. Credentials, passwords, secret URLs, and raw Redis keys are not identity inputs.
+Artifact IDs have format `artifact:sha256:<64 lowercase hex>` and hash canonical schema version, normalized knowledge ID, nullable capability fingerprint, and Artifact variant. The Legacy helper uses a null capability fingerprint. Replica IDs have format `replica:sha256:<64 lowercase hex>` and hash Artifact ID, nullable data-plane ID, nullable backend type, and nullable opaque non-secret location key. Opaque locations may use values such as `kid` or `node-a/cache-1`; connection strings, embedded user-info, and `password=`, `credential=`, or `token=` values are rejected. Generated IDs are `dpt:<32 lowercase UUID4 hex>` and `qwork:<32 lowercase UUID4 hex>`; restored non-empty IDs are accepted. Credentials, passwords, secret URLs, and raw Redis keys are not identity inputs.
 
 ## Legacy mapping
 

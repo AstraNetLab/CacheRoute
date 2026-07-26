@@ -8,6 +8,7 @@ from core.state_models import (
     ArtifactState, CacheArtifact, CacheReplica, DataPlaneTask, DataPlaneTaskState,
     InvalidStateTransition, QueueWork, QueueWorkState, ReplicaHealth, ReplicaState,
     allowed_target_states, artifact_id, is_retryable_state, is_terminal_state, replica_id,
+    validate_state_transition,
 )
 
 
@@ -83,6 +84,21 @@ def test_invalid_terminal_and_cross_enum_transition_details():
     assert cross_enum.value.detail.target_state == "staging"
 
 
+def test_direct_validator_accepts_same_state_but_rejects_cross_enum_same_wire_value():
+    assert validate_state_transition(
+        ArtifactState.PENDING, ArtifactState.PENDING,
+        entity_type="cache_artifact", entity_id="artifact:restored",
+    ) is True
+    with pytest.raises(InvalidStateTransition):
+        validate_state_transition(
+            ArtifactState.PENDING, ReplicaState.PENDING,
+            entity_type="cache_artifact", entity_id="artifact:restored",
+        )
+    assert [item.value for item in allowed_target_states(ArtifactState.PENDING)] == [
+        "building", "deleting", "failed",
+    ]
+
+
 def test_allowed_targets_are_sorted_and_traits_are_centralized():
     for enum_type, values in ENUM_VALUES.items():
         if enum_type is ReplicaHealth:
@@ -109,6 +125,32 @@ def test_stable_artifact_and_replica_ids_include_all_identity_inputs():
                 replica_id(first, "plane", "other", "location"),
                 replica_id(first, "plane", "disk", "other"),
                 replica_id(artifact_id("other"), "plane", "disk", "location")}) == 5
+
+
+@pytest.mark.parametrize("location", ["kid", "node-a/cache-1", "opaque-location"])
+def test_opaque_replica_locations_are_accepted_and_deterministic(location):
+    identifier = artifact_id("kid")
+    assert replica_id(identifier, location_key=location) == replica_id(identifier, location_key=location)
+    assert CacheReplica(replica_id="restored", artifact_id=identifier, location_key=location).location_key == location
+
+
+@pytest.mark.parametrize("location", [
+    "redis://host/key", "password=secret", "credential=value", "token=value",
+    "user:password@host", "", "   ",
+])
+def test_secret_bearing_replica_locations_are_rejected(location):
+    identifier = artifact_id("kid")
+    with pytest.raises(ValueError, match="location_key"):
+        replica_id(identifier, location_key=location)
+    with pytest.raises(ValidationError, match="location_key"):
+        CacheReplica(replica_id="restored", artifact_id=identifier, location_key=location)
+    safe_serialized = CacheReplica(
+        replica_id=replica_id(identifier, location_key="kid"),
+        artifact_id=identifier, location_key="kid",
+    ).model_dump_json()
+    assert all(secret not in safe_serialized for secret in (
+        "redis://", "password=", "credential=", "token=", "user:password@host",
+    ))
 
 
 def test_generated_and_restored_ids_and_empty_rejection():

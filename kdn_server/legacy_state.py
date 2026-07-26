@@ -13,6 +13,17 @@ from core.state_models import (
 )
 
 
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    """Read dictionaries, sqlite3.Row objects, and attribute-backed records safely."""
+    getter = getattr(row, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return getattr(row, key, default)
+
+
 class LegacyStateWarning(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     code: str
@@ -51,10 +62,9 @@ def map_legacy_kv_state(row: Any, kv_root: Optional[str | Path] = None) -> Legac
 
     Passing ``kv_root=None`` explicitly means that no filesystem check was performed.
     """
-    get = row.get if hasattr(row, "get") else lambda key, default=None: getattr(row, key, default)
-    kid = _safe_component(get("kid"), "kid")
-    ready = _normalize_kv_ready(get("kv_ready", 0))
-    raw_rel_dir = get("kv_rel_dir")
+    kid = _safe_component(_row_value(row, "kid"), "kid")
+    ready = _normalize_kv_ready(_row_value(row, "kv_ready", 0))
+    raw_rel_dir = _row_value(row, "kv_rel_dir")
     rel_dir = None
     if raw_rel_dir is not None and str(raw_rel_dir).strip():
         rel_dir = _safe_component(raw_rel_dir, "kv_rel_dir", allow_dot=True)
