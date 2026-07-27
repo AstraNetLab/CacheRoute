@@ -19,6 +19,37 @@ The additive CUDA 13 image under [`env/docker/cu130`](../env/docker/cu130)
 sets `CACHEROUTE_RUNTIME_PROFILE=v1` by default. The legacy image and root
 requirements remain unchanged.
 
+## Startup interfaces are versioned too
+
+The serving commands are part of the runtime compatibility contract. The two
+stacks do not share the same primary LMCache/vLLM startup interface.
+
+| Profile | LMCache process | vLLM connector path |
+|---|---|---|
+| `legacy` | YAML selected by `LMCACHE_CONFIG_FILE` | historical LMCache offloading arguments |
+| `v1` | standalone `lmcache server` with RESP L2 | `vllm serve` with `LMCacheMPConnector` in `--kv-transfer-config` |
+
+Do not mix the interfaces. In particular, the v1 path must unset the legacy
+`LMCACHE_CONFIG_FILE` and must not depend on `remote_url` or
+`--kv-offloading-backend lmcache`.
+
+The complete validated commands and environment-variable overrides are in
+[`env/docker/cu130/README.md`](../env/docker/cu130/README.md). Existing
+containers can use the repository scripts directly, without rebuilding:
+
+```bash
+export CACHEROUTE_RUNTIME_PROFILE=v1
+bash env/docker/cu130/scripts/start_lmcache_mp.sh
+# In another terminal after port 5555 is listening:
+bash env/docker/cu130/scripts/start_vllm_mp.sh
+```
+
+The v1 startup order is:
+
+```text
+Redis RESP L2 -> LMCache MP :5555 -> vLLM :8000 -> CacheRoute components
+```
+
 ## KDN KV construction
 
 Manual `--match` is no longer required in the normal CLI workflow. `auto` and
@@ -84,6 +115,23 @@ The v1 dependency files are additive. They do not modify:
 For reliable differential capture, use a dedicated Redis database or Redis
 instance for KDN construction. `--flushdb` must not target an online shared DB.
 
+## Cache identity compatibility
+
+Runtime-profile selection does not make incompatible KV blocks reusable. KDN
+construction and the target Instance must still agree on the cache identity,
+including:
+
+- model identity/path and model configuration;
+- tensor-parallel topology and worker layout;
+- KV dtype;
+- LMCache chunk size;
+- LMCache hash algorithm;
+- request tags or other key-affecting configuration;
+- RESP L2 endpoint/database semantics.
+
+The validated v1 baseline currently uses chunk size `256` and hash algorithm
+`sha256_cbor`.
+
 ## Validation boundary
 
 The modern image has been validated for installation, imports, `pip check`, GPU
@@ -100,11 +148,11 @@ End-to-end validation must compare LMCache hit-token and remote-read metrics.
 Subsequent v1 changes should remain behind the compatibility layer where the
 vLLM/LMCache interfaces differ, including:
 
-- LMCache MP and vLLM connector startup configuration,
 - Instance-side observability and metric collection,
 - request metadata and prompt-prefix compatibility,
 - injected-cache hit validation,
-- dual-profile integration tests.
+- dual-profile integration tests,
+- startup/configuration validation for each runtime profile.
 
 Avoid scattering version checks through Scheduler, Proxy, Instance, and KDN
 code. Add profile-specific behavior to the compatibility layer or focused
