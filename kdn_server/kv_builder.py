@@ -43,7 +43,7 @@ class KVBuildConfig:
     # ``auto`` supports both the historical vllm@* layout and newer LMCache
     # model-scoped key layouts. Explicit patterns remain supported.
     match: str = "auto"
-    runtime_profile: str = "auto"
+    runtime_profile: Optional[str] = None
     scan_count: int = 1000
     settle_wait_s: float = 0.2      # Redis polling interval.
     settle_rounds: int = 3          # Deprecated compatibility field.
