@@ -1,0 +1,44 @@
+# CacheRoute application and development dependencies for the CUDA 13 profile.
+#
+# PyTorch, vLLM, and LMCache are intentionally installed by the Dockerfile and
+# must not be added here. This file is additive and does not replace the legacy
+# root requirements.txt profile.
+
+sentence-transformers>=5.6,<6.0
+faiss-cpu==1.13.1
+
+fastapi>=0.133,<0.137
+uvicorn>=0.38,<0.52
+starlette>=1.0.1,<2.0
+pydantic>=2.12,<3.0
+httpx>=0.28,<0.29
+aiohttp>=3.13.3,<4.0
+requests>=2.33,<3.0
+redis>=5.1,<9
+
+transformers>=5.5.3,<6.0
+huggingface-hub>=1.5,<2.0
+safetensors>=0.7,<0.9
+datasets>=4.4,<5.0
+
+numpy>=1.26,<2.3
+scipy>=1.16,<1.17
+pandas>=2.3,<2.4
+scikit-learn>=1.7,<1.8
+matplotlib>=3.10,<3.11
+
+jupyter_client>=8.6,<9.0
+pyzmq>=27.1,<28.0
+
+pyyaml>=6.0,<7.0
+tqdm>=4.67,<5.0
+warcio>=1.7,<2.0
+beautifulsoup4>=4.14,<5.0
+
+# Booktype 1.5 is intentionally excluded. It is a Python-2-era package that can
+# overwrite the modern redis package with Python 2 source files.
+
+pytest>=9.0,<10.0
+black>=24,<27
+isort>=5.13,<9
+mypy>=1.11,<3
