@@ -1,0 +1,23 @@
+# CacheRoute CUDA 13 serving profile.
+#
+# Keep the binary-sensitive serving stack exact. Application dependencies are
+# installed separately from requirements-dev.txt under these constraints.
+
+torch==2.11.0
+torchvision==0.26.0
+torchaudio==2.11.0
+vllm==0.25.1
+lmcache==0.5.2
+
+# Shared compatibility ranges required by the target serving stack.
+transformers>=5.5.3,<6.0
+sentence-transformers>=5.6,<6.0
+huggingface-hub>=1.5,<2.0
+fastapi>=0.133,<0.137
+starlette>=1.0.1,<2.0
+aiohttp>=3.13.3,<4.0
+pydantic>=2.12,<3.0
+numpy>=1.26,<2.3
+setuptools>=77,<81
+requests>=2.33,<3.0
+redis>=5.1,<9
