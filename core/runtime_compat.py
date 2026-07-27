@@ -46,15 +46,16 @@ def normalize_runtime_profile(value: Optional[str] = None) -> str:
 def resolve_scan_match(profile: str, requested_match: Optional[str]) -> str:
     """Resolve the Redis SCAN pattern for a compatibility profile.
 
-    ``vllm@*`` was the historic CacheRoute default. In ``auto`` mode it is
-    treated as a compatibility sentinel rather than a forced legacy pattern,
-    because older API/CLI callers may still send it implicitly.
+    ``vllm@*`` was the historic CacheRoute default. Unless strict ``legacy``
+    mode is selected, it is treated as a compatibility sentinel rather than a
+    forced pattern because older API/CLI callers may still send it implicitly.
     """
     profile = normalize_runtime_profile(profile)
     requested = str(requested_match or "").strip()
 
     if requested and requested.lower() != "auto":
-        if not (profile == RUNTIME_PROFILE_AUTO and requested == "vllm@*"):
+        historic_default = requested == "vllm@*"
+        if not (historic_default and profile != RUNTIME_PROFILE_LEGACY):
             return requested
 
     if profile == RUNTIME_PROFILE_LEGACY:
