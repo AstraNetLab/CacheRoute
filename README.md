@@ -22,143 +22,112 @@
     <img src="https://img.shields.io/badge/Powered%20by-LMCache-00B894?style=flat-square&logo=github&logoColor=white" alt="Powered by LMCache">
   </a>
   <img src="https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white" />
-  <img src="https://img.shields.io/badge/Rust-Agent-orange?logo=rust&logoColor=white" />
-  <img src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white" />
   <img src="https://img.shields.io/badge/Redis-KV%20Store-DC382D?logo=redis&logoColor=white" />
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white" />
 </p>
 
 <p align="center">
   <a href="#why-cacheroute">Why CacheRoute?</a> •
-  <a href="#key-features">Features</a> •
   <a href="#architecture">Architecture</a> •
-  <a href="#frontend-urls">Frontend URLs</a> •
+  <a href="#choose-a-runtime-profile">Runtime Profiles</a> •
   <a href="#quick-start">Quick Start</a> •
+  <a href="#frontend-urls">Frontend URLs</a> •
   <a href="#api-usage">API</a> •
   <a href="#documentation">Docs</a>
 </p>
 
 ## CacheRoute
 
-CacheRoute is a lightweight LLM scheduling framework built on [vLLM](https://github.com/vllm-project/vllm) and [LMCache](https://github.com/LMCache/LMCache) to enable flexible KV cache reuse across LLM systems. It targets knowledge-intensive LLM services, such as browser AI and knowledge QA systems, where many requests repeatedly use the same external knowledge. Existing systems usually prepend long knowledge texts to the user question and send the whole prompt to the model for recomputation. Although this approach helps reduce model hallucination and improve answer quality, it introduces heavy prefill overhead and redundant computation when the same knowledge appears across many requests.
+CacheRoute is a lightweight LLM scheduling framework built on [vLLM](https://github.com/vllm-project/vllm) and [LMCache](https://github.com/LMCache/LMCache). It enables reusable knowledge KV cache blocks to move across LLM systems and dynamically chooses between text recomputation and KVCache injection according to task queues, compute load, and network load.
 
-CacheRoute addresses this problem by using dedicated servers to store KVCache blocks for popular knowledge. For each request, CacheRoute dynamically chooses between text-based injection and KVCache-based injection according to task queues, compute load, and network load. CacheRoute therefore shifts knowledge-injection cost between compute and network resources, improving task latency and system throughput.
+The system separates global routing, local injection decisions, model execution, and reusable-KV management into Scheduler, Proxy, Instance, and KDN Server components.
 
 ## Why CacheRoute?
 
-- 🚀 **Less redundant prefill computation:** reuse repeated knowledge through KV cache instead of recomputing long prompts.
-- 🔁 **Cross-system KV cache reuse:** share reusable knowledge across LLM systems through KDN servers.
-- 🌐 **Compute-network coordination:** dynamically choose between recomputation and KV cache injection based on real-time resource load.
+- 🚀 **Less redundant prefill computation:** reuse repeated knowledge instead of recomputing long prompts.
+- 🔁 **Cross-system KV cache reuse:** distribute reusable knowledge through KDN servers.
+- 🌐 **Compute-network coordination:** choose between recomputation and KV transfer according to current system load.
+- 🧭 **Knowledge-oriented routing:** route requests according to knowledge coverage and resource-pool state.
 
 <p align="center">
   <img width="1400" alt="CacheRoute performance overview" src=".assets/cacheroute_readme_showcase.png" />
 </p>
 
-<p align="center">
-  <em>CacheRoute reduces average TTFT, improves system throughput, and enables more effective KVCache reuse under knowledge-intensive workloads.</em>
-</p>
-
-## Key Features
-
-| Feature | Description |
-|---|---|
-| ⚙️ **Compute-network-aware knowledge injection** | CacheRoute dynamically chooses between text recomputation and KVCache reuse. It predicts task cost at the Proxy and selects the injection strategy based on current task queues, compute load, and network load. |
-| 🧭 **Knowledge-oriented cross-system routing** | CacheRoute parses the knowledge requirement before resource-pool scheduling. The Scheduler jointly considers knowledge availability, system load, and topology information, and routes requests to the LLM system that can serve the required knowledge more efficiently. |
-| 🗂️ **KDN-based KV cache management** | CacheRoute follows the Knowledge Delivery Network concept and uses dedicated KDN servers to register, store, query, and inject KV cache blocks for reusable knowledge. |
-| 📊 **Proxy browser UI and Instance resource dashboard** | CacheRoute provides a browser-based Proxy observability dashboard and an optional Instance resource dashboard for control-plane state, Instance liveness, resource snapshots, topology information, and short-term trends. |
-
----
-
 ## Architecture
 
-CacheRoute separates global routing, local injection decisions, and KV cache management into Scheduler, Proxy, Instance, and KDN Server components.
-
 <p align="center">
-  <img width="600" alt="CacheRoute" src="https://github.com/user-attachments/assets/9150a874-4e04-4499-821b-39a850e56db6" />
+  <img width="600" alt="CacheRoute architecture" src="https://github.com/user-attachments/assets/9150a874-4e04-4499-821b-39a850e56db6" />
 </p>
 
-- **Scheduler:** performs global resource-pool selection and knowledge-oriented task routing.
-- **Proxy:** manages local task queues, selects the knowledge-injection strategy, validates Instance capability identity, and exposes the main Proxy browser UI.
-- **Instance:** connects CacheRoute to vLLM + LMCache, reports a deterministic capability identity, and handles execution signaling.
-- **KDN Server:** stores reusable knowledge and injects KVCache blocks when needed.
-- **Resource Agent/Dashboard:** optionally observes local Instance resource snapshots for validation and future control-plane integration.
+- **Scheduler:** performs global resource-pool selection and knowledge-oriented routing.
+- **Proxy:** manages the local Instance pool and selects text or KVCache knowledge injection.
+- **Instance:** connects CacheRoute to vLLM + LMCache and reports execution/resource state.
+- **KDN Server:** registers knowledge, persists reusable KV blocks, and injects them into target Redis/LMCache backends.
+- **Client/UI:** sends OpenAI-compatible requests and exposes optional browser interfaces.
 
 ### Default ports
 
-| Component | Service Plane | Control Plane / Auxiliary | UI |
-|---|---|---|---|
+| Component | Service plane | Control / auxiliary | UI |
+|---|---:|---:|---:|
 | Scheduler | 7001 | 7002 | TBD |
 | Proxy | 8001 | 8002 | 8202 |
-| Client UI | - | - | 7071 |
 | Instance | 9001 | 9002 | 9202 |
-| vLLM | 8000 | - | - |
 | KDN Server | 9101 | - | TBD |
+| vLLM | 8000 | - | - |
+| LMCache MP (v1) | 5555 | 8080 | - |
+| Redis RESP L2 | 6379 | - | - |
+| Client | - | - | 7071 |
 
-### Frontend URLs
+## Choose a Runtime Profile
 
-| Component | Frontend | Default URL | How to start | Status |
+CacheRoute supports two serving generations through a compatibility layer. Select the profile before following any deployment commands.
+
+| Runtime path | Status | Serving stack | LMCache/vLLM interface | Entry point |
 |---|---|---|---|---|
-| Proxy | Proxy browser observability dashboard | `http://127.0.0.1:8202` | `cd test && python3 demo_proxy.py ...` starts it by default. Use `--no-proxy-ui` to disable it. | Available |
-| Instance | Browser resource dashboard | `http://127.0.0.1:9202` | `python3 instance/resource_dashboard/dashboard_server.py --dashboard-listen 0.0.0.0:9202 --agent-listen 127.0.0.1:9201` | Available |
-| Client | Browser request UI | `http://127.0.0.1:7071/ui/client` | `cd test && python3 demo_client.py --with-ui` | Available |
-| Scheduler | Scheduler browser UI | TBD | TBD | Planned |
-| KDN Server | KDN browser UI | TBD | TBD | Planned |
+| **Modern v1** | Current migration/development path | CUDA 13.0, PyTorch 2.11, vLLM 0.25.1, LMCache 0.5.2 | standalone `lmcache server` + RESP L2 + `LMCacheMPConnector` | [Complete v1 quick start](docs/quickstart_v1.md) |
+| **Legacy stable** | Preserved compatibility path | CUDA 12.8, PyTorch 2.9.x, vLLM 0.13.x, LMCache 0.3.11 | `LMCACHE_CONFIG_FILE` YAML + historical vLLM offloading flags | [Legacy environment guide](env/README.md) |
+| **Compatibility design** | Architecture reference | `legacy`, `v1`, and `auto` profiles | version-dependent behavior isolated behind adapters | [Runtime compatibility](docs/runtime_compatibility_v1.md) |
 
-The URLs above assume a single-machine deployment with loopback addresses. Containers without host networking must publish the corresponding ports or use reachable host addresses.
+> [!WARNING]
+> Do not mix the two serving interfaces. The v1 path does not use legacy `remote_url`, `LMCACHE_CONFIG_FILE`, `--kv-offloading-backend lmcache`, or the old `python3 -m vllm.entrypoints.openai.api_server` startup example.
 
-### System Workflow
+Select a profile explicitly:
 
-1. The Client sends an OpenAI-compatible request to the Scheduler.
-2. The Scheduler analyzes the knowledge requirement and selects a target resource pool.
-3. The Proxy predicts the cost of text-based and KVCache-based injection.
-4. The KDN Server injects reusable KVCache blocks when KVCache reuse is selected.
-5. The Instance forwards the request to vLLM + LMCache and returns the response.
-6. Instance resource snapshots can flow through the Proxy control plane. The Proxy aggregates a compact `pool_resource` snapshot and reports it to the Scheduler through registration and heartbeat payloads.
-7. The optional Proxy UI and Instance Resource Dashboard visualize control-plane and resource state for debugging and validation.
+```bash
+# Modern vLLM 0.25.1 + LMCache 0.5.2
+export CACHEROUTE_RUNTIME_PROFILE=v1
 
----
+# Historical vLLM 0.13.x + LMCache 0.3.11 behavior
+export CACHEROUTE_RUNTIME_PROFILE=legacy
+
+# Recognize either supported Redis-key layout
+export CACHEROUTE_RUNTIME_PROFILE=auto
+```
 
 ## Requirements
 
-CacheRoute has been tested with the following core environment:
+The serving stack is owned by its Docker image. Do not let the root application requirements upgrade PyTorch, vLLM, LMCache, or other CUDA-sensitive packages.
 
-| Component | Version |
-|---|---|
-| Python | 3.12.x |
-| CUDA toolkit in container | 12.8 |
-| PyTorch | 2.9.1 |
-| vLLM | 0.13.x |
-| LMCache | 0.3.11 |
-| Redis | 7 |
-| Rust/Cargo | Stable toolchain; required only for `instance/resource_agent` |
-| Tkinter | `python3.12-tk`; required only for the desktop dashboard |
+| Component | Legacy stable | Modern v1 |
+|---|---|---|
+| Base CUDA | 12.8 | 13.0.0 |
+| Python | 3.12.x | 3.12.x in `/opt/venv` |
+| PyTorch | 2.9.x | 2.11.0+cu130 |
+| vLLM | 0.13.x | 0.25.1 |
+| LMCache | 0.3.11 | 0.5.2 |
+| Redis | 7 | RESP L2 backend on Redis 7 |
+| Environment files | `env/docker/Dockerfile`, root `requirements.txt` | `env/docker/cu130/` |
 
-Install CacheRoute's application dependencies with:
-
-```bash
-python3 -m pip install -r requirements.txt
-python3 -m pip check
-```
-
-`requirements.txt` is the dependency source of truth for the complete CacheRoute application and development environment. `pyproject.toml` provides package metadata and a deliberately smaller install surface; installing the project package alone does not replace the complete requirements installation.
-
-`requirements.txt` intentionally does not pin PyTorch, vLLM, or LMCache. These packages belong to the serving image and must remain compatible with its CUDA environment.
-
-For the complete Docker, source-build, Rust, Tkinter, X11, Redis, and LMCache setup, use [`env/README.md`](env/README.md) as the deployment source of truth.
-
----
+For a new modern container, use [`env/docker/cu130/README.md`](env/docker/cu130/README.md). For an already-built compatible container, update the repository and use the checked-in startup scripts; rebuilding the image is not required.
 
 ## Quick Start
 
-CacheRoute provides two ways to get started.
+### Option 1: Lightweight scheduling demo without a model
 
-### Option 1: Lightweight Demo without a vLLM model
-
-Set `USE_MOCK = True` in `core/config.py`, then start the demo components in separate terminals. The main demo entrypoints can be executed directly from `test/`; they add the repository root to Python's module search path automatically.
+Set `USE_MOCK = True` in `core/config.py`, then start the components in separate terminals:
 
 ```bash
 cd test
-
 python3 demo_scheduler.py --cacheroute
 python3 demo_kdn.py
 python3 demo_proxy.py \
@@ -169,70 +138,41 @@ python3 demo_instance.py --port 9001 --host 127.0.0.1
 python3 demo_client.py --with-ui
 ```
 
-`demo_proxy.py` starts the Proxy browser UI at a URL similar to `http://127.0.0.1:8202`. `demo_client.py --with-ui` starts the Client UI at `http://127.0.0.1:7071/ui/client`.
+### Option 2: Modern v1 full single-machine path
 
-### Option 2: Full CacheRoute deployment
+The complete command-by-command guide is [`docs/quickstart_v1.md`](docs/quickstart_v1.md). The following is the full service order and minimum command path.
 
-The recommended host/container paths are:
-
-```text
-Host repository:      /llm-stack/CacheRoute
-Container repository: /workspace/llm-stack/CacheRoute
-```
-
-When a compatible complete image already exists, create the headless/browser-mode container with:
-
-```bash
-sudo docker run --gpus all -it \
-  --name cacheroute-main \
-  --network host \
-  --ipc=host \
-  --shm-size=64g \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  --memory=0 \
-  --memory-swap=0 \
-  -v /llm-stack:/workspace/llm-stack \
-  -w /workspace/llm-stack \
-  cacheroute:vllm0.13-lmcache3.11-pytorch2.9.1 \
-  bash
-```
-
-Use [`env/README.md`](env/README.md) when building the image, installing PyTorch/vLLM/LMCache from source, enabling Tkinter/X11, repairing an older image, or recreating a deleted container.
-
-<details>
-<summary><b>Full single-machine run: Redis → vLLM → Scheduler → KDN → Proxy → Instance → Client</b></summary>
-
-The commands below assume:
-
-- the complete image and `cacheroute-main` container already exist;
-- the repository is mounted at `/workspace/llm-stack/CacheRoute`;
-- all CacheRoute components use host networking and loopback addresses;
-- the example model is served as `llama3-70b`;
-- each long-running service is started in a separate terminal with `sudo docker exec -it cacheroute-main bash`.
-
-#### 1. Check the CacheRoute configuration
-
-In `core/config.py`, verify at least the following values before starting the services:
-
-```python
-DEFAULT_MODEL = "/workspace/llm-stack/models/LLM-Research/Meta-Llama-3-70B-Instruct"
-DEFAULT_MODEL_SHORTNAME = "llama3-70b"
-EMBEDDING_MODEL = "/workspace/llm-stack/CacheRoute/model/embedder/intfloat__multilingual-e5-large-instruct"
-USE_MOCK = False
-```
-
-Install the CacheRoute application dependencies once inside the container:
+#### 1. Prepare the current container
 
 ```bash
 cd /workspace/llm-stack/CacheRoute
-python3 -m pip install -r requirements.txt
-python3 -m pip check
+git switch main
+git pull --ff-only origin main
+
+export CACHEROUTE_RUNTIME_PROFILE=v1
+export PYTHONPATH=/workspace/llm-stack/CacheRoute
 ```
 
-#### 2. Start Redis on the host
+Verify:
 
-Create the Redis container the first time:
+```bash
+python3 - <<'PY'
+from core.runtime_compat import normalize_runtime_profile
+print(normalize_runtime_profile())
+PY
+# Expected: v1
+```
+
+Each new terminal must export `CACHEROUTE_RUNTIME_PROFILE=v1` before starting a CacheRoute component.
+
+#### 2. Start or verify Redis RESP L2
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379 ping
+# Expected: PONG
+```
+
+Create the Redis container when needed:
 
 ```bash
 sudo docker run -d \
@@ -248,86 +188,46 @@ sudo docker run -d \
     --maxmemory-policy allkeys-lru
 ```
 
-For later runs, use:
+#### 3. Terminal 1: start LMCache MP
 
 ```bash
-sudo docker start lmcache-redis
+cd /workspace/llm-stack/CacheRoute
+export CACHEROUTE_RUNTIME_PROFILE=v1
+bash env/docker/cu130/scripts/start_lmcache_mp.sh
 ```
 
-Verify Redis:
+The defaults are LMCache MP `127.0.0.1:5555`, HTTP `127.0.0.1:8080`, chunk size `256`, hash algorithm `sha256_cbor`, and Redis RESP L2 `127.0.0.1:6379`.
+
+Check the ports:
 
 ```bash
-sudo docker exec -it lmcache-redis redis-cli ping
-# Expected: PONG
+ss -lntp | grep -E ':(5555|8080)\b'
 ```
 
-#### 3. Create the LMCache configuration inside `cacheroute-main`
+#### 4. Terminal 2: start vLLM with LMCacheMPConnector
 
 ```bash
-mkdir -p /workspace/llm-stack/config
-
-cat > /workspace/llm-stack/config/lmcache_with_redis.yaml <<'EOF'
-chunk_size: 256
-pre_caching_hash_algorithm: "sha256_cbor"
-
-local_cpu: true
-max_local_cpu_size: 80.0
-
-remote_url: "redis://127.0.0.1:6379"
-remote_serde: "cachegen"
-
-local_disk: null
-max_local_disk_size: 0
-
-save_decode_cache: false
-cache_policy: "LRU"
-numa_mode: null
-EOF
-```
-
-#### 4. Terminal 1: start vLLM with LMCache
-
-The following example uses eight GPUs for a LLaMA-70B model. Adjust `CUDA_VISIBLE_DEVICES`, tensor parallelism, model path, memory utilization, and batch limits for the actual machine.
-
-```bash
-sudo docker exec -it cacheroute-main bash
-
+cd /workspace/llm-stack/CacheRoute
+export CACHEROUTE_RUNTIME_PROFILE=v1
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export MODEL_DIR=/workspace/llm-stack/models/LLM-Research/Meta-Llama-3-70B-Instruct
-export LMCACHE_CONFIG_FILE=/workspace/llm-stack/config/lmcache_with_redis.yaml
-export PYTHONHASHSEED=0
-export OMP_NUM_THREADS=8
-
-python3 -m vllm.entrypoints.openai.api_server \
-  --model "$MODEL_DIR" \
-  --served-model-name llama3-70b \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --tensor-parallel-size 8 \
-  --gpu-memory-utilization 0.75 \
-  --dtype auto \
-  --max-model-len 4096 \
-  --max-num-seqs 8 \
-  --max-num-batched-tokens 16384 \
-  --kv-offloading-backend lmcache \
-  --kv-offloading-size 64 \
-  --disable-hybrid-kv-cache-manager \
-  --kv-cache-metrics
+bash env/docker/cu130/scripts/start_vllm_mp.sh
 ```
 
-From another terminal, wait until the model endpoint is ready:
+Wait until vLLM is ready:
 
 ```bash
 curl -sS http://127.0.0.1:8000/v1/models | python3 -m json.tool
+curl -sS http://127.0.0.1:8000/metrics | grep -i lmcache | head -n 50
 ```
 
-#### 5. Terminal 2: start the Scheduler
+#### 5. Terminals 3-4: start Scheduler and KDN
+
+Scheduler:
 
 ```bash
-sudo docker exec -it cacheroute-main bash
 cd /workspace/llm-stack/CacheRoute/test
-
+export CACHEROUTE_RUNTIME_PROFILE=v1
 python3 demo_scheduler.py \
   --cacheroute \
   --kdn-pending-overload-th 8 \
@@ -336,127 +236,85 @@ python3 demo_scheduler.py \
   --cacheroute-log-decision 1
 ```
 
-The Scheduler service plane listens on `127.0.0.1:7001`, and its control plane listens on `127.0.0.1:7002`.
-
-#### 6. Terminal 3: start the KDN Server
+KDN Server:
 
 ```bash
-sudo docker exec -it cacheroute-main bash
 cd /workspace/llm-stack/CacheRoute/test
+export CACHEROUTE_RUNTIME_PROFILE=v1
 python3 demo_kdn.py
 ```
 
-The KDN Server listens on `127.0.0.1:9101` and registers its runtime state with the Scheduler.
-
-#### 7. Terminal 4: register sample knowledge and build its KVCache
-
-Create a small knowledge file inside the shared workspace:
+#### 6. Register knowledge and build its KVCache
 
 ```bash
-sudo docker exec -it cacheroute-main bash
 cd /workspace/llm-stack/CacheRoute
 mkdir -p data/quickstart
-
-cat > data/quickstart/cacheroute.txt <<'EOF'
-CacheRoute is a knowledge-oriented LLM scheduling framework. It reduces repeated prefill computation by storing and reusing KVCache blocks for frequently requested external knowledge. The Scheduler selects a KDN server and a Proxy, while the Proxy chooses between text recomputation and KVCache reuse.
+cat > data/quickstart/cacheroute_v1.txt <<'EOF'
+CacheRoute is a knowledge-oriented LLM scheduling framework. It reduces repeated prefill computation by storing and reusing KVCache blocks for frequently requested external knowledge.
 EOF
-```
 
-Start the interactive KDN CLI:
-
-```bash
 python3 kdn_server/kdn_register_cli.py
 ```
 
-At the CLI prompt, register the file and build its KVCache:
+At the KDN CLI prompt:
 
 ```text
-:buildkv_file /workspace/llm-stack/CacheRoute/data/quickstart/cacheroute.txt --api-url http://127.0.0.1:8000/v1/chat/completions --model llama3-70b
+:buildkv_file /workspace/llm-stack/CacheRoute/data/quickstart/cacheroute_v1.txt --api-url http://127.0.0.1:8000/v1/chat/completions --model llama3-70b
 :pool
 ```
 
-The Scheduler automatically refreshes KDN knowledge metadata. With the default configuration, allow up to 30 seconds for the new item to appear. Check the Scheduler state from another terminal:
+Normal v1 registration does not require `--match`. A successful build must report `dumped_keys > 0`; inspect `kdn_server/KV_database/<kid>/run_meta.json` for `runtime_profile: v1` and `key_formats: [v1]`.
+
+#### 7. Terminals 5-6: start Proxy and Instance
+
+Proxy:
 
 ```bash
-curl -sS http://127.0.0.1:7001/debug/status | python3 -m json.tool
-```
-
-#### 8. Terminal 5: start the Proxy
-
-```bash
-sudo docker exec -it cacheroute-main bash
 cd /workspace/llm-stack/CacheRoute/test
-
+export CACHEROUTE_RUNTIME_PROFILE=v1
 python3 demo_proxy.py \
   --strategy round_robin \
   --injection-strategy iws \
   --ready-release-policy text_bypass
 ```
 
-The Proxy service plane listens on `127.0.0.1:8001`, its control plane listens on `127.0.0.1:8002`, and the browser observability UI is available at:
-
-```text
-http://127.0.0.1:8202
-```
-
-#### 9. Terminal 6: start the Instance
+Instance:
 
 ```bash
-sudo docker exec -it cacheroute-main bash
 cd /workspace/llm-stack/CacheRoute/test
-
+export CACHEROUTE_RUNTIME_PROFILE=v1
 python3 demo_instance.py \
   --host 127.0.0.1 \
   --port 9001 \
   --proxy-cp-url http://127.0.0.1:8002
 ```
 
-The Instance forwards inference to vLLM at `127.0.0.1:8000`. It also starts or reuses the Rust Resource Agent by default. To skip resource monitoring during a minimal functional test, add `--no-resource-monitor`.
-
-Before sending a request, confirm that the Scheduler sees the KDN and Proxy and that the Proxy sees the Instance:
+Confirm registration:
 
 ```bash
 curl -sS http://127.0.0.1:7001/debug/status | python3 -m json.tool
-curl -sS http://127.0.0.1:8002/v1/instance/list?include_dead=true | python3 -m json.tool
+curl -sS 'http://127.0.0.1:8002/v1/instance/list?include_dead=true' | python3 -m json.tool
 ```
 
-#### 10. Terminal 7: start the Client UI or CLI
-
-Browser UI:
+#### 8. Terminal 7: start the Client and send a request
 
 ```bash
-sudo docker exec -it cacheroute-main bash
 cd /workspace/llm-stack/CacheRoute/test
+export CACHEROUTE_RUNTIME_PROFILE=v1
 python3 demo_client.py --with-ui
 ```
 
-Open:
-
-```text
-http://127.0.0.1:7071/ui/client
-```
-
-For terminal-only use, run:
-
-```bash
-python3 demo_client.py
-```
-
-#### 11. Send a simple end-to-end request
-
-Send the request to the Scheduler rather than directly to vLLM:
+Or send a request directly through the Scheduler:
 
 ```bash
 curl http://127.0.0.1:7001/v1/chat/completions \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{
     "model": "llama3-70b",
-    "messages": [
-      {
-        "role": "user",
-        "content": "What does CacheRoute reuse to reduce repeated prefill computation?"
-      }
-    ],
+    "messages": [{
+      "role": "user",
+      "content": "What does CacheRoute reuse to reduce repeated prefill computation?"
+    }],
     "temperature": 0,
     "max_tokens": 64,
     "stream": false,
@@ -464,195 +322,104 @@ curl http://127.0.0.1:7001/v1/chat/completions \
   }'
 ```
 
-Inspect the most recent routing decision:
-
-```bash
-curl -sS http://127.0.0.1:7001/debug/strategy | python3 -m json.tool
-```
-
-The expected request path is:
+Expected service path:
 
 ```text
-Client/curl
-  -> Scheduler :7001
-  -> selected Proxy :8001
-  -> Instance :9001
-  -> vLLM + LMCache :8000
-  -> response returned through the same chain
+Client -> Scheduler :7001 -> Proxy :8001 -> Instance :9001
+       -> vLLM :8000 -> LMCache MP :5555 -> Redis RESP L2 :6379
 ```
 
-</details>
-
-See [`kdn_server/README.md`](kdn_server/README.md) for detailed knowledge registration and KVCache injection commands, and [`core/README.md`](core/README.md) for multi-machine configuration.
-
-### Optional: Instance Resource Dashboard
-
-Build-check the Rust resource agent:
+Validate actual cache consumption through LMCache hit-token and remote-read metrics, not only TTFT:
 
 ```bash
-cargo check --manifest-path instance/resource_agent/Cargo.toml
+curl -sS http://127.0.0.1:8000/metrics \
+  | grep -E 'lmcache.*(hit|requested|remote_read|retrieve)'
 ```
 
-Start the Tkinter desktop dashboard only when the image contains `python3.12-tk` and the container was created with X11 forwarding as documented in `env/README.md`:
+### Option 3: Legacy stable deployment
+
+The legacy path remains available for vLLM 0.13.x + LMCache 0.3.11:
 
 ```bash
-python3 instance/resource_dashboard/dashboard_app.py \
-  --agent-listen 127.0.0.1:9201 \
-  --sample-interval-ms 1000 \
-  --instance-id hp_127.0.0.1:9001
+export CACHEROUTE_RUNTIME_PROFILE=legacy
 ```
 
-Use the browser fallback in headless environments:
+Use [`env/README.md`](env/README.md) for the legacy Docker image, YAML LMCache configuration, historical vLLM startup flags, source-build notes, and complete environment repair steps.
 
-```bash
-python3 instance/resource_dashboard/dashboard_server.py \
-  --dashboard-listen 0.0.0.0:9202 \
-  --agent-listen 127.0.0.1:9201
-```
+## Frontend URLs
 
-Open:
+| Component | URL | Start command |
+|---|---|---|
+| Proxy UI | `http://127.0.0.1:8202` | started by `demo_proxy.py` unless `--no-proxy-ui` is used |
+| Instance browser dashboard | `http://127.0.0.1:9202` | `python3 instance/resource_dashboard/dashboard_server.py --dashboard-listen 0.0.0.0:9202 --agent-listen 127.0.0.1:9201` |
+| Client UI | `http://127.0.0.1:7071/ui/client` | `python3 demo_client.py --with-ui` |
 
-```text
-http://127.0.0.1:9202
-```
-
-The resource dashboard is a validation helper and does not change Scheduler, Proxy, Instance, or KDN behavior.
-
----
+The URLs assume a single-machine host-network deployment. Publish or remap ports for bridged containers and multi-machine deployments.
 
 ## API Usage
 
-CacheRoute exposes OpenAI-compatible API endpoints through the Scheduler.
+CacheRoute exposes OpenAI-compatible endpoints through the Scheduler.
 
 | Endpoint | Mode |
 |---|---|
 | `/v1/chat/completions` | Chat completion |
-| `/v1/completions` | Completion |
+| `/v1/completions` | Text completion |
 
-### Chat Completion
+Example:
 
 ```bash
 curl http://127.0.0.1:7001/v1/chat/completions \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{
     "model": "llama3-70b",
-    "messages": [{"role": "user", "content": "What is DeepSeek"}],
-    "max_tokens": 1,
+    "messages": [{"role": "user", "content": "What is CacheRoute?"}],
+    "max_tokens": 64,
     "stream": false,
     "RAG": true
   }'
 ```
 
-### Completion
+Important request fields:
 
-```bash
-curl http://127.0.0.1:7001/v1/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "llama3-70b",
-    "prompt": "What is DeepSeek",
-    "max_tokens": 1,
-    "RAG": true
-  }'
-```
-
-### Request Options
-
-| Option | Required | Description |
+| Field | Required | Description |
 |---|---|---|
-| `model` | Yes | Model name served by vLLM. |
-| `messages` / `prompt` | Yes | Input content for chat or completion mode. |
-| `max_tokens` | No | Maximum number of generated tokens. |
-| `stream` | No | Whether to enable streaming responses. |
-| `RAG` | No | Whether to enable knowledge injection. |
-
----
-
-## Demo Screenshots
-
-<details>
-<summary>View runtime screenshots</summary>
-
-### Scheduler task scheduling
-
-The Scheduler selects KDN and Proxy according to knowledge coverage, topology, and current load.
-<img width="1200" height="559" alt="image" src="https://github.com/user-attachments/assets/320b5058-04b2-4de3-aa3b-aaa714b69982" />
-
-### Proxy task scheduling
-
-The Proxy maintains local task queues and prepares requests for instance-level execution.
-<img width="1200" height="288" alt="image" src="https://github.com/user-attachments/assets/bc24230e-0167-469b-9e6a-a7be9f5d26f0" />
-
-### Injection strategy selection
-
-The Proxy dynamically chooses between text-based injection and KVCache-based injection.
-<img width="1200" height="746" alt="image" src="https://github.com/user-attachments/assets/930575a6-dba2-465d-aff2-b511099ae25a4" />
-
-### vLLM + LMCache reuse
-
-The Instance reuses injected KVCache blocks through LMCache.
-<img width="1200" height="224" alt="image" src="https://github.com/user-attachments/assets/558be19f-c801-4182-b9cd-7daee7fd0a80" />
-
-### Client response
-
-The Client receives OpenAI-compatible responses through the Scheduler endpoint.
-<img width="1200" height="374" alt="image" src="https://github.com/user-attachments/assets/320b5058-04b2-4de3-aa3b-aaa714b69982" />
-
-</details>
-
----
+| `model` | Yes | Served vLLM model name. |
+| `messages` / `prompt` | Yes | Chat or completion input. |
+| `max_tokens` | No | Generation token limit. |
+| `stream` | No | Enable streaming responses. |
+| `RAG` | No | Enable CacheRoute knowledge injection. |
 
 ## Current Status
 
-CacheRoute is under active development. The current release supports:
+Implemented capabilities include:
 
-- Scheduler-side knowledge-oriented routing.
-- KDN selection based on knowledge coverage and overload filtering.
-- Proxy selection based on topology, load safety window, and knowledge history.
-- Proxy-side dynamic injection strategy selection.
-- KDN-based text registration and KVCache registration.
-- Deterministic Instance capability identity and compatibility-aware registration.
-- Proxy browser UI for control-plane, topology, Instance liveness, and resource-snapshot observability.
-- Optional Instance resource snapshots through a Rust agent and dashboard.
-- Debugging APIs such as `/debug/status` and `/debug/strategy`.
+- Scheduler-side knowledge-oriented routing;
+- Proxy-side dynamic text/KVCache injection decisions;
+- KDN text and KVCache registration, persistence, and Redis injection;
+- runtime profiles for legacy and v1 LMCache Redis-key layouts;
+- v1 asynchronous KDN key capture with zero-key failure handling;
+- OpenAI-compatible request forwarding;
+- Proxy UI and optional Instance resource dashboard;
+- debugging APIs such as `/debug/status` and `/debug/strategy`.
 
-Suggested minimum validation commands:
-
-```bash
-cd test
-python3 demo_scheduler.py --cacheroute
-curl -s http://127.0.0.1:7001/debug/status
-curl -s http://127.0.0.1:7001/debug/strategy
-```
-
-### Roadmap
-
-- [x] Scheduler-side knowledge-oriented routing
-- [x] Proxy-side dynamic injection strategy selection
-- [x] KDN-based text and KVCache registration
-- [x] OpenAI-compatible request forwarding
-- [x] Compatibility-aware Instance capability identity
-- [x] Proxy browser observability UI
-- [x] Optional Instance resource dashboard
-- [ ] Scheduler browser UI
-- [ ] KDN Server browser UI
-- [ ] More deployment examples
-- [ ] Benchmark scripts and reproducible evaluation
-- [ ] More KV cache placement policies
-- [ ] Paper and citation release
-
----
+The v1 raw Redis dump/restore path has been validated byte-for-byte. End-to-end injected-cache consumption should still be confirmed with LMCache hit-token and remote-read metrics.
 
 ## Documentation
 
 | Document | Description |
 |---|---|
-| [`core/README.md`](core/README.md) | Shared configuration, request model, and multi-machine deployment settings. |
-| [`scheduler/README.md`](scheduler/README.md) | Global routing, KDN / Proxy pool management, and Scheduler control plane. |
-| [`proxy/README.md`](proxy/README.md) | Local Instance pool, capability-aware registration, heartbeat recovery, prepare / ready queues, injection strategy, and Proxy resource APIs. |
-| [`instance/README.md`](instance/README.md) | Instance service and control planes, capability construction, KVCache signaling, resource monitoring, and TTFT predictor. |
-| [`kdn_server/README.md`](kdn_server/README.md) | KDN service, knowledge registration, KVCache build, and injection utilities. |
-| [`client/README.md`](client/README.md) | Client CLI, OpenAI-compatible request examples, and workload tools. |
-| [`env/README.md`](env/README.md) | Docker environment setup and vLLM + LMCache installation. |
-| [`test/README.md`](test/README.md) | Demo scripts, focused capability validation, smoke-test entry points, and local test helpers. |
-| [`doc/blog/README.md`](doc/blog/README.md) | Engineering changelog and milestone notes. |
+| [`docs/quickstart_v1.md`](docs/quickstart_v1.md) | Complete modern v1 path from Redis and LMCache MP through KDN registration and end-to-end cache-hit validation. |
+| [`env/docker/cu130/README.md`](env/docker/cu130/README.md) | CUDA 13 / vLLM 0.25.1 / LMCache 0.5.2 image, container, startup scripts, and parameter overrides. |
+| [`docs/runtime_compatibility_v1.md`](docs/runtime_compatibility_v1.md) | `legacy`, `v1`, and `auto` compatibility design. |
+| [`env/README.md`](env/README.md) | Legacy environment, source build, Docker, Rust, Tkinter, X11, and repair guidance. |
+| [`core/README.md`](core/README.md) | Shared configuration, request model, and multi-machine settings. |
+| [`scheduler/README.md`](scheduler/README.md) | Scheduler routing and control plane. |
+| [`proxy/README.md`](proxy/README.md) | Instance pool, prepare/ready queues, injection strategy, and Proxy APIs. |
+| [`instance/README.md`](instance/README.md) | Instance service, capability identity, execution signaling, and resource monitoring. |
+| [`kdn_server/README.md`](kdn_server/README.md) | Knowledge registration, KV construction, persistence, and injection. |
+| [`client/README.md`](client/README.md) | Client CLI, request examples, and workload tools. |
+| [`test/README.md`](test/README.md) | Demo scripts and smoke tests. |
+
+## License
+
+CacheRoute is licensed under the [Apache License 2.0](LICENSE).
