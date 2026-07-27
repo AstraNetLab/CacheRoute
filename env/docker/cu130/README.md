@@ -7,6 +7,18 @@ modern CacheRoute runtime. It does not replace or modify the existing CUDA 12.8
 The runtime compatibility architecture is described in
 [`docs/runtime_compatibility_v1.md`](../../../docs/runtime_compatibility_v1.md).
 
+## Choose this profile only for the modern stack
+
+| Profile | Serving stack | LMCache startup interface |
+|---|---|---|
+| Legacy | vLLM 0.13.x + LMCache 0.3.11 | YAML through `LMCACHE_CONFIG_FILE` and the historical vLLM offloading flags |
+| v1 | vLLM 0.25.1 + LMCache 0.5.2 | Standalone `lmcache server` plus vLLM `LMCacheMPConnector` |
+
+Do not combine the two interfaces. In v1 mode, unset `LMCACHE_CONFIG_FILE` and
+do not use `remote_url`, `--kv-offloading-backend lmcache`, or the old
+`python3 -m vllm.entrypoints.openai.api_server` example as the primary startup
+path.
+
 ## Target stack
 
 | Component | Version |
@@ -40,12 +52,189 @@ startup only when explicitly testing `auto` or `legacy` behavior.
   ranges.
 - `requirements-dev.txt`: CacheRoute application/development dependencies that
   are compatible with the target stack.
+- `scripts/start_lmcache_mp.sh`: reusable LMCache 0.5.2 MP + RESP L2 startup.
+- `scripts/start_vllm_mp.sh`: reusable vLLM 0.25.1 + `LMCacheMPConnector`
+  startup.
 
 `requirements-dev.txt` intentionally excludes `Booktype==1.5`. That package is
 from the Python 2 era and can overwrite the modern `redis` module with invalid
 Python 2 source files.
 
-## Build
+## Use an existing container without rebuilding
+
+The scripts live in the mounted CacheRoute repository, so an already-created
+container does not need to run through the Dockerfile again.
+
+Update the branch and select the v1 profile:
+
+```bash
+cd /workspace/llm-stack/CacheRoute
+git fetch origin
+git switch v1/runtime-compat
+git pull --ff-only origin v1/runtime-compat
+
+export CACHEROUTE_RUNTIME_PROFILE=v1
+```
+
+Persist the profile for interactive root shells when useful:
+
+```bash
+grep -q 'CACHEROUTE_RUNTIME_PROFILE' /root/.bashrc || \
+  echo 'export CACHEROUTE_RUNTIME_PROFILE=v1' >> /root/.bashrc
+```
+
+Long-running services only see environment variables present when they start.
+Restart LMCache, vLLM, KDN, Proxy, and Instance after switching profiles.
+
+## Runtime startup order
+
+Use separate terminals in this order:
+
+1. Redis RESP L2 backend;
+2. LMCache MP server;
+3. vLLM with `LMCacheMPConnector`;
+4. CacheRoute Scheduler, KDN, Proxy, Instance, and Client.
+
+### 1. Verify Redis
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379 ping
+# Expected: PONG
+```
+
+### 2. Start LMCache MP
+
+Recommended repository script:
+
+```bash
+cd /workspace/llm-stack/CacheRoute
+export CACHEROUTE_RUNTIME_PROFILE=v1
+bash env/docker/cu130/scripts/start_lmcache_mp.sh
+```
+
+Equivalent validated command:
+
+```bash
+unset LMCACHE_CONFIG_FILE
+export CACHEROUTE_RUNTIME_PROFILE=v1
+export LMCACHE_LOG_LEVEL=INFO
+export PYTHONHASHSEED=0
+
+lmcache server \
+  --instance-id cacheroute-lmcache-1 \
+  --host 127.0.0.1 \
+  --port 5555 \
+  --http-host 127.0.0.1 \
+  --http-port 8080 \
+  --l1-size-gb 80 \
+  --chunk-size 256 \
+  --hash-algorithm sha256_cbor \
+  --eviction-policy LRU \
+  --max-workers 8 \
+  --l2-store-policy default \
+  --l2-adapter '{
+    "type": "resp",
+    "host": "127.0.0.1",
+    "port": 6379,
+    "num_workers": 8
+  }'
+```
+
+Confirm that the MP and HTTP ports are listening:
+
+```bash
+ss -lntp | grep -E ':(5555|8080)\b'
+```
+
+### 3. Start vLLM
+
+Start this only after LMCache is listening on port `5555`.
+
+Recommended repository script:
+
+```bash
+cd /workspace/llm-stack/CacheRoute
+export CACHEROUTE_RUNTIME_PROFILE=v1
+bash env/docker/cu130/scripts/start_vllm_mp.sh
+```
+
+Equivalent validated command:
+
+```bash
+export CACHEROUTE_RUNTIME_PROFILE=v1
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export MODEL_DIR=/workspace/llm-stack/models/LLM-Research/Meta-Llama-3-70B-Instruct
+export PYTHONHASHSEED=0
+export OMP_NUM_THREADS=8
+
+unset LMCACHE_CONFIG_FILE
+unset PYTORCH_CUDA_ALLOC_CONF
+
+vllm serve "$MODEL_DIR" \
+  --served-model-name llama3-70b \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --tensor-parallel-size 8 \
+  --gpu-memory-utilization 0.75 \
+  --dtype auto \
+  --max-model-len 4096 \
+  --max-num-seqs 8 \
+  --max-num-batched-tokens 16384 \
+  --disable-hybrid-kv-cache-manager \
+  --no-enable-prefix-caching \
+  --kv-transfer-config '{
+    "kv_connector": "LMCacheMPConnector",
+    "kv_connector_module_path": "lmcache.integration.vllm.lmcache_mp_connector",
+    "kv_role": "kv_both",
+    "kv_connector_extra_config": {
+      "lmcache.mp.host": "tcp://127.0.0.1",
+      "lmcache.mp.port": 5555
+    }
+  }' \
+  --kv-cache-metrics
+```
+
+Wait for the OpenAI-compatible endpoint:
+
+```bash
+curl -sS http://127.0.0.1:8000/v1/models | python3 -m json.tool
+```
+
+The scripts expose the main values as environment variables. For example:
+
+```bash
+MODEL_DIR=/other/model \
+TENSOR_PARALLEL_SIZE=4 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash env/docker/cu130/scripts/start_vllm_mp.sh
+```
+
+```bash
+LMCACHE_L1_SIZE_GB=40 \
+REDIS_HOST=172.18.0.121 \
+bash env/docker/cu130/scripts/start_lmcache_mp.sh
+```
+
+Additional command-line arguments are appended unchanged to each underlying
+command.
+
+## Cache identity requirements
+
+KDN construction and the target Instance must agree on the cache identity. At a
+minimum, keep the following aligned when building and consuming reusable KV:
+
+- model identity/path and served model;
+- tensor-parallel topology and worker layout;
+- KV dtype and model configuration;
+- LMCache chunk size (`256` in this profile);
+- LMCache hash algorithm (`sha256_cbor` in this profile);
+- Redis RESP L2 endpoint and database semantics.
+
+A successful Redis `SET` or byte-for-byte KDN round trip does not by itself
+prove a cache hit. Validate consumption with LMCache hit-token and remote-read
+metrics.
+
+## Build the image for a new container
 
 Use this directory as the Docker build context. This keeps the context small and
 avoids sending models, KDN databases, logs, or other repository data to the
@@ -71,7 +260,7 @@ sudo docker buildx build \
   env/docker/cu130
 ```
 
-## Create the development container
+## Create a new development container
 
 ```bash
 sudo docker run -d \
@@ -127,25 +316,6 @@ PY
 The active interpreter should be `/opt/venv/bin/python3`, CUDA should be
 available when the container is started with `--gpus all`, and the CacheRoute
 profile should be `v1`.
-
-## LMCache MP runtime note
-
-This profile targets LMCache MP mode and vLLM `LMCacheMPConnector`. Do not use
-the legacy `LMCACHE_CONFIG_FILE`, `remote_url`, or
-`--kv-offloading-backend lmcache` startup path as the primary interface.
-
-When using LMCache MP, either unset PyTorch expandable segments:
-
-```bash
-unset PYTORCH_CUDA_ALLOC_CONF
-```
-
-or explicitly enable vLLM's CuMem allocator. The conservative validation path
-uses `unset PYTORCH_CUDA_ALLOC_CONF`.
-
-A minimal LMCache server uses a dedicated MP endpoint and optional RESP L2
-adapter, while vLLM connects through `--kv-transfer-config` with
-`LMCacheMPConnector`.
 
 ## KDN migration status
 
