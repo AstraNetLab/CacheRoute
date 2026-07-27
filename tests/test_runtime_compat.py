@@ -11,8 +11,9 @@ def test_profile_aliases():
     assert normalize_runtime_profile("modern") == "v1"
 
 
-def test_auto_reinterprets_historic_default_match():
+def test_historic_default_match_is_profile_aware():
     assert resolve_scan_match("auto", "vllm@*") == "*"
+    assert resolve_scan_match("v1", "vllm@*") == "*"
     assert resolve_scan_match("legacy", "vllm@*") == "vllm@*"
 
 
