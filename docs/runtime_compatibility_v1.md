@@ -1,138 +1,174 @@
 # CacheRoute v1 runtime compatibility
 
-This branch introduces a compatibility layer for two serving generations:
+CacheRoute supports two serving generations through one compatibility layer:
 
 | Profile | Intended serving stack | Redis KV key handling |
 |---|---|---|
 | `legacy` | vLLM 0.13.x + LMCache 0.3.11 | historical `vllm@*` namespace |
-| `v1` | vLLM 0.25.1 + LMCache 0.5.2 | model-scoped LMCache keys and MP interfaces |
-| `auto` | startup migration discovery only | resolves to one explicit profile and then freezes |
+| `v1` | vLLM 0.25.1 + LMCache 0.5.2 | model-scoped LMCache keys |
+| `auto` | default outside the dedicated v1 image | discovers and validates either layout |
 
 Set the profile with:
 
 ```bash
-export CACHEROUTE_RUNTIME_PROFILE=v1
-# or: legacy / auto
+export CACHEROUTE_RUNTIME_PROFILE=auto
+# or: legacy / v1
 ```
 
-## Development policy
+For the modern stack, source the repository activation script instead of
+repeating environment variables in every terminal:
 
-- New features, state models, service interfaces, observability, and experiments target `v1` only.
-- `legacy` remains runnable but is feature-frozen. It receives compatibility, security, availability, and critical defect fixes only.
-- `auto` is not a third long-running execution mode. Startup must resolve it to `v1` or `legacy`, record the resolved profile, and keep that profile fixed for the process lifetime.
-- A v1 request must never silently fall back to a Legacy write path.
-- Version-specific logic belongs in `core/runtime_compat.py` or focused adapters, not scattered across Scheduler, Proxy, Instance, and KDN.
+```bash
+source env/docker/cu130/scripts/activate_v1.sh
+```
 
-## Startup interfaces are versioned too
+The additive CUDA 13 image under [`env/docker/cu130`](../env/docker/cu130) sets
+`CACHEROUTE_RUNTIME_PROFILE=v1` by default. The legacy image and root
+requirements remain unchanged.
 
-The serving commands are part of the runtime compatibility contract. The two stacks do not share the same primary LMCache/vLLM startup interface.
+## Startup interfaces are versioned
+
+The serving commands are part of the runtime compatibility contract:
 
 | Profile | LMCache process | vLLM connector path |
 |---|---|---|
 | `legacy` | YAML selected by `LMCACHE_CONFIG_FILE` | historical LMCache offloading arguments |
 | `v1` | standalone `lmcache server` with MP L1/L2 | `vllm serve` with `LMCacheMPConnector` in `--kv-transfer-config` |
 
-Do not mix the interfaces. In particular, the v1 path must unset the legacy `LMCACHE_CONFIG_FILE` and must not depend on `remote_url` or `--kv-offloading-backend lmcache`.
+Do not mix the interfaces. The v1 path must not depend on `remote_url`,
+`LMCACHE_CONFIG_FILE`, or `--kv-offloading-backend lmcache`.
 
-The complete validated commands and environment-variable overrides are in [`env/docker/cu130/README.md`](../env/docker/cu130/README.md). Existing containers can use the repository scripts directly:
-
-```bash
-export CACHEROUTE_RUNTIME_PROFILE=v1
-bash env/docker/cu130/scripts/start_lmcache_mp.sh
-# In another terminal after the MP port is listening:
-bash env/docker/cu130/scripts/start_vllm_mp.sh
-```
-
-The v1 startup order is:
+The validated v1 startup order is:
 
 ```text
 LMCache L2 backend(s) -> LMCache MP -> vLLM -> CacheRoute components
 ```
 
-## v1 architecture boundary
+Complete commands and overrides are documented in
+[`env/docker/cu130/README.md`](../env/docker/cu130/README.md). Existing
+compatible containers can use the merged `main` branch without rebuilding.
 
-The v1 data hot path is:
+## KDN KV construction
 
-```text
-vLLM <-> LMCacheMPConnector <-> LMCache MP L1/L2
-```
+Manual `--match` is no longer required in the normal CLI workflow. `auto` and
+`v1` treat the historical implicit `vllm@*` value as a compatibility sentinel
+and scan for supported LMCache key layouts. An explicit `--match` remains
+authoritative for debugging or custom backends.
 
-KDN is not another default KV data server in this path. KDN evolves as:
+LMCache remote writes are asynchronous. KDN uses:
 
-```text
-Knowledge Control Plane
-+ CacheRoute Cache Service Facade
-+ LMCache Orchestration Gateway
-```
+- polling interval: `0.2s` by default;
+- maximum first-key timeout: `30s` by default;
+- quiet period after the last key-set change: `1.5s` by default.
 
-The Gateway uses LMCache public MP HTTP, Coordinator, SDK, Metrics, and Event interfaces for observation and control. KDN keeps CacheRoute-specific knowledge, Artifact, policy, idempotency, audit, fallback, and normalized observation semantics.
+The 30-second value is an upper bound, not a fixed delay. A zero-key build fails,
+removes its partial output, and is never marked `kv_ready`.
 
 The detailed architecture amendment is documented in:
 
-- `doc/CacheRoute-v0.2.0-v1-lmcache-alignment.md`
-- `doc/CacheRoute-v0.2.0-v1-lmcache-alignment-CN.md`
+### Legacy profile
 
-## KDN KV construction and Legacy compatibility
-
-Current Redis scan/dump/restore support remains available for Legacy compatibility and migration diagnostics. Manual `--match` is no longer required in the normal CLI workflow. `auto` and `v1` may recognize the historical implicit `vllm@*` argument as a compatibility sentinel during migration tooling.
+The stable legacy path remains:
 
 This does not make raw Redis capture the long-term v1 data architecture. New v1 features must prefer LMCache token lookup, object/tier observations, prefetch, pin, delete, Coordinator, metrics, and events through the LMCache Gateway.
 
-An explicit `--match` remains authoritative for debugging or custom migration tools. Strict historical behavior requires:
-
-```bash
-export CACHEROUTE_RUNTIME_PROFILE=legacy
-```
-
-LMCache remote writes are asynchronous. Existing differential-capture tooling therefore retains polling, first-key timeout, and quiet-period stabilization. A capture that produces zero keys fails and removes partial output rather than marking `kv_ready`.
+Use `CACHEROUTE_RUNTIME_PROFILE=legacy` for strict historical Redis-key
+behavior.
 
 ## Deployment profiles
 
-### Legacy profile
+The modern image is defined in [`env/docker/cu130`](../env/docker/cu130):
 
 ```text
 CUDA 12.8 / PyTorch 2.9.x / vLLM 0.13.x / LMCache 0.3.11
 ```
 
-### v1 profile
+It uses `/opt/venv`, isolates the serving stack from Ubuntu system packages,
+installs FFmpeg for TorchCodec, and preserves Rust/Cargo and Tkinter for
+CacheRoute auxiliary components.
 
-```text
-CUDA 13.0 / Python 3.12 / PyTorch 2.11.0+cu130
-vLLM 0.25.1 / LMCache 0.5.2
-```
-
-The serving stack is owned by its Docker image. CacheRoute application dependencies must not upgrade CUDA-sensitive packages.
+The v1 dependency files are additive. They do not modify the legacy Dockerfile,
+root `requirements.txt`, `pyproject.toml`, or legacy runtime behavior.
 
 ## Cache identity compatibility
 
-Runtime-profile selection does not make incompatible KV blocks reusable. KDN construction and the target Instance must still agree on:
+Runtime-profile selection does not make incompatible KV blocks reusable. KDN
+construction and the consuming Instance must agree on:
 
-- model identity/path and model revision;
-- tokenizer identity and configuration;
+- model identity/path and served model;
+- tokenizer, chat template, and exact token prefix;
 - tensor-parallel topology and worker layout;
-- KV dtype and layout;
-- LMCache chunk size and hash profile;
-- serde profile;
-- request tags or other key-affecting configuration;
-- LMCache Endpoint, Adapter, and Tier semantics.
+- model/KV dtype;
+- LMCache chunk size;
+- LMCache hash algorithm;
+- connector generation and key serialization;
+- Redis endpoint/database semantics.
 
-The validated v1 baseline currently uses chunk size `256` and hash algorithm `sha256_cbor` where the selected LMCache configuration exposes those values.
+The validated v1 baseline uses TP=8, chunk size `256`, and hash algorithm
+`sha256_cbor`.
 
-## Validation boundary
+## Completed validation
 
-The modern image has been validated for dependency resolution, imports, `pip check`, GPU runtime availability, and startup of Scheduler/KDN/Proxy/Instance. Redis dump/restore has also been verified for the observed LMCache 0.5.2 layout.
+The environment migration has been validated beyond byte-level storage:
 
-End-to-end v1 acceptance must additionally use LMCache-native observations, including actual hit-token or remote-read metrics, rather than latency inference or Redis-key existence alone.
+- modern LMCache keys were captured without manual `--match`;
+- 96 physical key/value blocks were persisted locally;
+- Redis restore reproduced 96 keys and 1,006,632,960 payload bytes with no
+  missing, extra, size-mismatched, or sampled SHA256-mismatched entries;
+- after LMCache/vLLM restart, LMCache found and loaded all 96 blocks from RESP
+  L2;
+- LMCache reported 3072 requested and 3072 hit tokens;
+- vLLM reported 3072 externally cached prompt tokens;
+- LMCache reported zero L2 prefetch failures.
 
-## Follow-up rules
+The relationship between physical keys and cached tokens is:
 
-Subsequent v1 changes should remain behind the compatibility and Gateway layers where vLLM/LMCache interfaces differ, including:
+```text
+96 Redis keys / 8 TP ranks = 12 logical chunks
+12 chunks * 256 tokens     = 3072 cached tokens
+```
 
-- Instance-side LMCache observability and metrics;
-- token/artifact lookup;
-- cache-object, tier, and adapter observations;
-- warm prefetch, pin, clear, and task status;
-- dual-profile integration tests;
-- startup/configuration validation for each resolved runtime profile.
+Detailed evidence and the reproducible staged workflow are in
+[`v1_migration_closeout.md`](v1_migration_closeout.md).
 
-Avoid scattering version checks through the codebase. Add profile-specific behavior to the compatibility layer or focused adapters.
+## Metrics contract
+
+Use the correct endpoint for each subsystem:
+
+```text
+vLLM metrics:       http://127.0.0.1:8000/metrics
+LMCache MP metrics: http://127.0.0.1:8080/metrics
+```
+
+Important vLLM counters include:
+
+```text
+vllm:external_prefix_cache_queries_total
+vllm:external_prefix_cache_hits_total
+vllm:prompt_tokens_cached_total
+```
+
+Important LMCache MP counters include:
+
+```text
+lmcache_mp_lookup_requested_tokens_total
+lmcache_mp_lookup_hit_tokens_total
+lmcache_mp_l2_prefetch_hit_chunks_total
+lmcache_mp_l2_prefetch_load_completed_chunks_total
+lmcache_mp_l2_prefetch_failure_chunks_total
+```
+
+LMCache lookup metrics may not exist before the first request. Direct KDN Redis
+injection bypasses LMCache store accounting, so `lmcache_mp_l2_usage_bytes` is
+not a reliable indicator for injected data.
+
+## Future compatibility work
+
+Subsequent changes should continue to isolate version-specific behavior behind
+`core/runtime_compat.py` or focused adapters rather than scattering version
+checks through Scheduler, Proxy, Instance, and KDN.
+
+Future feature development may extend Instance observability, request metadata,
+cache placement, predictors, and UI behavior while using the validated v1
+runtime as the modern baseline. Reopen environment migration only when the
+serving-stack version or cache-identity contract changes.
