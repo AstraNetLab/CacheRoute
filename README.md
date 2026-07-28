@@ -33,7 +33,7 @@
   <a href="#key-features">Features</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#frontend-urls">Frontend URLs</a> •
-  <a href="docs/quickstart_v1.md">v1 Setup</a> •
+  <a href="doc/quickstart_v1.md">v1 Setup</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#api-usage">API</a> •
   <a href="#documentation">Docs</a>
