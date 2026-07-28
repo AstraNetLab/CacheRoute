@@ -4,18 +4,21 @@ This directory provides the additive v1 development-image profile for the
 modern CacheRoute runtime. It does not replace or modify the existing CUDA 12.8
 / vLLM 0.13.x / LMCache 0.3.11 environment.
 
-The runtime compatibility architecture is described in
-[`docs/runtime_compatibility_v1.md`](../../../docs/runtime_compatibility_v1.md).
+Start with the repository-level guides:
+
+- complete runtime path: [`docs/quickstart_v1.md`](../../../docs/quickstart_v1.md);
+- compatibility design: [`docs/runtime_compatibility_v1.md`](../../../docs/runtime_compatibility_v1.md);
+- completed migration evidence: [`docs/v1_migration_closeout.md`](../../../docs/v1_migration_closeout.md).
 
 ## Choose this profile only for the modern stack
 
 | Profile | Serving stack | LMCache startup interface |
 |---|---|---|
-| Legacy | vLLM 0.13.x + LMCache 0.3.11 | YAML through `LMCACHE_CONFIG_FILE` and the historical vLLM offloading flags |
-| v1 | vLLM 0.25.1 + LMCache 0.5.2 | Standalone `lmcache server` plus vLLM `LMCacheMPConnector` |
+| Legacy | vLLM 0.13.x + LMCache 0.3.11 | YAML through `LMCACHE_CONFIG_FILE` and historical vLLM offloading flags |
+| v1 | vLLM 0.25.1 + LMCache 0.5.2 | standalone `lmcache server` plus vLLM `LMCacheMPConnector` |
 
 Do not combine the two interfaces. In v1 mode, unset `LMCACHE_CONFIG_FILE` and
-do not use `remote_url`, `--kv-offloading-backend lmcache`, or the old
+do not use `remote_url`, `--kv-offloading-backend lmcache`, or the historical
 `python3 -m vllm.entrypoints.openai.api_server` example as the primary startup
 path.
 
@@ -32,59 +35,95 @@ path.
 | LMCache | `0.5.2` |
 
 The image uses `/opt/venv` to isolate serving dependencies from Ubuntu system
-Python packages. FFmpeg is installed because current TorchCodec wheels require
-its shared libraries. Rust/Cargo and Tkinter remain available for the existing
-CacheRoute resource-agent and desktop-dashboard workflows.
+Python packages. FFmpeg is installed for TorchCodec. Rust/Cargo and Tkinter
+remain available for the resource-agent and dashboard workflows.
 
-The image sets:
-
-```bash
-CACHEROUTE_RUNTIME_PROFILE=v1
-```
-
-This selects the modern compatibility path by default. Override it at container
-startup only when explicitly testing `auto` or `legacy` behavior.
+The image sets `CACHEROUTE_RUNTIME_PROFILE=v1` by default.
 
 ## Files
 
-- `Dockerfile`: complete CUDA 13 development image.
+- `Dockerfile`: complete CUDA 13 development image;
 - `constraints.txt`: exact serving-stack versions and shared compatibility
-  ranges.
-- `requirements-dev.txt`: CacheRoute application/development dependencies that
-  are compatible with the target stack.
-- `scripts/start_lmcache_mp.sh`: reusable LMCache 0.5.2 MP + RESP L2 startup.
-- `scripts/start_vllm_mp.sh`: reusable vLLM 0.25.1 + `LMCacheMPConnector`
-  startup.
+  ranges;
+- `requirements-dev.txt`: CacheRoute dependencies compatible with the target
+  serving stack;
+- `scripts/activate_v1.sh`: shared shell activation for every service terminal;
+- `scripts/check_v1_environment.py`: non-destructive version, CUDA, model,
+  Redis, and endpoint validation;
+- `scripts/start_lmcache_mp.sh`: LMCache 0.5.2 MP + RESP L2 startup;
+- `scripts/start_vllm_mp.sh`: vLLM 0.25.1 + `LMCacheMPConnector` startup.
 
-`requirements-dev.txt` intentionally excludes `Booktype==1.5`. That package is
-from the Python 2 era and can overwrite the modern `redis` module with invalid
-Python 2 source files.
+`requirements-dev.txt` intentionally excludes `Booktype==1.5`. That Python-2-era
+package can overwrite the modern `redis` module with invalid source files.
 
-## Use an existing container without rebuilding
+## Existing compatible container: no rebuild required
 
-The scripts live in the mounted CacheRoute repository, so an already-created
-container does not need to run through the Dockerfile again.
-
-Update the branch and select the v1 profile:
+The runtime scripts live in the mounted repository, so an already-created
+container can use the merged `main` branch directly:
 
 ```bash
 cd /workspace/llm-stack/CacheRoute
-git fetch origin
-git switch v1/runtime-compat
-git pull --ff-only origin v1/runtime-compat
+git switch main
+git pull --ff-only origin main
 
-export CACHEROUTE_RUNTIME_PROFILE=v1
+source env/docker/cu130/scripts/activate_v1.sh
 ```
 
-Persist the profile for interactive root shells when useful:
+Do not switch back to the historical `v1/runtime-compat` development branch;
+that work has already been merged into `main`.
+
+The activation script:
+
+- sets `CACHEROUTE_RUNTIME_PROFILE=v1`;
+- adds the repository root to `PYTHONPATH` without duplicating it;
+- sets stable `PYTHONHASHSEED` and `OMP_NUM_THREADS` defaults;
+- clears legacy `LMCACHE_CONFIG_FILE`;
+- clears `PYTORCH_CUDA_ALLOC_CONF` for the validated MP path.
+
+It must be sourced in every new terminal:
 
 ```bash
-grep -q 'CACHEROUTE_RUNTIME_PROFILE' /root/.bashrc || \
-  echo 'export CACHEROUTE_RUNTIME_PROFILE=v1' >> /root/.bashrc
+source env/docker/cu130/scripts/activate_v1.sh
 ```
 
-Long-running services only see environment variables present when they start.
-Restart LMCache, vLLM, KDN, Proxy, and Instance after switching profiles.
+Long-running services only see variables present when they start. Restart
+LMCache, vLLM, KDN, Proxy, and Instance after changing profiles.
+
+## Non-destructive environment validation
+
+Before starting services:
+
+```bash
+python3 env/docker/cu130/scripts/check_v1_environment.py
+```
+
+This checks:
+
+- repository location and v1 profile;
+- Python, PyTorch, vLLM, and LMCache versions;
+- PyTorch CUDA runtime, CUDA availability, and GPU count;
+- model directory;
+- required repository scripts;
+- Redis connectivity when available;
+- vLLM and LMCache endpoints as warnings when they are not running.
+
+After Redis, LMCache, and vLLM are started, require all endpoints:
+
+```bash
+python3 env/docker/cu130/scripts/check_v1_environment.py --require-running
+```
+
+Useful overrides include:
+
+```bash
+python3 env/docker/cu130/scripts/check_v1_environment.py \
+  --model-dir /other/model \
+  --expected-gpus 4 \
+  --redis-host 172.18.0.121
+```
+
+Use `--allow-no-gpu` only for image/CI inspection where GPU access is not
+expected.
 
 ## Runtime startup order
 
@@ -97,18 +136,22 @@ Use separate terminals in this order:
 
 ### 1. Verify Redis
 
+`redis-cli` is optional. The Python client is sufficient:
+
 ```bash
-redis-cli -h 127.0.0.1 -p 6379 ping
-# Expected: PONG
+python3 - <<'PY'
+import redis
+r = redis.Redis(host="127.0.0.1", port=6379, db=0)
+print("PING:", r.ping())
+print("DBSIZE:", r.dbsize())
+PY
 ```
 
 ### 2. Start LMCache MP
 
-Recommended repository script:
-
 ```bash
 cd /workspace/llm-stack/CacheRoute
-export CACHEROUTE_RUNTIME_PROFILE=v1
+source env/docker/cu130/scripts/activate_v1.sh
 bash env/docker/cu130/scripts/start_lmcache_mp.sh
 ```
 
@@ -140,7 +183,7 @@ lmcache server \
   }'
 ```
 
-Confirm that the MP and HTTP ports are listening:
+Confirm the MP and HTTP ports:
 
 ```bash
 ss -lntp | grep -E ':(5555|8080)\b'
@@ -148,13 +191,13 @@ ss -lntp | grep -E ':(5555|8080)\b'
 
 ### 3. Start vLLM
 
-Start this only after LMCache is listening on port `5555`.
-
-Recommended repository script:
+Start vLLM only after LMCache is listening on port `5555`:
 
 ```bash
 cd /workspace/llm-stack/CacheRoute
-export CACHEROUTE_RUNTIME_PROFILE=v1
+source env/docker/cu130/scripts/activate_v1.sh
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export MODEL_DIR=/workspace/llm-stack/models/LLM-Research/Meta-Llama-3-70B-Instruct
 bash env/docker/cu130/scripts/start_vllm_mp.sh
 ```
 
@@ -200,7 +243,9 @@ Wait for the OpenAI-compatible endpoint:
 curl -sS http://127.0.0.1:8000/v1/models | python3 -m json.tool
 ```
 
-The scripts expose the main values as environment variables. For example:
+### Parameter overrides
+
+The repository scripts expose their main settings as environment variables:
 
 ```bash
 MODEL_DIR=/other/model \
@@ -215,30 +260,42 @@ REDIS_HOST=172.18.0.121 \
 bash env/docker/cu130/scripts/start_lmcache_mp.sh
 ```
 
-Additional command-line arguments are appended unchanged to each underlying
-command.
+Additional command-line arguments are appended unchanged to the underlying
+commands.
+
+## Metrics endpoints
+
+The endpoints and namespaces are different:
+
+| Endpoint | Metrics |
+|---|---|
+| `http://127.0.0.1:8000/metrics` | vLLM, including `vllm:external_prefix_cache_queries_total`, `vllm:external_prefix_cache_hits_total`, and `vllm:prompt_tokens_cached_total` |
+| `http://127.0.0.1:8080/metrics` | LMCache MP, including `lmcache_mp_lookup_*`, `lmcache_mp_l1_*`, and `lmcache_mp_l2_*` |
+
+LMCache lookup metrics may not exist before the first request. A direct KDN
+Redis restore bypasses LMCache store accounting, so `lmcache_mp_l2_usage_bytes`
+is not a reliable test for injected data. Use lookup/hit/load metrics.
 
 ## Cache identity requirements
 
-KDN construction and the target Instance must agree on the cache identity. At a
-minimum, keep the following aligned when building and consuming reusable KV:
+KDN construction and the consuming Instance must agree on:
 
 - model identity/path and served model;
+- tokenizer, chat template, and exact token prefix;
 - tensor-parallel topology and worker layout;
 - KV dtype and model configuration;
-- LMCache chunk size (`256` in this profile);
-- LMCache hash algorithm (`sha256_cbor` in this profile);
-- Redis RESP L2 endpoint and database semantics.
+- LMCache chunk size (`256` here);
+- LMCache hash algorithm (`sha256_cbor` here);
+- connector/key generation;
+- Redis database semantics.
 
-A successful Redis `SET` or byte-for-byte KDN round trip does not by itself
-prove a cache hit. Validate consumption with LMCache hit-token and remote-read
-metrics.
+A successful Redis `SET` or byte-for-byte KDN round trip does not alone prove a
+cache hit. The final acceptance test is LMCache/vLLM consumption metrics.
 
 ## Build the image for a new container
 
-Use this directory as the Docker build context. This keeps the context small and
-avoids sending models, KDN databases, logs, or other repository data to the
-Docker daemon.
+Use this directory as the Docker build context. It avoids sending models, KDN
+databases, logs, or other repository data to the Docker daemon.
 
 ```bash
 cd /llm-stack/CacheRoute
@@ -294,60 +351,57 @@ Install the mounted CacheRoute source without re-resolving the serving stack:
 cd /workspace/llm-stack/CacheRoute
 python3 -m pip install -e . --no-deps
 python3 -m pip check
+source env/docker/cu130/scripts/activate_v1.sh
+python3 env/docker/cu130/scripts/check_v1_environment.py
 ```
 
-## Runtime sanity check
+## Completed KDN migration validation
+
+The modern runtime was validated end to end with the dataset document whose KID
+is `668f6bd1ad2419d9dfbcda0b689311b8b6696c7ed772001bea7bd12573137b4a`:
+
+```text
+KDN keys persisted locally:          96
+Redis keys restored:                 96
+Payload bytes restored:              1,006,632,960
+Missing/extra/mismatched entries:    0
+LMCache L2 lookup hits:              96/96 chunks
+LMCache lookup tokens:               3072/3072
+LMCache token hit rate:              100%
+vLLM external cached tokens:         3072
+LMCache L2 prefetch failures:        0
+```
+
+Reproduce the staged validation with:
 
 ```bash
-python3 - <<'PY'
-import os
-import sys
-import torch
+DOC=/workspace/llm-stack/CacheRoute/data/CacheRoute_dataset/knowledge_document/668f6bd1ad2419d9dfbcda0b689311b8b6696c7ed772001bea7bd12573137b4a.txt
 
-print("python:", sys.executable)
-print("torch:", torch.__version__)
-print("torch CUDA runtime:", torch.version.cuda)
-print("CUDA available:", torch.cuda.is_available())
-print("GPU count:", torch.cuda.device_count())
-print("CacheRoute profile:", os.getenv("CACHEROUTE_RUNTIME_PROFILE"))
-PY
+python3 scripts/validate_v1_kdn_roundtrip.py build --document "$DOC"
+python3 scripts/validate_v1_kdn_roundtrip.py inspect --document "$DOC"
 ```
 
-The active interpreter should be `/opt/venv/bin/python3`, CUDA should be
-available when the container is started with `--gpus all`, and the CacheRoute
-profile should be `v1`.
+For a destructive restore against an isolated Redis DB:
 
-## KDN migration status
+```bash
+python3 scripts/validate_v1_kdn_roundtrip.py inject \
+  --document "$DOC" \
+  --flush-redis \
+  --yes
+```
 
-The v1 branch contains the first runtime compatibility slice for KDN KV
-construction:
+Restart LMCache and vLLM after restore, then prove consumption:
 
-- modern model-scoped LMCache Redis keys are discovered automatically;
-- legacy `vllm@*` keys remain supported;
-- asynchronous remote writes use a first-key timeout and quiet-period finish;
-- zero-key builds fail and are never marked `kv_ready`;
-- raw key/value dump and restore were verified byte-for-byte in the migration
-  environment.
+```bash
+python3 scripts/validate_v1_kdn_roundtrip.py consume --document "$DOC"
+```
 
-This does not yet prove an end-to-end LMCache MP cache hit after injection.
-Validation must compare LMCache hit-token and remote-read metrics before the PR
-is considered complete.
+The injector implementation is `kdn_server/kv_injector.py`. Normal v1
+registration does not require `--match` and should not use `--flushdb`.
 
-## Validation status and scope
+## Compatibility and scope
 
-The image build from the environment work was validated with:
-
-- Python `3.12.13`;
-- PyTorch `2.11.0+cu130`;
-- vLLM `0.25.1`;
-- LMCache `0.5.2`;
-- Transformers `5.12.1`;
-- Redis Python client `8.0.1`;
-- successful `pip check`;
-- successful imports of Torch, TorchCodec, vLLM, LMCache, and Redis;
-- successful startup of the existing CacheRoute Scheduler, KDN, Proxy, and
-  Instance workflow after installing FFmpeg.
-
-The modern environment profile and the runtime compatibility work are additive.
-The legacy image, root `requirements.txt`, Scheduler routing, and stable legacy
-runtime remain unchanged.
+The modern environment profile is additive. The legacy Dockerfile, root
+`requirements.txt`, Scheduler routing, and stable legacy runtime remain
+unchanged. Subsequent Scheduler, Proxy, Instance, predictor, and UI development
+can use this v1 stack as the modern baseline.
