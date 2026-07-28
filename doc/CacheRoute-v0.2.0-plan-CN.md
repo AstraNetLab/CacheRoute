@@ -7,6 +7,8 @@
 > 核心底座：vLLM + LMCache  
 > 核心定位：KDN 独立知识型远端缓存服务器、LMCache 演进兼容层、Proxy 多资源执行编排、知识型缓存策略与多知识块复用
 
+> **v1/Legacy 与 LMCache 原生能力修订：**迁移完成后，KDN 的 v1 定位已调整为 `Knowledge Control Plane + CacheRoute Cache Service Facade + LMCache Orchestration Gateway`。vLLM 与 LMCache MP 保持直接数据路径，新功能只进入 v1；Legacy 保持可用但功能冻结。详细且优先解释见 `doc/CacheRoute-v0.2.0-v1-lmcache-alignment-CN.md`。
+
 ## 0. 本轮规划结论
 
 本规划确立以下长期边界：
@@ -758,74 +760,80 @@ FUSION
 ## v0.1.15：知识注入与计算队列模型
 
 - CachePlan 编译为 ExecutionGraph；
-- 独立 CONTROL、KDN_LOOKUP、KDN_SERVE、NET_KV、CACHE_LOAD、PREFILL、DECODE 和 FUSION 队列；
-- 纯文本和本地命中使用 Compute Fast Path；
-- 依赖、引用、取消和事件唤醒统一管理；
-- 记录每个节点的等待和执行原因。
+- 节点包括 Control、KDN Lookup、KDN Serve、Network KV、Cache Load、Prefill、Decode 和 Fusion；
+- 定义依赖、Share Key、优先级、Deadline、成本和回退；
+- 文本任务走 Compute Fast Path；
+- Scheduler 不参与细粒度节点执行。
 
 ## v0.1.16：网络 KV 与纯计算并行
 
-- KDN Lookup/Load 与其他请求 Prefill/Decode 并行；
-- 每 KDN Endpoint、Provider、链路和 Instance 建立独立时间线；
-- 多知识块可在不同 Provider/Endpoint 并行；
-- 测量 Overlap Ratio、GPU Cache-wait Idle、Network Idle 和 Pipeline Makespan；
-- 对比串行、text_bypass 和完整并行。
+- 为 Control、KDN、Network、Cache Load、Compute 建立独立并发域；
+- 网络 KV 传输与其他请求 Prefill/Decode 重叠；
+- Work-conserving，不因等待 KV 让可计算请求空闲；
+- 增加网络—计算 Gantt 和 Overlap Ratio；
+- 支持取消、超时和回退。
 
 ## v0.1.17：队列普适性和稳定性
 
-- 分层准入和背压；
-- 优先级、Aging、Deadline Hint 和防饥饿；
-- 大任务分片/让行；
-- 自适应 KDN/Network/Load 并发；
-- KDN、Provider、LMCache 和 Instance 故障回退；
-- 策略插件不绕过状态机；
-- 不引入 Pareto 或学习型全局调度。
+- 准入控制和背压；
+- 公平、Aging 和 Starvation Guard；
+- Adaptive Concurrency；
+- Single-flight 生命周期；
+- 多模型、多 Instance、多 KDN、多带宽和不同混合比例测试；
+- 策略插件只能控制优先级、配额、绕行和并发，不能破坏状态机。
 
 ## v0.1.18：KDN 知识型缓存策略
 
-KDN 策略输出：
+### 输入
+
+- 知识访问频率和共现；
+- LMCache Lookup/Event；
+- Provider 容量、命中、健康和队列；
+- Proxy 等待和 GPU Idle；
+- 网络成本和计算节省；
+- 构建、刷新和迁移成本；
+- Artifact 兼容性和版本；
+- Online 与 Background 负载。
+
+### 输出
 
 ```text
 BUILD
+PUBLISH
 PREFETCH
 PIN
 UNPIN
-PLACE
-MOVE_INTENT
+MOVE
 CLEAR
 REFRESH
-REBUILD
+REPLICATE_INTENT
 ```
 
-物理执行由当前 Provider/LMCache Profile 完成。
+### 要求
 
-研究：
-
-- 知识价值；
-- 多 Provider 容量和成本；
-- Pin、预取和清理；
-- 热点放置；
-- 维护预算；
-- 后台任务对在线请求的干扰；
-- Trace Replay。
+- 每个决策有 Reason Code；
+- 防止 Pollution 和 Oscillation；
+- Online SLO 优先；
+- Shadow、Replay 和可控启用；
+- 不直接操作 Provider 私有 Key；
+- 使用 LMCache 暴露的物理操作。
 
 ## v0.1.19：多知识块非前缀融合
 
-- 有序 Knowledge Block 和 Prompt Layout；
-- 多 Artifact 和 KDN Candidate 查询；
-- 完全、部分、非前缀、重叠和 Miss 分类；
-- Coverage Map；
-- FusionPlan 编译到 ExecutionGraph；
-- 多块并行 KDN Lookup/Load；
-- LMCache 非前缀复用或 CacheBlend；
-- 选择性重计算和质量保护；
-- 文本稳定回退。
+- 一个请求解析多个知识块；
+- Artifact Resolve 与 Lookup 并行；
+- Full/Partial/Overlap/Reorder 统一规划；
+- 使用 LMCache Non-prefix、CacheBlend 或等价能力；
+- 选择性重计算必要 Token；
+- 多块 Preparation 接入 ExecutionGraph；
+- 运行时不支持、质量失败或超时回退文本；
+- 比较串行加载、并行加载、纯文本和单前缀复用。
 
 ## v0.2.0：集成、稳定与研究基线
 
-### 发布标准
+v0.2.0 完成时应满足：
 
-- KDN 是独立服务器，并提供稳定双接口；
+- KDN 可独立部署和扩展；
 - KDN 不绑定 Redis 或单一 LMCache 模式；
 - 至少验证两个 Provider；
 - 至少验证 baseline 和 latest 两个 LMCache Profile；

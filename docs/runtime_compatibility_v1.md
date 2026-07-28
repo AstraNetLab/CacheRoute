@@ -33,7 +33,7 @@ The serving commands are part of the runtime compatibility contract:
 | Profile | LMCache process | vLLM connector path |
 |---|---|---|
 | `legacy` | YAML selected by `LMCACHE_CONFIG_FILE` | historical LMCache offloading arguments |
-| `v1` | standalone `lmcache server` with RESP L2 | `vllm serve` with `LMCacheMPConnector` in `--kv-transfer-config` |
+| `v1` | standalone `lmcache server` with MP L1/L2 | `vllm serve` with `LMCacheMPConnector` in `--kv-transfer-config` |
 
 Do not mix the interfaces. The v1 path must not depend on `remote_url`,
 `LMCACHE_CONFIG_FILE`, or `--kv-offloading-backend lmcache`.
@@ -41,7 +41,7 @@ Do not mix the interfaces. The v1 path must not depend on `remote_url`,
 The validated v1 startup order is:
 
 ```text
-Redis RESP L2 -> LMCache MP :5555 -> vLLM :8000 -> CacheRoute components
+LMCache L2 backend(s) -> LMCache MP -> vLLM -> CacheRoute components
 ```
 
 Complete commands and overrides are documented in
@@ -64,26 +64,23 @@ LMCache remote writes are asynchronous. KDN uses:
 The 30-second value is an upper bound, not a fixed delay. A zero-key build fails,
 removes its partial output, and is never marked `kv_ready`.
 
-## Deployment profiles
+The detailed architecture amendment is documented in:
 
 ### Legacy profile
 
 The stable legacy path remains:
 
-```text
-CUDA 12.8 / PyTorch 2.9.x / vLLM 0.13.x / LMCache 0.3.11
-```
+This does not make raw Redis capture the long-term v1 data architecture. New v1 features must prefer LMCache token lookup, object/tier observations, prefetch, pin, delete, Coordinator, metrics, and events through the LMCache Gateway.
 
 Use `CACHEROUTE_RUNTIME_PROFILE=legacy` for strict historical Redis-key
 behavior.
 
-### v1 profile
+## Deployment profiles
 
 The modern image is defined in [`env/docker/cu130`](../env/docker/cu130):
 
 ```text
-CUDA 13.0 / Python 3.12 / PyTorch 2.11.0+cu130
-vLLM 0.25.1 / LMCache 0.5.2
+CUDA 12.8 / PyTorch 2.9.x / vLLM 0.13.x / LMCache 0.3.11
 ```
 
 It uses `/opt/venv`, isolates the serving stack from Ubuntu system packages,
