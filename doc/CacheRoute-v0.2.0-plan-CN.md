@@ -6,275 +6,285 @@
 > 兼容路径：`legacy` 保持可用但功能冻结  
 > 目标版本：v0.2.0  
 > 核心底座：vLLM + LMCache  
-> 核心定位：KDN 知识控制平面、CacheRoute 缓存服务门面、LMCache 编排网关、Proxy 多资源执行编排、知识型缓存策略与多知识块复用
+> 长期定位：构建面向大模型推理的 KVCache Distribution Network（KDN）
 
-## 0. 本轮规划结论
+## 0. 规划结论
 
-本规划确立以下长期边界：
+CacheRoute 后续不把 KDN 仅定义为一个知识控制服务，也不把它定义为另一套单机 KVCache 引擎。
 
-> **KDN Server = Knowledge Control Plane + CacheRoute Cache Service Facade + LMCache Orchestration Gateway。**
+> **KDN = KVCache Distribution Network：维护、定位、分发和治理 KVCache 资源的网络基础设施。**
 
-v1 的高频 KV 数据路径保持为：
+KDN 的目标类似 CDN，但服务对象不是静态文件或视频，而是具有模型、Tokenizer、Adapter、KV Layout、并行配置和生命周期约束的 KVCache 资源。
+
+KDN 向上为 Scheduler、Proxy、Instance 和管理工具提供统一的 KVCache 基础设施能力：
+
+- 全局命名和目录；
+- 兼容性判断；
+- 节点、区域和拓扑管理；
+- CacheArtifact 定位；
+- Replica 放置、复制、迁移、预热、Pin、清理和失效；
+- 网络源选择、传输计划、带宽和队列治理；
+- 多节点、多区域和多层级 KVCache 分发；
+- 运行状态、命中价值、成本和故障观测；
+- v1/Legacy 和 LMCache 版本兼容。
+
+KDN 向下通过 LMCache 公开接口、Adapter、Plugin、Coordinator、SDK、Metrics 和 Events 操作各节点的 KVCache Runtime。KDN 不重新实现 LMCache 的节点内 Token Database、Chunk/Hash/Key、KV Layout、Serde、L1/L2 StorageManager、锁或设备内存管理。
+
+### 0.1 v1 数据路径
+
+单个 Instance 内部的高频本地读写仍保持：
 
 ```text
-vLLM == LMCacheMPConnector == LMCache MP == L1 / L2 adapters
+vLLM == LMCacheMPConnector == local LMCache MP == local L1 / L2
 ```
 
-KDN 是独立部署、独立扩展并可被 Scheduler 管理的 CacheRoute 服务，但它不再作为 v1 默认的物理 KV 数据服务器，也不重复实现 LMCache 已有的 Token Database、Chunk/Hash/Key、L1/L2 StorageManager、Adapter 级联、Store/Prefetch Controller、Serde、锁、容量和淘汰。
+跨节点或跨区域的 KVCache 分发由 KDN Distribution Plane 组织：
 
-KDN 的差异化价值位于：
+```text
+source LMCache Runtime
+        == KDN Transfer Session / transport
+        == target LMCache Runtime
+```
 
-1. KnowledgeObject、CacheArtifact 和知识版本语义；
-2. 模型、Tokenizer、Adapter、KV Layout 和 LMCache Profile 兼容性；
-3. Lookup、Prefetch、Pin、Clear、Rebuild 等知识级操作意图；
-4. 多 LMCache Endpoint 的选择、幂等任务、审计、授权和回退；
-5. LMCache 观测的归一化、TTL、置信度和请求价值反馈；
-6. Proxy CachePlan、ExecutionGraph、队列以及网络—计算并行。
+KDN Control Plane 不逐 Chunk 执行策略计算，但 KDN Distribution Plane 可以承载、代理或委托实际网络传输。
 
-### 0.1 Runtime Profile 政策
+### 0.2 Runtime Profile 政策
 
-- `v1`：所有新功能的唯一开发路线；使用 LMCache MP 和公开控制/观测接口。
+- `v1`：所有新功能的唯一开发路线。
 - `legacy`：保留旧启动、Redis scan/dump/restore/inject、旧请求和实验流程；功能冻结。
-- `auto`：仅用于启动期迁移发现；必须解析并冻结为一个明确 Profile。
+- `auto`：仅用于启动期迁移发现，必须解析并冻结为一个明确 Profile。
 - v1 请求不得静默进入 Legacy 写路径。
-- Legacy 数据进入 v1 必须显式迁移或重建。
-
-### 0.2 当前 Issue 状态
-
-| 项目 | 规划处理 |
-|---|---|
-| #148 / PR #149 / PR #151 | 已完成 v1 环境、MP 启动与文档基线 |
-| #138 / PR #143 | 已完成 Instance Capability Fingerprint |
-| #139 | 定义 v1 Runtime、Artifact、LMCache Observation、Operation Task 和 Queue 状态 |
-| #140 | 定义 KDN Cache Service Facade 与 LMCache Gateway 契约 |
-| #141 | 增加 Gateway、Tier、Adapter、Queue 和 vLLM 统一观测 |
-| #142 | 增加 v1/Legacy 双 Profile 与 Gateway 回归验证 |
-| 已关闭 PR | 不作为 #139–#142 的实现迁移基础 |
+- Legacy 数据进入 v1 必须经过显式迁移、导入或重建。
 
 ### 0.3 不可违反的设计原则
 
-- CacheRoute 不复制 LMCache 的 Token DB、Chunk Index、Allocator、Serde、锁或物理传输实现。
-- KDN API 只交换知识语义、逻辑引用、操作意图、观测摘要和任务状态，不传输大块 KVCache。
-- LMCache 版本和接口差异只允许出现在 Gateway Adapter、Factory 和 Capability Snapshot 中。
-- Scheduler、Proxy、KnowledgeObject、CacheArtifact 和 ExecutionGraph 不导入 LMCache 私有类。
-- Redis 只属于 Legacy 兼容边界或 LMCache 已加载的一个后端 Adapter，不是 KDN 身份。
-- 未知能力不得默认视为支持；缺失能力返回 `unsupported`、`incompatible` 或明确回退。
-- 物理状态以 LMCache Runtime 为权威；KDN 和 Proxy 只保存带来源、时间和 TTL 的观测。
+- KDN 是网络级 KVCache 基础设施，不是 Redis 的别名。
+- KDN 可以管理和传输 KVCache，但不复制 LMCache 的节点内数据模型和存储引擎。
+- KDN 的稳定身份使用 Knowledge、Artifact、Replica、Node 和 Transfer，不使用原始 Redis Key 或 LMCache 私有 Python 对象。
+- 物理 KV 数据格式由 `LMCacheCompatibilityProfile` 和 `CacheDataProfile` 约束。
+- 跨节点传输必须校验模型、Tokenizer、Adapter、Layout、DType、并行配置、Chunk/Serde Profile 和内容完整性。
+- 未知能力不得默认视为支持。
+- Control Plane、Distribution Plane 和节点内 Runtime 必须可以独立扩展和独立故障。
+- 所有网络分发任务必须可观测、可取消、可重试、可限速并具有幂等语义。
+- Proxy 不复制全局物理 Chunk Index；全局目录由 KDN 维护，节点内物理索引由 LMCache 维护。
 
-## 1. CacheRoute、KDN、vLLM 与 LMCache 总体结构
+## 1. CDN 类比与 KDN 术语
 
-### 1.1 图例
+KDN 借鉴 CDN 的基础设施模式，但不能直接照搬静态对象缓存语义。
+
+| CDN 概念 | KDN 对应概念 |
+|---|---|
+| Content Object | CacheArtifact |
+| Origin | Artifact Producer、Durable L2 或指定 Origin Node |
+| Edge POP | KDN Edge Node / LMCache Endpoint |
+| Cache Replica | CacheReplica |
+| Cache Fill | Distribution / Prefetch / Replication |
+| Purge | Invalidate / Clear |
+| Routing | Compatible Source Selection |
+| TTL | Artifact 生命周期、Replica Lease 和 Observation TTL |
+| Bandwidth Control | Transfer Admission、Rate Limit 和 Queue |
+| Cache Hit | Token Coverage、Remote Availability 和 Local Hit |
+| Regional Shield | Regional KDN Node 或共享 L2 |
+
+关键差异：
+
+1. KVCache 只能在兼容 Runtime 之间复用；
+2. Artifact 可能只覆盖 Token 区间，而不是完整对象；
+3. 传输后还需要 LMCache Load、注册或物化；
+4. 节点内命中与网络可用是两个不同状态；
+5. 清理和失效必须同时考虑知识版本、模型版本和布局变化；
+6. 网络距离、带宽、GPU 计算节省和 TTFT 共同决定分发价值。
+
+## 2. 总体架构
+
+### 2.1 图例
 
 ```text
-==  高频请求或 KV 数据热路径
+==  请求、KVCache 或大块数据传输路径
 --  控制、管理、策略或观测 API
 |   组件内部包含或层级归属
 ```
 
-### 1.2 全局组件、数据路径和控制路径
+### 2.2 CacheRoute 与 KDN 集群
 
 ```text
-+------------------- CacheRoute Client / Workload -------------------+
-|                                                                     |
-|  OpenAI-compatible request                                          |
-+==============================+======================================+
-                               |
-                               v
-+------------------------- CacheRoute Scheduler ----------------------+
-| - Proxy / Instance selection                                        |
-| - KDN endpoint selection                                            |
-| - coarse routing and admission                                      |
-+==================+===========================+-----------------------+
-                   |                           |
-                   | request route             | Knowledge API
-                   v                           v
-+---------------- CacheRoute Proxy ------------+      +--------------- KDN Server ----------------+
-| - request queue / single-flight             |      |                                               |
-| - CachePlan / ExecutionGraph                 |      | +-- Knowledge Control Plane                 |
-| - text fallback                              |      | |   - KnowledgeObject / version             |
-+==================+===========================+      | |   - CacheArtifact / compatibility         |
-                   |                                  | |   - desired state / policy / audit        |
-                   | request execution                | |                                             |
-                   v                                  | +-- Cache Service Facade                    |
-+---------------- CacheRoute Instance ---------+      | |   - LookupArtifact / LookupTokens          |
-| - Instance Capability                        |      | |   - Prefetch / Pin / Clear / Rebuild intent|
-| - vLLM request forwarding                    |      | |   - operation status / normalized view     |
-| - LMCache hit-token and remote-read report   |      | |                                             |
-+==================+===========================+      | +-- LMCache Orchestration Gateway           |
-                   |                                  |     - MPHTTPGateway                          |
-                   | OpenAI request                   |     - MPCoordinatorGateway                   |
-                   v                                  |     - MPSDKGateway                           |
-+------------------------- vLLM ----------------+      |     - MPMetricsEventGateway                  |
-| model execution / prefill / decode            |      +-------------------+---------------------------+
-+==================+=============================+                          |
-                   | LMCacheMPConnector KV path                             | LMCache public control APIs
-                   v                                                        |
-+---------------------- LMCache MP Runtime ---------------------------------+--------------------------+
-|                                                                                                      |
-|  +-- Token DB / token-hash lookup                                                                  |
-|  +-- L1 memory tier                                                                                |
-|  +-- L2 adapter cascade                                                                           |
-|  |   +-- Redis / Valkey / Mooncake / NIXL / FS / object store / custom plugin                     |
-|  +-- Store / Retrieve / Prefetch                                                                  |
-|  +-- Pin / Unpin / Clear / operation status                                                       |
-|  +-- capacity / quota / eviction / metrics / events                                                |
-|                                                                                                      |
-+======================================================================================================+
-
-Control relations outside the KV hot path:
-Scheduler / Proxy / Instance -- Knowledge API / Cache Service API --> KDN
-KDN -- MP HTTP / Coordinator / SDK / Metrics / Events -------------> LMCache MP
-LMCache MP -- observations / operation results ---------------------> KDN
-KDN -- normalized observations / policy results --------------------> Scheduler / Proxy / Instance
++-------------------- Client / Workload --------------------+
+| OpenAI-compatible inference request                       |
++============================+===============================+
+                             |
+                             v
++---------------------- CacheRoute Scheduler ----------------+
+| request routing | admission | Proxy / Instance selection  |
+| KDN region / node selection                                |
++=================+====================+----------------------+
+                  |                    |
+                  | request path       | KDN control query
+                  v                    v
++------------- CacheRoute Proxy -------+     +---------------- KDN Control Plane ----------------+
+| Knowledge resolve                    |     | Global Artifact Directory                         |
+| CachePlan / DistributionPlan         |     | Node / Region / Topology Registry                 |
+| ExecutionGraph / queue / fallback    |     | Compatibility / Placement / Lifecycle Policy      |
++=================+====================+     | Route / Replica / Transfer orchestration          |
+                  |                          +----------------------+------------------------------+
+                  | inference request                               |
+                  v                                                  |
++------------- CacheRoute Instance ----------------------------------+----------------------------+
+| vLLM | LMCacheMPConnector | local LMCache MP | KDN Node Agent / Gateway                           |
++===========================+==================+====================================+===============+
+                            |                                                       |
+                            | local KV path                                         | control/status
+                            v                                                       |
+                  +---------------- local LMCache Runtime ----------------+          |
+                  | Token DB | L1 | L2 adapters | cache objects          |          |
+                  +=======================+===============================+          |
+                                          |                                          |
+                                          | KDN distribution                         |
+                                          v                                          v
++----------------------------------- KDN Distribution Plane --------------------------+
+|                                                                                     |
+| +-- KDN Edge Node A == Transfer Session / Transport == KDN Edge Node B               |
+| |   |-- source selection                    |-- integrity / resume / rate limit       |
+| |   |-- local LMCache Gateway               |-- retry / cancellation / accounting    |
+| |   +-- local or durable replicas           +-- publish into target LMCache Runtime  |
+| |                                                                                   |
+| +-- optional regional/origin nodes, shared L2, object store, NIXL, Mooncake, RDMA    |
+|                                                                                     |
++=====================================================================================+
 ```
 
-该图表达两个不可混淆的事实：
-
-1. `vLLM == LMCacheMPConnector == LMCache MP` 是 v1 的 KV 数据热路径；
-2. KDN 通过 `--` 控制与观测接口管理 LMCache，不进入逐 Chunk 的高频数据传输路径。
-
-## 2. KDN Server 的正式定位
-
-### 2.1 三层结构
+### 2.3 三条路径
 
 ```text
-KDN Server
+Inference Path
+Client == Scheduler == Proxy == Instance == vLLM
+
+Local KV Path
+vLLM == LMCacheMPConnector == local LMCache MP == local L1 / L2
+
+KDN Distribution Path
+source LMCache == KDN Node/Transport == target LMCache
+```
+
+控制关系：
+
+```text
+Scheduler / Proxy / Instance
+        -- Artifact / Route / Distribution API
+        --> KDN Control Plane
+
+KDN Control Plane
+        -- placement / transfer / lifecycle task
+        --> KDN Node Agent
+
+KDN Node Agent
+        -- LMCache Gateway
+        --> local LMCache Runtime
+
+KDN Node / LMCache Runtime
+        -- observations / task result / hit value
+        --> KDN Control Plane
+```
+
+## 3. KDN 的正式定义
+
+### 3.1 KDN Cluster
+
+KDN Cluster 是多个控制节点、边缘节点、区域节点和 LMCache Endpoint 组成的 KVCache 网络基础设施。
+
+```text
+KDN Cluster
 |
-+-- Knowledge Control Plane
-|   |-- KnowledgeObject / version
-|   |-- CacheArtifact / compatibility
-|   |-- desired state / policy
-|   |-- audit / authorization
-|   +-- access value / request outcome
++-- Control Plane
+|   |-- Global Artifact Directory
+|   |-- Node / Region / Topology Registry
+|   |-- Placement and Replication Policy
+|   |-- Route and Source Selection
+|   |-- Lifecycle / Quota / Security
+|   +-- Audit / Statistics / Cost Model
 |
-+-- CacheRoute Cache Service Facade
-|   |-- cache and token observations
-|   |-- prefetch / pin / clear / rebuild intent
-|   |-- logical operation status
-|   +-- structured fallback and errors
++-- Distribution Plane
+|   |-- KDN Edge Node / Node Agent
+|   |-- Transfer Session
+|   |-- Pull / Push / Relay / Resume
+|   |-- Rate Limit / Admission / Queue
+|   |-- Integrity Verification
+|   +-- Replica Publish / Remove
 |
-+-- LMCache Orchestration Gateway
-    |-- CapabilityFactory / AdapterFactory
-    |-- MP HTTP / Coordinator / SDK
-    |-- Metrics / Events
-    |-- Mock Gateway
++-- LMCache Integration Plane
+    |-- MPHTTPGateway
+    |-- MPCoordinatorGateway
+    |-- MPSDKGateway
+    |-- MPMetricsEventGateway
+    |-- Transport / Adapter Gateway
     +-- LegacyCacheAdapter
 ```
 
-三层分别回答：
+### 3.2 KDN Control Plane 负责
 
-- **Knowledge Control Plane**：缓存为什么存在、对应什么知识、应采用什么策略；
-- **Cache Service Facade**：CacheRoute 需要什么稳定的领域操作；
-- **LMCache Orchestration Gateway**：当前 LMCache 版本和接口如何执行或观测该操作。
+- Artifact 全局命名、版本和兼容性；
+- 节点、区域、网络和存储拓扑；
+- 逻辑 Replica 目录和期望状态；
+- 选择 Origin、Source、Target 和中继路径；
+- 放置、复制、迁移、预热、Pin、清理和重建策略；
+- 配额、租户、授权、审计和生命周期；
+- 传输任务的幂等、优先级、Deadline、取消和重试策略；
+- 维护短期物理观测并生成 RouteDecision；
+- 根据命中价值、带宽、TTFT 和计算节省做治理决策。
 
-### 2.2 KDN 负责
+### 3.3 KDN Distribution Plane 负责
 
-- KnowledgeObject 内容、版本和语义；
-- KnowledgeObject 到 CacheArtifact、Token Reference 的映射；
-- Artifact 兼容性和失效原因；
-- Desired State、Prefetch、Pin、Clear、Rebuild 意图；
-- 多 Endpoint 粗粒度选择；
-- CacheOperationTask 幂等、审计、授权、取消和回退；
-- LMCache 观测的归一化、TTL 和置信度；
-- 命中价值、计算节省和维护反馈。
+- 在兼容节点之间建立 TransferSession；
+- 支持 Pull、Push、Relay 和委托式传输；
+- 选择实际传输协议或后端；
+- 传输大块 KVCache 或可解析的 transport reference；
+- 断点续传、重试、校验、限速、背压和取消；
+- 将完成的数据发布到目标 LMCache Runtime；
+- 上报实际字节、Token 覆盖、带宽、延迟和错误；
+- 在节点或链路故障时切换 Source 或回退重建。
 
-### 2.3 LMCache 负责
+### 3.4 LMCache Runtime 负责
 
 - Token 分块、Hash、Chunk Key 和物理 KV Object；
-- L1/L2 驻留和 Adapter 级联；
-- Store、Retrieve、Prefetch、Pin、Unpin 和 Clear；
-- Serde、Lock/Unlock、容量、Quota 和淘汰；
-- 物理操作完成状态；
-- 实际 hit-token、remote-read、Metrics 和 Events。
+- KV Layout、DType、Serde 和设备相关格式；
+- 节点内 L1/L2 驻留和 Adapter 级联；
+- Store、Retrieve、Prefetch、Pin、Unpin、Clear；
+- 节点内锁、容量、Quota 和淘汰执行；
+- 实际 hit-token、remote-read、Metrics 和 Events；
+- 将传入 Artifact 注册或物化为可供 vLLM 使用的本地缓存。
 
-### 2.4 KDN 不是 Redis，也不是第二套 LMCache
+### 3.5 权威边界
 
-以下内容不得进入稳定 KDN 领域模型：
+| 信息 | 权威来源 |
+|---|---|
+| KnowledgeObject、Artifact 语义和版本 | KDN Control Plane |
+| Artifact 兼容性和 Data Profile | KDN Control Plane |
+| Node、Region 和拓扑 | KDN Control Plane |
+| 逻辑 Replica 期望状态 | KDN Control Plane |
+| 物理 Replica 是否存在 | LMCache Runtime 观测 |
+| 全局 Replica Directory | KDN 基于节点观测维护 |
+| 节点内 Chunk Index 和 KV 字节 | LMCache Runtime |
+| TransferSession 和网络结果 | KDN Distribution Plane |
+| Instance 实际命中 Token | Instance 侧 LMCache |
+| 请求等待、计算释放和回退 | Proxy |
+| 全局请求与资源池选择 | Scheduler |
 
-```text
-Redis URL / password / raw key
-LMCache private Python class
-LMCache internal Chunk Key
-physical KV payload
-private serialized object
-physical chunk-index copy
-```
+KDN 可以权威维护“应该存在的 Replica”和“已确认存在的 Replica 目录”，但不得伪造或永久缓存过期的物理存在性。每个确认状态都必须包含来源、Generation、时间和 TTL。
 
-Legacy Redis 操作必须收拢到 `LegacyCacheAdapter`。v1 新代码不在现有 Redis Injector 上继续叠加 Token Lookup、Tier、Adapter、Prefetch 或 Pin 逻辑。
+## 4. KDN API 与分发协议
 
-## 3. KDN API 与 LMCache Gateway
-
-### 3.1 API 分层与映射结构图
-
-```text
-CacheRoute callers
-|-- Scheduler
-|-- Proxy
-|-- Instance
-|-- management / experiment tools
-|
-+-- Knowledge API --------------------------------------------------------------+
-|   |-- RegisterKnowledge                 == KDN domain implementation           |
-|   |-- UpdateKnowledgeVersion            == KDN domain implementation           |
-|   |-- ResolveKnowledge                  == KDN domain implementation           |
-|   |-- ListCompatibleArtifacts           == KDN catalog + compatibility          |
-|   |-- GetPolicyDecision                 == KDN policy                           |
-|   +-- ReportRequestOutcome              == KDN statistics / feedback           |
-|                                                                                |
-+-- Cache Service API ----------------------------------------------------------+
-    |-- GetCacheObservation   -- Gateway --> LMCache status / metrics / events   |
-    |-- LookupArtifact        -- Gateway --> token lookup + KDN Artifact mapping |
-    |-- LookupTokens          -- Gateway --> LMCache token/hash lookup           |
-    |-- CreatePrefetchIntent  -- Gateway --> MP HTTP / Coordinator / SDK         |
-    |-- CreatePinIntent       -- Gateway --> Pin API / Coordinator               |
-    |-- CreateUnpinIntent     -- Gateway --> Unpin API / Coordinator             |
-    |-- CreateClearIntent     -- Gateway --> cache-object clear/delete           |
-    |-- CreateRebuildIntent   -- KDN task --> LMCache-backed rebuild workflow    |
-    |-- GetOperationStatus    -- Gateway --> operation/task status               |
-    |-- CancelOperation       -- Gateway --> cancellation when supported         |
-    |-- GetLMCacheEndpoints   -- Gateway --> endpoint/config/capability discovery|
-    |-- GetTierAndAdapterSummary -- Gateway --> L1/L2/adapter/config/metrics      |
-    +-- GetMaintenanceStatus  -- Gateway --> quota/eviction/health observations  |
-```
-
-### 3.2 接口映射规则
+### 4.1 Control API
 
 ```text
-CacheRoute Domain Request
-        |
-        v
-KDN versioned API
-        |
-        v
-CacheOperationTask / CacheReplicaObservation
-        |
-        v
-LMCacheCompatibilityProfile + CapabilitySnapshot
-        |
-        +-- supported ----> versioned Gateway Adapter ----> LMCache public API
-        |
-        +-- unsupported --> structured unsupported / explicit text fallback
-        |
-        +-- incompatible -> reject reuse / migrate / rebuild
-```
-
-### 3.3 Knowledge API
-
-```text
-RegisterKnowledge
-UpdateKnowledgeVersion
-ResolveKnowledge
-ListCompatibleArtifacts
-GetPolicyDecision
-ReportRequestOutcome
-```
-
-### 3.4 Cache Service API
-
-```text
-GetCacheObservation
-LookupArtifact
-LookupTokens
+RegisterNode
+HeartbeatNode
+RegisterArtifact
+UpdateArtifactVersion
+ResolveArtifact
+LocateReplicas
+GetRouteDecision
+CreatePlacementIntent
+CreateReplicationIntent
+CreateMigrationIntent
 CreatePrefetchIntent
 CreatePinIntent
 CreateUnpinIntent
@@ -282,248 +292,111 @@ CreateClearIntent
 CreateRebuildIntent
 GetOperationStatus
 CancelOperation
-GetLMCacheEndpoints
-GetTierAndAdapterSummary
-GetMaintenanceStatus
+GetClusterTopology
+GetCapacitySummary
+GetTransferSummary
+ReportRequestOutcome
 ```
 
-稳定参数只使用：Knowledge ID、Artifact ID、Token 序列或 Token Reference、Instance Capability、LMCache Endpoint ID 和逻辑 Operation ID。
-
-### 3.5 Gateway 内部结构图
+### 4.2 Distribution API / Protocol
 
 ```text
-KDN Cache Service Facade
-          |
-          v
-+---------------- LMCache Orchestration Gateway ----------------+
-|                                                               |
-|  CapabilityFactory                                            |
-|  |-- detect LMCache version / build                           |
-|  |-- detect endpoint generation                               |
-|  |-- probe routes / metrics / events                          |
-|  +-- build immutable CapabilitySnapshot                       |
-|                                                               |
-|  AdapterFactory                                               |
-|  |-- MPHTTPGateway --------> health/config/cache/prefetch API  |
-|  |-- MPCoordinatorGateway -> multi-server/pin/quota/eviction   |
-|  |-- MPSDKGateway ---------> typed lookup/operation calls      |
-|  |-- MPMetricsEventGateway -> hit tokens/reads/events/status   |
-|  |-- MockGateway ----------> CPU-only contract tests           |
-|  +-- LegacyCacheAdapter ---> legacy Redis compatibility only   |
-|                                                               |
-|  optional                                                     |
-|  +-- L2PluginGateway ------> only for a proven capability gap  |
-+---------------------------------------------------------------+
-          |
-          v
-LMCache MP public interfaces and loaded adapters
+OpenTransferSession
+AuthorizeSource
+FetchArtifact
+FetchSegments
+PushArtifact
+PublishReplica
+ResumeTransfer
+VerifyTransfer
+CompleteTransfer
+AbortTransfer
+RemoveReplica
 ```
 
-### 3.6 启动期能力发现
+Control API 不携带大块 KVCache。Distribution API 可以直接传输数据，也可以返回由双方支持的 transport reference。
 
-v1 Gateway 启动时应：
-
-1. 查询 LMCache 版本、Build ID 和运行模式；
-2. 查询 Config、Connector 和已加载 Adapter；
-3. 探测所需 HTTP Route、SDK 方法、Metric 和 Event；
-4. 构建不可变 `CapabilitySnapshot`；
-5. 校验 Chunk Size、Hash、Layout、Serde、Tier 和 Completion Model；
-6. 生成 `EndpointGeneration`；
-7. 将 Profile 写入 Instance Capability 和 Trace。
-
-未知能力不得视为支持。LMCache 接口更名或小版本变化只替换 Gateway Adapter，不修改 KDN 领域对象。
-
-## 4. v1、Legacy 与 Auto 边界
-
-### 4.1 运行 Profile 分流结构图
+### 4.3 API 映射图
 
 ```text
-                         process startup
-                               |
-                               v
-                    CACHEROUTE_RUNTIME_PROFILE
-                               |
-              +----------------+----------------+
-              |                                 |
-           explicit                           auto
-        v1 / legacy                             |
-              |                        detect environment once
-              |                                 |
-              +----------------+----------------+
-                               |
-                         freeze profile
-                               |
-          +====================+====================+
-          |                                         |
-          v                                         v
-+--------------------- v1 ----------------+  +---------------- Legacy ----------------+
-| new development                         |  | compatibility-only                     |
-|                                         |  |                                        |
-| KDN Cache Service Facade                |  | LegacyCacheAdapter                     |
-|        -- LMCache Gateway               |  |        -- Redis scan/dump/restore      |
-|        -- MP HTTP/Coordinator/SDK       |  |        -- historical KV injection      |
-|        -- Metrics/Events                |  |        -- legacy startup/request       |
-|                                         |  |                                        |
-| vLLM == LMCacheMPConnector == LMCache MP|  | old vLLM/LMCache/Redis path            |
-+-----------------------------------------+  +----------------------------------------+
-          |                                         |
-          +-- no implicit Legacy write fallback ----+
-          +-- migration/rebuild must be explicit ---+
+CacheRoute / KDN Control Request
+            |
+            v
+KDN versioned Control API
+            |
+            +-- directory / policy / route ------> KDN Control Plane
+            |
+            +-- placement / replication ---------> DistributionPlan
+            |
+            +-- node operation ------------------> KDN Node Agent
+                                                      |
+                                                      v
+                                              LMCache Gateway
+                                                      |
+                           +--------------------------+-------------------------+
+                           |                          |                         |
+                         MP HTTP                  Coordinator               SDK / Events
+                           |                          |                         |
+                           +--------------------------+-------------------------+
+                                                      |
+                                                      v
+                                             local LMCache Runtime
 ```
 
-### 4.2 v1
-
-- 所有新功能只进入 v1；
-- 通过 Gateway 使用 LMCache 公开控制与观测接口；
-- 不直接扫描、复制或推断 Redis Key；
-- 缺少能力时返回结构化失败或明确文本回退；
-- 实际复用由 hit-token 或 remote-read 观测确认。
-
-### 4.3 Legacy
-
-- 保留 Redis scan/dump/restore/inject、旧启动和旧请求；
-- 功能冻结，只接受可用性、安全、严重缺陷和兼容修复；
-- Legacy Key 和目录不能成为 v1 Artifact 身份；
-- Legacy 物理操作只允许出现在 `LegacyCacheAdapter`。
-
-### 4.4 Auto
+跨节点数据路径：
 
 ```text
-auto --> v1
+DistributionPlan
+      |
+      v
+OpenTransferSession
+      |
+      +-- direct stream ---------> KDN transport
+      |
+      +-- shared backend --------> object store / shared L2
+      |
+      +-- native transport ------> NIXL / Mooncake / RDMA / plugin
+      |
+      v
+target LMCache publish / prefetch / load
 ```
 
-或：
+### 4.4 稳定协议不得暴露
 
 ```text
-auto --> legacy
+Redis password
+raw Redis key
+LMCache private Python class
+unversioned internal Chunk Key
+device pointer
+private serialized object without Data Profile
+backend-specific credentials in domain objects
 ```
 
-解析后 Profile 在进程生命周期内不可变，不得根据请求或 Key 是否存在动态切换。
+后端凭据只能通过 Secret Reference 或节点本地配置传递。
 
-## 5. 权威边界和总体角色
+## 5. 核心对象
 
-| 信息 | 权威来源 |
-|---|---|
-| KnowledgeObject 内容、版本和语义 | KDN Knowledge Control Plane |
-| KnowledgeObject 到 CacheArtifact 的关系 | KDN Knowledge Control Plane |
-| Artifact 兼容性和失效原因 | KDN Knowledge Control Plane |
-| Prefetch、Pin、Clear、Rebuild Desired State | KDN Policy |
-| LMCache Endpoint、接口和能力 Profile | Gateway Capability Snapshot |
-| Token/Chunk/Hash/Key、物理 KV、Layout、Serde | LMCache Runtime |
-| L1/L2、Adapter、容量、Quota 和淘汰 | LMCache Runtime |
-| 物理操作是否完成 | LMCache Runtime Observation |
-| Instance 本地实际命中 Token | Instance-side LMCache |
-| 请求等待、绕行和计算释放 | Proxy |
-| Proxy、Instance、KDN Endpoint 粗粒度选择 | Scheduler |
-
-所有物理观测必须携带：
-
-```text
-observation_source
-observed_at
-expires_at
-endpoint_generation
-lmcache_profile_id
-adapter_or_tier
-confidence
-```
-
-## 6. 核心对象
-
-### 6.1 RuntimeProfile
-
-```text
-profile_id
-resolved_mode
-source
-resolved_at
-immutable
-```
-
-持久运行状态只允许 `v1`、`legacy` 或 `mock/test`；`auto` 只是启动输入。
-
-### 6.2 LMCacheCompatibilityProfile
-
-```text
-profile_id
-lmcache_version_range
-integration_family
-protocol_version
-configuration_schema_version
-connector_profile
-key_format_version
-layout_profile
-serde_profile
-chunk_size_profile
-supported_operations
-batching_capabilities
-locking_model
-completion_model
-event_model
-cancellation_model
-status
-validated_at
-```
-
-推荐的 `integration_family`：
-
-```text
-mp_http_api
-mp_coordinator
-mp_sdk
-mp_metrics_events
-mp_l2_plugin
-legacy_redis
-mock
-unknown_future
-```
-
-Profile 状态：
-
-```text
-experimental
-validated
-default
-deprecated
-unsupported
-```
-
-### 6.3 LMCacheEndpoint
-
-```text
-endpoint_id
-runtime_profile
-lmcache_profile_id
-endpoint_generation
-api_endpoints
-loaded_adapters
-capability_snapshot
-health
-capacity_summary
-last_observed_at
-```
-
-### 6.4 KnowledgeObject
+### 5.1 KnowledgeObject
 
 ```text
 knowledge_id
 content_hash
 content_version
 text_location
-embedding
-embedding_model
 semantic_metadata
 tokenization_hints
 created_at
 updated_at
 ```
 
-### 6.5 CacheArtifact
+### 5.2 CacheArtifact
 
 ```text
 artifact_id
 knowledge_id
-capability_fingerprint
+artifact_version
+content_fingerprint
 model_fingerprint
 tokenizer_fingerprint
 adapter_fingerprint
@@ -533,500 +406,637 @@ parallelism_profile
 lmcache_data_profile
 key_format_version
 serde_profile
-desired_state
-policy_state
+token_coverage
 created_at
 updated_at
 ```
 
-Artifact 是知识在兼容环境下的逻辑物化身份，不保存 KV 字节。
+CacheArtifact 是可分发 KVCache 资源的稳定逻辑身份，不直接等于某个节点内 Chunk Key。
 
-### 6.6 CacheReplicaObservation
-
-```text
-observation_id
-artifact_id
-lmcache_endpoint_id
-runtime_profile
-lmcache_profile_id
-adapter_or_tier
-observed_state
-hit_coverage
-health
-observation_source
-observed_at
-expires_at
-endpoint_generation
-confidence
-```
-
-它是带 TTL 的短期物理观测，不是 CacheRoute 自有 Replica 或 Chunk Index。
-
-### 6.7 CacheOperationTask
-
-```text
-task_id
-idempotency_key
-operation
-artifact_id
-endpoint_id
-runtime_profile
-lmcache_profile_id
-state
-priority
-requested_at
-started_at
-finished_at
-observed_bytes
-observed_tokens
-result_source
-result
-error
-```
-
-### 6.8 CachePlan / FusionPlan
-
-```text
-request_id
-target_instance_id
-knowledge_blocks
-matched_artifacts
-lmcache_endpoints
-cache_observations
-lookup_tasks
-prefetch_tasks
-fusion_mode
-recompute_ranges
-fallback_mode
-plan_state
-trace_context
-```
-
-### 6.9 ExecutionGraph
+### 5.3 KDNNode
 
 ```text
 node_id
-request_id
-work_type
-resource_class
-depends_on
-share_key
-priority
-deadline
-estimated_cost
-actual_cost
-state
-fallback
+cluster_id
+region
+zone
+endpoint
+node_role
+runtime_profile
+lmcache_profile
+transport_capabilities
+storage_capabilities
+network_summary
+capacity_summary
+health
+generation
+last_heartbeat_at
 ```
 
-资源类型：
+推荐 `node_role`：
 
 ```text
-CONTROL
-KDN_LOOKUP
-LMCACHE_GATEWAY
-NET_KV
-CACHE_LOAD
-PREFILL
-DECODE
-FUSION
+control
+edge
+regional
+origin
+relay
 ```
+
+### 5.4 CacheReplicaRecord
+
+```text
+replica_id
+artifact_id
+node_id
+desired_state
+observed_state
+source_replica_id
+data_profile
+token_coverage
+lease
+generation
+observation_source
+observed_at
+expires_at
+integrity_status
+```
+
+`desired_state` 由 KDN 权威维护，`observed_state` 来自节点和 LMCache Runtime。
+
+### 5.5 DistributionPlan
+
+```text
+plan_id
+artifact_id
+source_candidates
+selected_source
+target_nodes
+transport_profile
+segment_plan
+priority
+deadline
+bandwidth_budget
+fallback
+reason_code
+state
+```
+
+### 5.6 TransferSession
+
+```text
+transfer_id
+plan_id
+artifact_id
+source_node_id
+target_node_id
+transport_profile
+idempotency_key
+lease
+bytes_expected
+bytes_transferred
+tokens_expected
+tokens_transferred
+checksum
+resume_token
+state
+requested_at
+started_at
+finished_at
+error
+```
+
+### 5.7 CacheOperationTask
+
+```text
+operation_id
+operation_type
+artifact_id
+node_ids
+distribution_plan_id
+priority
+deadline
+idempotency_key
+state
+result
+error
+created_at
+updated_at
+```
+
+### 5.8 RouteDecision
+
+```text
+route_decision_id
+request_id
+artifact_id
+target_instance_id
+compatible_replicas
+selected_source
+estimated_transfer_time
+estimated_compute_saved
+estimated_ttft
+confidence
+fallback
+reason_code
+```
+
+### 5.9 CachePlan / ExecutionGraph
+
+```text
+CachePlan
+|-- knowledge blocks
+|-- matched artifacts
+|-- RouteDecision
+|-- DistributionPlan
+|-- recompute ranges
+|-- fallback
+
+ExecutionGraph
+|-- CONTROL
+|-- KDN_LOOKUP
+|-- KDN_ROUTE
+|-- KDN_TRANSFER
+|-- CACHE_PUBLISH
+|-- CACHE_LOAD
+|-- PREFILL
+|-- DECODE
+|-- FUSION
+```
+
+## 6. LMCache 集成与兼容
+
+### 6.1 LMCacheCompatibilityProfile
+
+```text
+profile_id
+lmcache_version_range
+runtime_mode
+connector_profile
+data_profile
+key_format_version
+layout_profile
+serde_profile
+supported_operations
+transport_capabilities
+completion_model
+locking_model
+event_model
+cancellation_model
+status
+validated_at
+```
+
+### 6.2 Gateway 结构
+
+```text
+KDN Node Agent / Control Service
+            |
+            v
++---------------- LMCache Integration Gateway ----------------+
+| CapabilityFactory                                           |
+| AdapterFactory                                              |
+| |-- MPHTTPGateway                                           |
+| |-- MPCoordinatorGateway                                    |
+| |-- MPSDKGateway                                            |
+| |-- MPMetricsEventGateway                                   |
+| |-- TransportAdapterGateway                                 |
+| |-- MockGateway                                             |
+| +-- LegacyCacheAdapter                                      |
++-------------------------------------------------------------+
+            |
+            v
+local LMCache public interfaces and loaded adapters
+```
+
+### 6.3 启动期能力发现
+
+每个 v1 KDN Node 启动时必须：
+
+1. 查询 LMCache 版本、Build ID 和运行模式；
+2. 查询 Connector、Config、Tier 和已加载 Adapter；
+3. 探测 HTTP Route、SDK、Metric、Event 和 Transport；
+4. 构建不可变 CapabilitySnapshot；
+5. 验证 Chunk Size、Hash、Layout、DType、Serde 和 Data Profile；
+6. 生成 Node Generation；
+7. 注册到 KDN Control Plane；
+8. 未知能力标记为 `unsupported` 或 `unknown`。
+
+### 6.4 传输兼容门禁
+
+KDN 只能在以下条件满足时直接分发 Artifact：
+
+```text
+model compatible
+tokenizer compatible
+adapter compatible
+kv layout compatible
+kv dtype compatible
+parallelism compatible
+lmcache data profile compatible
+key / serde profile compatible
+transport profile supported
+integrity metadata available
+```
+
+不满足时执行以下之一：
+
+```text
+reject reuse
+select another replica
+migrate
+transcode through an explicit supported adapter
+rebuild
+fall back to text compute
+```
+
+不得静默复用未知或不兼容数据。
 
 ## 7. 版本迭代总览
 
 | 版本 | 主题 | 主要交付 |
 |---|---|---|
-| v0.1.10 | v1/Legacy 契约与观测基线 | RuntimeProfile、Gateway Profile、核心状态、Trace、Legacy 投影 |
-| v0.1.11 | Knowledge Control + LMCache Observation | Knowledge/Artifact、Token Mapping、Endpoint/Adapter/Tier 观测 |
-| v0.1.12 | LMCache-backed KDN Cache Service MVP | MP HTTP/Coordinator Gateway、Lookup/Prefetch/Pin/Clear |
-| v0.1.13 | 多层级、多 Adapter 与版本兼容 | Adapter Cascade、容量/淘汰观测、兼容矩阵、恢复/重建 |
-| v0.1.14 | Proxy KVCache Manager | 基于 KDN/LMCache 观测的短期 Instance View、Single-flight |
-| v0.1.15 | 注入与计算队列模型 | ExecutionGraph、资源队列、Compute Fast Path |
-| v0.1.16 | 网络与计算并行 | 工作守恒流水线、Overlap Benchmark |
-| v0.1.17 | 队列稳定与普适性 | 准入、背压、公平、Aging、自适应并发 |
-| v0.1.18 | KDN 知识型策略 | Prefetch/Pin/Clear/Rebuild 意图、价值模型、Replay |
-| v0.1.19 | 多知识块非前缀融合 | Token/Artifact 并行查询、选择性重计算、质量回退 |
-| v0.2.0 | 集成研究基线 | v1 默认、Legacy 保留、跨 LMCache 版本兼容、完整实验闭环 |
+| v0.1.10 | 契约与观测基线 | RuntimeProfile、Artifact、Node、Replica、Operation、Queue、Trace、Legacy 投影 |
+| v0.1.11 | KDN Control Plane 与全局目录 | Artifact Directory、Node Registry、Topology、Desired/Observed State |
+| v0.1.12 | KDN Distribution Plane MVP | Node Agent、TransferSession、单源到单目标分发、LMCache 发布 |
+| v0.1.13 | 多节点复制与源路由 | Replica Placement、Source Selection、重试、恢复、第二 Transport/Profile |
+| v0.1.14 | Proxy KVCache Manager | RouteDecision、短期 Instance View、Single-flight |
+| v0.1.15 | 分发与计算队列 | ExecutionGraph、Transfer Queue、Compute Fast Path |
+| v0.1.16 | 网络与计算并行 | Work-conserving Pipeline、带宽治理、Overlap Benchmark |
+| v0.1.17 | 集群稳定与普适性 | Admission、Backpressure、Fairness、Aging、Failover |
+| v0.1.18 | KDN 资源治理策略 | Placement、Replication、Prefetch、Pin、Purge、价值模型 |
+| v0.1.19 | 多知识块分发与融合 | 并行定位、分段传输、选择性重计算、质量回退 |
+| v0.2.0 | KVCache 分发基础设施基线 | 多节点 KDN、稳定协议、跨 LMCache Profile、完整实验闭环 |
 
 ## 8. 分版本规划
 
-## v0.1.10：v1/Legacy 契约与观测基线
+### v0.1.10：契约与观测基线
 
-### 目标
-
-冻结后续工作所需的稳定词汇：
+目标是冻结后续集群化需要的稳定词汇：
 
 - RuntimeProfile；
 - LMCacheCompatibilityProfile；
-- LMCacheEndpoint 与 CapabilitySnapshot；
-- CacheArtifact 和 CacheReplicaObservation；
+- Instance Capability；
+- CacheArtifact；
+- KDNNode；
+- CacheReplicaRecord；
 - CacheOperationTask；
-- QueueWork、Trace Source 和阶段；
-- Legacy `kv_ready` 与 Redis 只读兼容映射。
+- QueueWork；
+- Trace Source 和阶段；
+- Legacy 只读投影。
 
-### 验收
+验收：
 
-- #138 Capability 保持兼容；
-- `auto` 启动时解析并冻结；
-- v1 操作不能静默调用 Legacy 写 Adapter；
-- 核心对象不包含 KV 字节、Redis 私有 Key、凭据或 LMCache 私有类；
-- Token Lookup、Prefetch、Pin、Clear 等表达为 LMCache-backed 操作；
-- CPU-only 测试使用 Mock Gateway，不要求外部服务。
+- 核心对象不包含 KV 字节、明文凭据、原始 Redis Key 或 LMCache 私有类；
+- Desired State 和 Observed State 明确分离；
+- 节点、Replica、Operation 和 Queue 状态转换可验证；
+- v1 和 Legacy Profile 不会在请求中动态切换；
+- CPU-only 测试不依赖外部集群。
 
-## v0.1.11：Knowledge Control 与 LMCache Observation
+### v0.1.11：KDN Control Plane 与全局目录
 
-### 主要步骤
+主要步骤：
 
-1. 实现 KnowledgeObject 和版本管理。
-2. 一个 KnowledgeObject 对应多个 CacheArtifact。
-3. 建立 KnowledgeObject 到 Token Reference、Artifact 的映射。
-4. Artifact 使用 Capability 和 LMCache Data Profile 判断兼容性。
-5. 实现 Desired State 与 LMCache Observation 分离。
-6. 建立 LMCacheEndpoint、Adapter 和 Tier Registry。
-7. 所有物理观测记录来源、Profile、Generation、时间和 TTL。
-8. Scheduler 只读取粗粒度知识和 Endpoint 可用性。
-9. Legacy `kv_ready` 映射为只读、`compatibility=unknown` 的观测。
+1. 实现 KnowledgeObject 和 CacheArtifact 目录；
+2. 实现 KDN Node/Region/Topology Registry；
+3. 建立 Artifact 到 Replica 的全局目录；
+4. 区分期望 Replica 和已确认 Replica；
+5. 建立兼容性门禁；
+6. 建立 Node Generation 和 Observation TTL；
+7. 提供 LocateReplicas 和 GetRouteDecision；
+8. Scheduler 只读取粗粒度资源摘要。
 
-### 验收
+验收：
 
-- 同一知识支持多模型、多 Adapter 和多 LMCache Profile；
-- KDN 不访问或复制物理 KV 数据；
-- 过期观测不会继续视为权威；
-- Redis 不出现在 v1 稳定领域模型。
+- 同一 Artifact 可以有多个区域和节点 Replica；
+- 过期观测不会被视为物理事实；
+- 不兼容节点不会进入 Source Candidate；
+- 目录不复制节点内 Chunk Index。
 
-## v0.1.12：LMCache-backed KDN Cache Service MVP
+### v0.1.12：KDN Distribution Plane MVP
 
-### 主要步骤
+主要步骤：
 
-1. 实现版本化 KDN Knowledge API 与 Cache Service API。
-2. 实现 `MPHTTPGateway`。
-3. 实现 `MPCoordinatorGateway` 的最小能力。
-4. 实现 LookupTokens、GetCacheObservation、Prefetch、Pin、Unpin、Clear 和 OperationStatus。
-5. 建立 CapabilityFactory 和 AdapterFactory。
-6. 实现 Mock Gateway 用于 CPU-only CI。
-7. 使用 LMCache hit-token 或 remote-read 验证实际复用。
-8. 缺少能力时返回 `unsupported` 或明确回退。
-9. 不在 KDN 中实现物理 KV Store 或逐 Chunk 数据路径。
+1. 启动独立 KDN Node Agent；
+2. 实现 OpenTransferSession 和单源到单目标传输；
+3. 实现 Direct、Shared Backend 或 Mock Transport 中至少一种真实路径；
+4. 通过 LMCache Gateway 从 Source 导出或引用 Artifact；
+5. 在 Target LMCache 中 Publish/Prefetch/Load；
+6. 实现校验、幂等、超时、取消和基础重试；
+7. 上报实际字节、Token 覆盖和耗时；
+8. 失败可回退重建或文本计算。
 
-### 验收
+验收：
 
-- vLLM 与 LMCache MP 保持直接数据路径；
-- KDN 可将领域操作稳定映射到 LMCache 公开接口；
-- Gateway 替换不修改 KnowledgeObject、CacheArtifact 或 CachePlan；
-- 失败可以结构化回退文本计算；
-- Legacy 行为不受影响。
+- 一个节点上的兼容 Artifact 可以分发到另一个节点；
+- 传输后目标 LMCache 能报告可用或实际命中；
+- Control API 不承载大块 Payload；
+- 替换 Transport 不修改 Artifact 和 Route API。
 
-## v0.1.13：多层级、多 Adapter 与 LMCache 版本兼容
+### v0.1.13：多节点复制、源路由与恢复
 
-### 主要步骤
+主要步骤：
 
-1. 支持多个 L2 Adapter 和 Tier 的能力发现与观测。
-2. 复用 LMCache Adapter Cascade、容量、Quota 和淘汰能力。
-3. 建立 Compatibility Matrix 和 Gateway Conformance Suite。
-4. 支持 baseline、latest、Legacy、unknown-future Profile。
-5. 实现 Endpoint Generation、重连和观测失效。
-6. 实现 Profile 升级、降级和弃用状态。
-7. 对 Key/Layout/Serde 不兼容执行迁移或重建。
-8. 只有证明 LMCache 存在能力缺口时才增加 L2 Plugin。
-9. 增加 LMCache 小版本周期性验证流程。
+1. 支持多个 Source Candidate；
+2. 根据区域、带宽、负载、健康和兼容性选源；
+3. 支持一个 Source 到多个 Target；
+4. 支持 Relay 或共享 L2；
+5. 增加第二种 Transport 或 LMCache Profile；
+6. 支持断点续传、Source Failover 和 Transfer Recovery；
+7. 建立 Placement/Replication 状态机；
+8. 建立跨版本 Compatibility Matrix；
+9. 不兼容时迁移、重建或拒绝。
 
-### 验收
+验收：
 
-- 至少表示两种 Adapter/Tier 配置；
-- LMCache 接口变化只修改 Gateway Adapter；
-- 不兼容升级不会静默复用旧 Artifact；
-- KDN 不实现自己的 Adapter Cascade、容量或淘汰线程。
+- Source 失败时可切换兼容 Replica；
+- 多节点复制具有幂等性；
+- KDN 至少验证两种 Transport/Profile 配置；
+- LMCache 接口变化只修改 Gateway Adapter。
 
-## v0.1.14：Proxy KVCache Manager
+### v0.1.14：Proxy KVCache Manager
 
-### 主要步骤
+- 维护短期 Instance Cache View；
+- 调用 KDN 获取 RouteDecision；
+- 区分 REMOTE_AVAILABLE、TRANSFERRING、PUBLISHED、LOCAL_AVAILABLE、STALE 和 FAILED；
+- 同 Artifact/Target 实现 Single-flight；
+- 将 DistributionPlan 编译进 CachePlan；
+- Instance、Node 或 Profile Generation 变化时失效。
 
-1. 建立 Instance Cache Observation View。
-2. 数据来源包括 KDN 观测、LMCache Event、Gateway 结果和实际命中。
-3. 状态包括 UNKNOWN、REMOTE_AVAILABLE、PREPARING、LOCAL_AVAILABLE、STALE、FAILED。
-4. 同 Artifact/Instance 实现 Single-flight。
-5. Endpoint、Instance 或 Profile Generation 变化时失效。
-6. Proxy 不复制 LMCache Chunk Index。
+### v0.1.15：分发与计算队列
 
-### 验收
+- ExecutionGraph 增加 KDN_ROUTE、KDN_TRANSFER 和 CACHE_PUBLISH；
+- 分离 Control、Transfer、Cache Load 和 Compute 并发域；
+- 定义 Share Key、优先级、Deadline、带宽预算和回退；
+- 文本任务保留 Compute Fast Path；
+- Scheduler 不参与逐 Transfer 调度。
 
-- Proxy 区分远端可用、准备中、本地可用和过期；
-- 同一准备任务只执行一次；
-- 实际命中由 LMCache 原生观测确认。
+### v0.1.16：网络与计算并行
 
-## v0.1.15：知识注入与计算队列模型
+- KVCache 传输与其他请求 Prefill/Decode 重叠；
+- 根据网络和 GPU 状态动态调整并发；
+- 支持 Work-conserving 调度；
+- 增加 Network-Compute Gantt、Overlap Ratio 和 Saved Compute；
+- 处理超时、取消和回退。
 
-- CachePlan 编译为 ExecutionGraph；
-- 节点包括 Control、KDN Lookup、LMCache Gateway、Network KV、Cache Load、Prefill、Decode 和 Fusion；
-- 定义依赖、Share Key、优先级、Deadline、成本和回退；
-- 文本任务走 Compute Fast Path；
-- Scheduler 不参与细粒度节点执行。
+### v0.1.17：集群稳定与普适性
 
-## v0.1.16：网络 KV 与纯计算并行
+- Admission Control 和 Backpressure；
+- 多租户配额和带宽治理；
+- Fairness、Aging 和 Starvation Guard；
+- Node/Region Failover；
+- Transfer Storm 和 Cache Pollution 防护；
+- 多模型、多 Instance、多 KDN Node、多带宽测试。
 
-- 为 Control、Gateway、Network、Cache Load、Compute 建立独立并发域；
-- 网络 KV 与其他请求 Prefill/Decode 重叠；
-- Work-conserving，不因等待 KV 让可计算请求空闲；
-- 增加网络—计算 Gantt 和 Overlap Ratio；
-- 支持取消、超时和回退。
+### v0.1.18：KDN 资源治理策略
 
-## v0.1.17：队列普适性和稳定性
+策略输入：
 
-- 准入控制和背压；
-- 公平、Aging 和 Starvation Guard；
-- Adaptive Concurrency；
-- Single-flight 生命周期；
-- 多模型、多 Instance、多 KDN、多带宽和不同混合比例测试；
-- 策略插件不能破坏状态机。
-
-## v0.1.18：KDN 知识型缓存策略
-
-### 输入
-
-- 知识访问频率和共现；
-- LMCache Token Lookup、Metrics 和 Events；
-- Endpoint、Adapter、Tier 容量和健康；
-- Proxy 等待和 GPU Idle；
-- 网络成本和计算节省；
-- 构建、刷新和迁移成本；
-- Artifact 兼容性和版本；
+- Artifact 热度和知识共现；
+- Replica 区域分布；
+- Source/Target 带宽和队列；
+- LMCache 容量、命中和淘汰；
+- Proxy 等待、TTFT 和 GPU Idle；
+- 计算节省、传输成本和重建成本；
 - Online 与 Background 负载。
 
-### 输出
+策略输出：
 
 ```text
-BUILD
+PLACE
+REPLICATE
+MIGRATE
 PREFETCH
 PIN
 UNPIN
-CLEAR
+PURGE
 REFRESH
 REBUILD
-MIGRATE
-REPLICATE_INTENT
+BYPASS
 ```
 
-### 要求
+每个决策必须有 Reason Code，并支持 Shadow、Replay 和受控启用。
 
-- 每个决策有 Reason Code；
-- 防止 Pollution 和 Oscillation；
-- Online SLO 优先；
-- 支持 Shadow、Replay 和可控启用；
-- 不直接操作 LMCache 或 Provider 私有 Key；
-- 将知识策略意图编译为 LMCache 公开操作。
+### v0.1.19：多知识块分发与融合
 
-## v0.1.19：多知识块非前缀融合
+- 一个请求解析多个 Knowledge Block；
+- 并行 Resolve、Locate 和 Source Selection；
+- 对不同 Artifact 并行建立 TransferSession；
+- 支持 Full、Partial、Overlap 和 Reorder；
+- 使用 LMCache Non-prefix、CacheBlend 或等价能力；
+- 只重计算必要 Token；
+- 质量失败或超时回退文本。
 
-- 一个请求解析多个知识块；
-- Artifact Resolve 与 Token/Cache Lookup 并行；
-- Full/Partial/Overlap/Reorder 统一规划；
-- 使用 LMCache Non-prefix、CacheBlend 或等价公开能力；
-- 选择性重计算必要 Token；
-- 多块 Preparation 接入 ExecutionGraph；
-- 不支持、质量失败或超时时回退文本；
-- 比较串行加载、并行加载、纯文本和单前缀复用。
-
-## v0.2.0：集成、稳定与研究基线
+### v0.2.0：集成 KVCache 分发基础设施
 
 v0.2.0 完成时应满足：
 
-- v1 是默认开发和实验路径；
-- Legacy 保持可运行并有明确弃用策略；
-- KDN 作为 Knowledge Control + Cache Service Facade + LMCache Gateway 独立部署；
-- vLLM 与 LMCache MP 数据热路径不经过 KDN 业务服务；
-- 至少验证 baseline 和 latest 两个 LMCache Profile；
-- 至少表示两个 Adapter/Tier 配置；
-- Proxy 使用短期观测而非权威 Block Index；
-- 网络 KV 与纯计算可并行；
-- 队列具备 Single-flight、背压、公平、取消和回退；
-- 支持至少两个知识块非前缀复用；
-- KDN 有至少一种知识价值策略；
-- 关键故障和升级场景有可重复测试；
-- 文本、单知识和 Legacy 路径兼容。
+- KDN 以 Cluster 形式部署，至少包含 Control Plane 和多个 Node；
+- Artifact 可以跨节点定位、传输、发布和清理；
+- 至少验证两个 Node、两个 LMCache/Transport Profile；
+- Source Selection、Replica Placement 和 TransferSession 可重复验证；
+- Control Plane 与 Distribution Plane 独立扩展；
+- 节点内数据语义继续由 LMCache 管理；
+- Proxy 使用 KDN RouteDecision 和短期观测；
+- 网络传输与计算可并行；
+- 队列具备 Single-flight、背压、公平、取消、重试和回退；
+- 支持至少两个知识块的并行分发和复用；
+- v1 为默认，Legacy 保留最小兼容回归；
+- 关键故障、升级和跨区域场景有可重复实验。
 
-## 9. LMCache 演进兼容测试框架
+## 9. 生命周期与状态
 
-### 9.1 Contract Tests
-
-同一套领域与 Gateway Contract Tests 应运行于：
-
-- Mock MP HTTP Profile；
-- Mock Coordinator Profile；
-- Mock SDK Profile；
-- Mock Metrics/Event Profile；
-- 当前 v1 validated Profile；
-- Legacy Profile；
-- unknown-future Profile。
-
-### 9.2 Compatibility Matrix
+### 9.1 Artifact 生命周期
 
 ```text
-CacheRoute version
-runtime profile
-vLLM version/profile
-LMCache version/profile
-Gateway adapters
-storage adapters/tiers
-validated operations
-hit-observation mechanism
-known limitations
-status
+REGISTERED
+    -> BUILDING
+    -> AVAILABLE
+    -> DISTRIBUTING
+    -> PARTIALLY_REPLICATED
+    -> REPLICATED
+    -> STALE
+    -> INVALIDATED
+    -> PURGED
 ```
 
-### 9.3 Upgrade Scenarios
+### 9.2 Replica 状态
 
-- LMCache 小版本升级；
-- HTTP Route、SDK 或 Metric 更名；
-- Completion Model 变化；
-- Key Format、Layout 或 Serde 变化；
-- Endpoint 重启和 Generation 变化；
-- Adapter 增删或顺序变化；
-- 新旧 Profile 并存；
-- Profile 弃用和回滚；
-- Legacy 到 v1 显式迁移或重建。
+```text
+UNKNOWN
+PLANNED
+TRANSFERRING
+VERIFYING
+PUBLISHED
+AVAILABLE
+STALE
+FAILED
+REMOVING
+REMOVED
+```
 
-### 9.4 失败原则
+### 9.3 Transfer 状态
 
-- 未知能力不默认支持；
-- 不兼容 Artifact 不加载；
-- Gateway 失败不破坏知识目录；
-- KDN 控制面失败不改变已运行的 LMCache 数据路径；
-- v1 不静默执行 Legacy 写操作；
-- 失败时 Proxy 可回退文本；
-- 升级失败可回到上一个 validated Profile。
+```text
+PENDING
+AUTHORIZED
+CONNECTING
+TRANSFERRING
+VERIFYING
+PUBLISHING
+SUCCEEDED
+FAILED
+CANCELLED
+EXPIRED
+```
 
-## 10. 队列和缓存研究指标
+状态转换必须记录：
+
+```text
+source
+generation
+reason_code
+observed_at
+expires_at
+trace_id
+```
+
+## 10. 观测与研究指标
+
+### 请求指标
 
 - TTFT P50/P95/P99；
 - 吞吐和完成时间；
-- Knowledge Resolve Wait；
-- LMCache Gateway Request/Operation Time；
-- Token Lookup Coverage；
-- Hit Tokens 和 Remote Reads；
-- Prefetch/Pin/Clear 成功率；
-- Endpoint/Adapter/Tier 容量和健康；
+- 实际 hit-token；
+- 远端复用 Token；
+- 文本回退率；
+- 计算节省时间。
+
+### 分发指标
+
+- Route Decision 延迟；
+- Source Selection 命中率；
+- Transfer Queue Wait；
+- Transfer Setup Time；
+- Bytes/Tokens Transferred；
+- Effective Bandwidth；
+- Resume 和 Retry 次数；
+- Source Failover 次数；
+- Integrity Failure；
+- Publish/Load Time；
+- Distribution Success Rate。
+
+### 集群指标
+
+- Artifact/Replica 数量；
+- Region/Node 分布；
+- Replica Freshness；
+- Capacity 和 Quota；
+- Eviction/Purge/Rebuild；
+- Hotspot 和负载偏斜；
+- Cross-region Traffic；
+- Cache Pollution；
+- Placement Policy 收益。
+
+### 并行指标
+
 - Network-Compute Overlap Ratio；
 - GPU Idle Due to Cache Wait；
-- Head-of-line Blocking Time；
+- Network Idle With Pending Work；
+- Head-of-line Blocking；
 - Single-flight 节省任务和字节；
-- Profile 协商失败率；
-- 不兼容重建和回退率；
-- LMCache 升级前后结果一致性。
+- Work-conserving 利用率。
 
-## 11. 状态边界
-
-### KDN Knowledge Control Plane
-
-权威维护知识、Artifact、策略、Desired State、Profile 支持和历史价值。
-
-### KDN Cache Service Facade
-
-权威维护 CacheRoute 逻辑 Operation、幂等关系、任务状态、审计和结构化结果，但不拥有物理 KV。
-
-### LMCache Gateway
-
-维护当前 Endpoint Capability Snapshot、版本 Adapter 和短期调用观测；不成为第二套物理事实来源。
-
-### LMCache Runtime
-
-权威维护 Token/Chunk/Key、物理 KV、L1/L2、Adapter、Serde、锁、容量、淘汰和底层操作结果。
-
-### Proxy
-
-维护请求级计划、短期 Instance/LMCache 观测、共享准备任务和队列。
-
-### Instance / vLLM
-
-权威维护实际命中 Token、模型执行、Prefill 和 Decode 结果。
-
-## 12. 测试与实验要求
+## 11. 测试与实验要求
 
 ### 单元测试
 
-- RuntimeProfile 解析和冻结；
-- Object ID 和状态转换；
-- LMCacheCompatibilityProfile；
-- CapabilitySnapshot；
-- Secret/Private Key 拒绝；
-- Observation TTL 和 Endpoint Generation；
-- CacheOperationTask 幂等；
-- CachePlan/FusionPlan；
-- ExecutionGraph；
-- Trace 来源。
+- ID、Fingerprint 和状态转换；
+- Artifact 兼容性；
+- RouteDecision；
+- Placement/Replication Policy；
+- TransferSession 幂等；
+- Resume、Retry、Cancel；
+- Observation TTL 和 Generation；
+- Runtime Profile 与 Capability Snapshot；
+- Secret 和私有字段拒绝。
 
-### CPU-only 组件测试
+### 组件测试
 
-- Mock HTTP/Coordinator/SDK/Metrics Gateway；
-- Knowledge 与 Cache Service Contract；
-- supported/unsupported/incompatible/fallback；
-- Legacy 只读投影；
-- v1 不调用 Legacy 写路径；
-- 两种 Adapter/Tier 表示；
-- Generic pytest collection 不访问外部服务。
+- KDN Control Plane；
+- KDN Node Agent；
+- Mock LMCache Gateway；
+- Mock Transport；
+- MP HTTP/Coordinator Gateway；
+- 两个 Node 和两个 Transport/Profile；
+- Node 重启和 Generation 变化；
+- Source Failover；
+- Publish 后的 LMCache 可用性。
 
-### GPU 端到端测试
+### 端到端测试
 
-- vLLM + LMCache MP + CacheRoute；
-- Token Lookup、Warm Prefetch 和 Operation Status；
-- 冷请求无缓存读取；
-- 热请求有 hit-token 或 remote-read；
-- 冷热确定性输出一致；
-- Endpoint 重启和 Generation 失效；
-- 文本、单知识 KV、Hybrid 和 Legacy 回归。
+- vLLM + LMCache + Proxy + KDN Control + 两个 KDN Node；
+- 单节点本地命中；
+- 跨节点分发；
+- 多 Target 复制；
+- Source 故障恢复；
+- 带宽受限和队列背压；
+- 网络与计算并行；
+- 多知识块；
+- Profile 不兼容和文本回退；
+- Legacy 最小回归。
 
 ### 实验复现
 
-保存：
-
-- CacheRoute、vLLM、LMCache 版本；
-- Runtime 和 Compatibility Profile；
-- Gateway Adapter 与 Capability Snapshot；
-- 工作负载和 Endpoint/Adapter/Tier 拓扑；
-- 队列和策略参数；
-- ExecutionGraph；
-- 请求级 Trace 和结果；
-- 汇总指标和异常。
-
-## 13. 版本依赖
+每次实验保存：
 
 ```text
-v0.1.10 contracts + gateway vocabulary
-                 |
-v0.1.11 knowledge + LMCache observation
-                 |
-v0.1.12 LMCache-backed cache service MVP
-                 |
-v0.1.13 multi-tier + release compatibility
-                 |
-v0.1.14 observed Proxy manager
-                 |
-v0.1.15 execution graph
-                 |
-v0.1.16 overlap pipeline
-                 |
-v0.1.17 queue stability
-        +--------+--------+
-        |                 |
-v0.1.18 policy     v0.1.19 fusion/tools
-        |                 |
-        +--------+--------+
-                 |
-              v0.2.0
+CacheRoute version
+vLLM / LMCache version
+KDN protocol version
+Node / Region topology
+LMCacheCompatibilityProfile
+Transport profile
+Artifact / Replica layout
+workload
+bandwidth / latency
+queue and policy parameters
+RouteDecision
+DistributionPlan
+TransferSession
+ExecutionGraph
+request-level result
+aggregate metrics
+failure events
 ```
 
-## 14. KDN 的长期演进趋势
+## 12. 非目标
 
-达到 v0.2.0 后，KDN 的演进方向应是：
+v0.2.0 不要求：
 
-1. 从单体服务演进为 Knowledge Control、Cache Service 和多个 Gateway Worker；
-2. 从单 LMCache Endpoint 演进为多 Endpoint 和多区域编排；
-3. 从静态 Profile 演进为自动 Capability Negotiation 和 Conformance；
-4. 从粗粒度 Artifact 演进为多块、部分和组合知识缓存；
-5. 从规则策略演进为 SLO 和不确定性感知策略；
-6. 与 LMCache 新的 MP、Coordinator、SDK、Adapter、Metrics 和 Event 能力持续对齐；
-7. 只有明确证明 LMCache 扩展机制无法满足需求时，才新增 CacheRoute 特有的数据扩展；
-8. 始终保持 Knowledge API、Cache Service Domain、Gateway Adapter 和 LMCache Runtime 四层隔离。
+- 重新实现 LMCache Token Database、Allocator、Serde 或 Paged KV；
+- 固化某一种网络传输协议；
+- 把原始 Redis Key 作为 KDN 全局身份；
+- 在 Scheduler 中执行逐 Chunk 传输调度；
+- 在 Control Plane 中同步搬运所有 KV 数据；
+- 对不兼容 KVCache 做隐式转换；
+- 一次性实现全球多区域生产级一致性；
+- 替代 vLLM 的模型执行和引擎调度。
 
-无论 LMCache 底层如何演进，CacheRoute 的长期核心始终是：
+## 13. 长期演进
 
-> **把知识语义、LMCache 原生缓存能力、缓存策略和计算队列编排连接为一个可观测、可扩展、可复现实验的闭环。**
+达到 v0.2.0 后，KDN 的长期方向是：
+
+1. 从单集群演进为多区域 KVCache Distribution Network；
+2. 从中心目录演进为分层目录和区域自治；
+3. 从简单 Source Selection 演进为延迟、成本和 SLO 感知路由；
+4. 从单次复制演进为持续热度驱动的 Replica Placement；
+5. 从固定 Transport 演进为 NIXL、Mooncake、RDMA、对象存储和共享 L2 的统一选择；
+6. 从单租户演进为配额、隔离和公平治理；
+7. 从 Artifact 级分发演进为 Token Segment 和多知识块组合分发；
+8. 与 LMCache 的 MP、Coordinator、Adapter、Transport 和 Observability 能力持续对齐；
+9. 保持 KDN 网络基础设施与 LMCache 节点内 Runtime 的清晰边界。
+
+CacheRoute 的长期核心是：
+
+> **把 KVCache 从单机运行时资源提升为可在网络中命名、定位、分发、复制、治理和观测的基础设施资源。**
