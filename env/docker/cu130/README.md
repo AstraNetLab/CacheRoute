@@ -6,9 +6,9 @@ modern CacheRoute runtime. It does not replace or modify the existing CUDA 12.8
 
 Start with the repository-level guides:
 
-- complete runtime path: [`doc/quickstart_v1.md`](../../../docs/quickstart_v1.md);
-- compatibility design: [`doc/runtime_compatibility_v1.md`](../../../docs/runtime_compatibility_v1.md);
-- completed migration evidence: [`doc/v1_migration_closeout.md`](../../../docs/v1_migration_closeout.md).
+- complete runtime path: [`doc/quickstart_v1.md`](../../../doc/quickstart_v1.md);
+- compatibility design: [`doc/runtime_compatibility_v1.md`](../../../doc/runtime_compatibility_v1.md);
+- completed migration evidence: [`doc/v1_migration_closeout.md`](../../../doc/v1_migration_closeout.md).
 
 ## Choose this profile only for the modern stack
 
