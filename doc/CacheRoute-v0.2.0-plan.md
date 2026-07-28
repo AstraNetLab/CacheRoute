@@ -2,302 +2,465 @@
 
 > Status: Planning draft  
 > Current release baseline: v0.1.9  
-> Implementation approach: restart from the v0.1.10 Issue sequence without inheriting closed-PR implementations  
+> Current development baseline: `v1` (vLLM 0.25.1 + LMCache 0.5.2 + PyTorch 2.11.0)  
+> Compatibility path: `legacy` remains runnable but feature-frozen  
 > Target release: v0.2.0  
 > Core foundation: vLLM + LMCache  
-> Core positioning: an independent knowledge-aware KDN remote-cache server, an LMCache evolution-compatibility layer, Proxy multi-resource execution orchestration, knowledge-aware cache policy, and multi-block reuse
-
-> **v1/Legacy and LMCache-native amendment:** after the runtime migration, v1 KDN is interpreted as `Knowledge Control Plane + CacheRoute Cache Service Facade + LMCache Orchestration Gateway`. vLLM and LMCache MP retain the direct data path; new features target v1 only, while Legacy remains runnable but feature-frozen. The authoritative amendment is `doc/CacheRoute-v0.2.0-v1-lmcache-alignment.md`.
+> Core positioning: KDN knowledge control, a CacheRoute cache-service facade, an LMCache orchestration gateway, Proxy multi-resource execution orchestration, knowledge-aware cache policy, and multi-block reuse
 
 ## 0. Planning Decisions
 
 This roadmap establishes the following long-term boundary:
 
-> **KDN Server = Knowledge Control Plane + LMCache-Compatible Remote Cache Serving Plane.**
+> **KDN Server = Knowledge Control Plane + CacheRoute Cache Service Facade + LMCache Orchestration Gateway.**
 
-KDN is an independently deployable and scalable server entity managed as a resource by CacheRoute. It is neither an alias for Redis nor a second general-purpose KVCache store implemented by CacheRoute.
+The v1 high-frequency KV data path remains:
 
-KDN has two responsibilities:
+```text
+vLLM == LMCacheMPConnector == LMCache MP == L1 / L2 adapters
+```
 
-1. provide CacheRoute with knowledge semantics, Artifact management, policy, maintenance, and observations;
-2. provide LMCache with remote KVCache lookup, store, load, and asynchronous serving operations.
+KDN is independently deployable, scalable, and managed by Scheduler, but it is not the default v1 physical KV data server. It does not duplicate LMCache Token Database, chunk/hash/key generation, L1/L2 StorageManager, adapter cascades, Store/Prefetch Controller, serde, locking, capacity, or eviction.
 
-Physical KVCache chunking, serialization, transfer, storage backends, and low-level eviction should reuse or align with LMCache public capabilities whenever possible. KDN differentiates CacheRoute at the knowledge and policy layers rather than by reimplementing Redis, Mooncake, S3, NIXL, or filesystem cache engines.
+KDN differentiates CacheRoute through:
 
-### 0.1 Current Issue Treatment
+1. KnowledgeObject, CacheArtifact, and knowledge-version semantics;
+2. model, tokenizer, adapter, KV-layout, and LMCache Profile compatibility;
+3. knowledge-level lookup, prefetch, pin, clear, and rebuild intents;
+4. multi-LMCache-endpoint selection, idempotent tasks, audit, authorization, and fallback;
+5. normalized LMCache observations with TTL, confidence, and request-value feedback;
+6. Proxy CachePlan, ExecutionGraph, queues, and network-compute overlap.
+
+### 0.1 Runtime Profile Policy
+
+- `v1`: the only development path for new features; uses LMCache MP and public control/observation interfaces.
+- `legacy`: preserves old startup, Redis scan/dump/restore/inject, request, and experiment paths; feature-frozen.
+- `auto`: migration discovery at startup only; it must resolve and freeze one explicit Profile.
+- A v1 request never silently enters a Legacy write path.
+- Legacy data enters v1 only through explicit migration or rebuild.
+
+### 0.2 Current Issue Treatment
 
 | Item | Roadmap treatment |
 |---|---|
-| #138 / PR #143 | complete; retain Instance Capability Fingerprints |
-| #139 | restart from the Issue; define storage-neutral core states and logical objects |
-| #140 | revise toward dual KDN interfaces and LMCache Compatibility Profiles |
-| #141 | include KDN Serving, LMCache Profile, and Provider observation sources |
-| #142 | add cross-profile and cross-version contract/regression validation |
-| Closed PRs | not treated as an implementation migration base in this roadmap |
+| #148 / PR #149 / PR #151 | completed v1 environment, MP startup, and documentation baseline |
+| #138 / PR #143 | completed Instance Capability Fingerprints |
+| #139 | define v1 Runtime, Artifact, LMCache Observation, Operation Task, and Queue states |
+| #140 | define the KDN Cache Service Facade and LMCache Gateway contracts |
+| #141 | add unified Gateway, Tier, Adapter, Queue, and vLLM observability |
+| #142 | add v1/Legacy dual-Profile and Gateway regression validation |
+| Closed PRs | not treated as the implementation migration base for #139–#142 |
 
-### 0.2 Non-Negotiable Principles
+### 0.3 Non-Negotiable Principles
 
-- KDN must be an independent server without making any one storage implementation part of KDN's identity.
-- Redis may be an early validation provider or Legacy compatibility path only.
-- KDN exposes stable remote-cache semantics to LMCache, not Redis keys, directories, or private serialization.
-- KDN's internal Provider layer aligns with public LMCache extension contracts.
-- CacheRoute does not duplicate LMCache's chunk index, allocator, serde, or block-transfer implementation.
-- LMCache version changes must not propagate into KDN Knowledge APIs, Proxy CachePlan, or Scheduler logic.
-- Version and capability differences are represented through Compatibility Profiles and capability negotiation.
-- Missing or incompatible capabilities produce explicit `unsupported`, `incompatible`, or fallback outcomes; they are never silently emulated.
+- CacheRoute does not duplicate LMCache Token DB, chunk index, allocator, serde, locks, or physical transfer implementation.
+- KDN APIs exchange knowledge semantics, logical references, operation intents, observation summaries, and task state; they do not carry large KVCache payloads.
+- LMCache release and interface differences appear only in Gateway Adapters, factories, and immutable Capability Snapshots.
+- Scheduler, Proxy, KnowledgeObject, CacheArtifact, and ExecutionGraph do not import LMCache private classes.
+- Redis belongs only to the Legacy boundary or to an adapter loaded by LMCache; it is not KDN identity.
+- Unknown capabilities are not assumed to be supported. Missing capabilities return `unsupported`, `incompatible`, or explicit fallback.
+- LMCache Runtime is authoritative for physical state; KDN and Proxy retain only sourced, timestamped, TTL-bound observations.
 
-## 1. Formal Positioning of KDN Server
+## 1. Overall CacheRoute, KDN, vLLM, and LMCache Structure
 
-### 1.1 Definition
+### 1.1 Legend
 
-KDN Server is a knowledge-aware remote cache service. It receives Lookup, Store, Load/Retrieve, and related calls from Instance-side LMCache while providing CacheRoute with a knowledge catalog and policy control.
+```text
+==  high-frequency request or KV data hot path
+--  control, management, policy, or observation API
+|   containment or component hierarchy
+```
 
-KDN is more than a data backend. An ordinary remote backend knows keys and values; KDN additionally understands:
+### 1.2 Global Component, Data-Path, and Control-Path Diagram
 
-- the KnowledgeObject represented by the cache;
-- knowledge content and version;
-- model, tokenizer, adapter, and KV-layout compatibility;
-- CacheArtifact construction and invalidation;
-- multi-knowledge-block co-occurrence;
-- cache value, Pin, prefetch, and retention intent;
-- network cost, compute savings, and queue impact;
-- quality protection and text fallback.
+```text
++------------------- CacheRoute Client / Workload -------------------+
+|                                                                     |
+|  OpenAI-compatible request                                          |
++==============================+======================================+
+                               |
+                               v
++------------------------- CacheRoute Scheduler ----------------------+
+| - Proxy / Instance selection                                        |
+| - KDN endpoint selection                                            |
+| - coarse routing and admission                                      |
++==================+===========================+-----------------------+
+                   |                           |
+                   | request route             | Knowledge API
+                   v                           v
++---------------- CacheRoute Proxy ------------+      +--------------- KDN Server ----------------+
+| - request queue / single-flight             |      |                                               |
+| - CachePlan / ExecutionGraph                 |      | +-- Knowledge Control Plane                 |
+| - text fallback                              |      | |   - KnowledgeObject / version             |
++==================+===========================+      | |   - CacheArtifact / compatibility         |
+                   |                                  | |   - desired state / policy / audit        |
+                   | request execution                | |                                             |
+                   v                                  | +-- Cache Service Facade                    |
++---------------- CacheRoute Instance ---------+      | |   - LookupArtifact / LookupTokens          |
+| - Instance Capability                        |      | |   - Prefetch / Pin / Clear / Rebuild intent|
+| - vLLM request forwarding                    |      | |   - operation status / normalized view     |
+| - LMCache hit-token and remote-read report   |      | |                                             |
++==================+===========================+      | +-- LMCache Orchestration Gateway           |
+                   |                                  |     - MPHTTPGateway                          |
+                   | OpenAI request                   |     - MPCoordinatorGateway                   |
+                   v                                  |     - MPSDKGateway                           |
++------------------------- vLLM ----------------+      |     - MPMetricsEventGateway                  |
+| model execution / prefill / decode            |      +-------------------+---------------------------+
++==================+=============================+                          |
+                   | LMCacheMPConnector KV path                             | LMCache public control APIs
+                   v                                                        |
++---------------------- LMCache MP Runtime ---------------------------------+--------------------------+
+|                                                                                                      |
+|  +-- Token DB / token-hash lookup                                                                  |
+|  +-- L1 memory tier                                                                                |
+|  +-- L2 adapter cascade                                                                           |
+|  |   +-- Redis / Valkey / Mooncake / NIXL / FS / object store / custom plugin                     |
+|  +-- Store / Retrieve / Prefetch                                                                  |
+|  +-- Pin / Unpin / Clear / operation status                                                       |
+|  +-- capacity / quota / eviction / metrics / events                                                |
+|                                                                                                      |
++======================================================================================================+
 
-### 1.2 Three-Layer Structure
+Control relations outside the KV hot path:
+Scheduler / Proxy / Instance -- Knowledge API / Cache Service API --> KDN
+KDN -- MP HTTP / Coordinator / SDK / Metrics / Events -------------> LMCache MP
+LMCache MP -- observations / operation results ---------------------> KDN
+KDN -- normalized observations / policy results --------------------> Scheduler / Proxy / Instance
+```
+
+The diagram captures two non-interchangeable facts:
+
+1. `vLLM == LMCacheMPConnector == LMCache MP` is the v1 KV data hot path;
+2. KDN manages and observes LMCache through `--` interfaces and does not sit in the per-chunk transfer path.
+
+## 2. Formal Positioning of KDN Server
+
+### 2.1 Three-Layer Structure
 
 ```text
 KDN Server
 |
 +-- Knowledge Control Plane
-|   - KnowledgeObject / version
-|   - CacheArtifact identity
-|   - compatibility and policy
-|   - desired state
-|   - maintenance decisions
-|   - access and value statistics
+|   |-- KnowledgeObject / version
+|   |-- CacheArtifact / compatibility
+|   |-- desired state / policy
+|   |-- audit / authorization
+|   +-- access value / request outcome
 |
-+-- Remote Cache Serving Plane
-|   - LMCache-facing Lookup
-|   - Store / Publish
-|   - Load / Retrieve
-|   - Prefetch
-|   - Pin / Unpin
-|   - Remove / Clear
-|   - asynchronous task status
-|   - health and metrics
++-- CacheRoute Cache Service Facade
+|   |-- cache and token observations
+|   |-- prefetch / pin / clear / rebuild intent
+|   |-- logical operation status
+|   +-- structured fallback and errors
 |
-+-- Provider Compatibility Layer
-    - LMCache MP L2 Adapter profile
-    - LMCache native_plugin profile
-    - Remote Storage Plugin profile
-    - Legacy in-process/Controller profile
-    - Mock provider
-    - backend-specific provider packages
++-- LMCache Orchestration Gateway
+    |-- CapabilityFactory / AdapterFactory
+    |-- MP HTTP / Coordinator / SDK
+    |-- Metrics / Events
+    |-- Mock Gateway
+    +-- LegacyCacheAdapter
 ```
 
 The layers answer different questions:
 
-- **Knowledge Control Plane**: why the cache exists, which knowledge it represents, and which policy should apply;
-- **Remote Cache Serving Plane**: which remote-cache services LMCache can invoke;
-- **Provider Compatibility Layer**: how the current LMCache version and provider execute those operations.
+- **Knowledge Control Plane**: why the cache exists, which knowledge it represents, and which policy applies;
+- **Cache Service Facade**: which stable domain operations CacheRoute requires;
+- **LMCache Orchestration Gateway**: how the active LMCache release and interfaces execute or observe the operation.
 
-### 1.3 Two External Interfaces
+### 2.2 KDN Owns
 
-#### CacheRoute-Facing Knowledge Management API
+- KnowledgeObject content, version, and semantics;
+- KnowledgeObject-to-CacheArtifact and token-reference mappings;
+- Artifact compatibility and invalidation reasons;
+- desired Prefetch, Pin, Clear, and Rebuild state;
+- coarse selection across LMCache Endpoints;
+- CacheOperationTask idempotency, audit, authorization, cancellation, and fallback;
+- normalized LMCache observations with TTL and confidence;
+- hit value, compute savings, and maintenance feedback.
 
-Used by Scheduler, Proxy, management tools, and KDN policy modules:
+### 2.3 LMCache Owns
+
+- token chunking, hashes, chunk keys, and physical KV objects;
+- L1/L2 residency and adapter cascades;
+- Store, Retrieve, Prefetch, Pin, Unpin, and Clear;
+- serde, locking, capacity, quota, and eviction;
+- physical operation completion;
+- actual hit tokens, remote reads, metrics, and events.
+
+### 2.4 KDN Is Not Redis or a Second LMCache
+
+The following must not enter stable KDN domain models:
+
+```text
+Redis URL / password / raw key
+LMCache private Python class
+LMCache internal Chunk Key
+physical KV payload
+private serialized object
+physical chunk-index copy
+```
+
+Legacy Redis operations are encapsulated behind `LegacyCacheAdapter`. v1 code does not extend the current Redis Injector with token lookup, tiers, adapters, prefetch, or pin logic.
+
+## 3. KDN APIs and the LMCache Gateway
+
+### 3.1 API Layering and Mapping Diagram
+
+```text
+CacheRoute callers
+|-- Scheduler
+|-- Proxy
+|-- Instance
+|-- management / experiment tools
+|
++-- Knowledge API --------------------------------------------------------------+
+|   |-- RegisterKnowledge                 == KDN domain implementation           |
+|   |-- UpdateKnowledgeVersion            == KDN domain implementation           |
+|   |-- ResolveKnowledge                  == KDN domain implementation           |
+|   |-- ListCompatibleArtifacts           == KDN catalog + compatibility          |
+|   |-- GetPolicyDecision                 == KDN policy                           |
+|   +-- ReportRequestOutcome              == KDN statistics / feedback           |
+|                                                                                |
++-- Cache Service API ----------------------------------------------------------+
+    |-- GetCacheObservation   -- Gateway --> LMCache status / metrics / events   |
+    |-- LookupArtifact        -- Gateway --> token lookup + KDN Artifact mapping |
+    |-- LookupTokens          -- Gateway --> LMCache token/hash lookup           |
+    |-- CreatePrefetchIntent  -- Gateway --> MP HTTP / Coordinator / SDK         |
+    |-- CreatePinIntent       -- Gateway --> Pin API / Coordinator               |
+    |-- CreateUnpinIntent     -- Gateway --> Unpin API / Coordinator             |
+    |-- CreateClearIntent     -- Gateway --> cache-object clear/delete           |
+    |-- CreateRebuildIntent   -- KDN task --> LMCache-backed rebuild workflow    |
+    |-- GetOperationStatus    -- Gateway --> operation/task status               |
+    |-- CancelOperation       -- Gateway --> cancellation when supported         |
+    |-- GetLMCacheEndpoints   -- Gateway --> endpoint/config/capability discovery|
+    |-- GetTierAndAdapterSummary -- Gateway --> L1/L2/adapter/config/metrics      |
+    +-- GetMaintenanceStatus  -- Gateway --> quota/eviction/health observations  |
+```
+
+### 3.2 Mapping Rule
+
+```text
+CacheRoute Domain Request
+        |
+        v
+KDN versioned API
+        |
+        v
+CacheOperationTask / CacheReplicaObservation
+        |
+        v
+LMCacheCompatibilityProfile + CapabilitySnapshot
+        |
+        +-- supported ----> versioned Gateway Adapter ----> LMCache public API
+        |
+        +-- unsupported --> structured unsupported / explicit text fallback
+        |
+        +-- incompatible -> reject reuse / migrate / rebuild
+```
+
+### 3.3 Knowledge API
 
 ```text
 RegisterKnowledge
 UpdateKnowledgeVersion
 ResolveKnowledge
 ListCompatibleArtifacts
-GetArtifactObservation
-GetServingCandidates
-CreatePlacementIntent
-CreatePrefetchIntent
-PinKnowledge
-ClearKnowledge
 GetPolicyDecision
-GetMaintenanceStatus
 ReportRequestOutcome
 ```
 
-This interface exchanges knowledge, policy, logical references, observation summaries, and task state. It does not transfer large KVCache payloads.
-
-#### LMCache-Facing Remote Cache Serving API
-
-Used by Instance-side LMCache or its plugins:
+### 3.4 Cache Service API
 
 ```text
-Handshake / Capabilities
-Lookup / BatchedLookup
-Store / Publish
-Load / Retrieve
-Prefetch
-Pin / Unpin
-Remove / Clear
-Unlock
-TaskStatus / Completion
-Health / Metrics
+GetCacheObservation
+LookupArtifact
+LookupTokens
+CreatePrefetchIntent
+CreatePinIntent
+CreateUnpinIntent
+CreateClearIntent
+CreateRebuildIntent
+GetOperationStatus
+CancelOperation
+GetLMCacheEndpoints
+GetTierAndAdapterSummary
+GetMaintenanceStatus
 ```
 
-The interface must:
+Stable parameters use Knowledge IDs, Artifact IDs, token sequences or token references, Instance Capability, LMCache Endpoint IDs, and logical operation IDs.
 
-- remain independent of a concrete backend;
-- support synchronous and asynchronous completion models;
-- support batching;
-- make lock, lease, cancellation, and idempotency semantics explicit;
-- return hit coverage, source, timing, and structured errors;
-- not require LMCache to understand KnowledgeObject or upper-layer policy.
-
-### 1.4 KDN Is Not Redis
-
-The first runnable KDN may use Redis, but the following must not enter the stable protocol:
-
-- Redis URL;
-- Redis password;
-- internal Redis key;
-- Redis pipeline details;
-- Redis as Replica identity;
-- Redis-specific TTL or transaction semantics.
-
-A uniform Provider description should represent:
+### 3.5 Gateway Internal Structure
 
 ```text
-provider_type
-provider_profile
-provider_version
-capabilities
-namespace
-location_ref
-health
-capacity_summary
-queue_summary
+KDN Cache Service Facade
+          |
+          v
++---------------- LMCache Orchestration Gateway ----------------+
+|                                                               |
+|  CapabilityFactory                                            |
+|  |-- detect LMCache version / build                           |
+|  |-- detect endpoint generation                               |
+|  |-- probe routes / metrics / events                          |
+|  +-- build immutable CapabilitySnapshot                       |
+|                                                               |
+|  AdapterFactory                                               |
+|  |-- MPHTTPGateway --------> health/config/cache/prefetch API  |
+|  |-- MPCoordinatorGateway -> multi-server/pin/quota/eviction   |
+|  |-- MPSDKGateway ---------> typed lookup/operation calls      |
+|  |-- MPMetricsEventGateway -> hit tokens/reads/events/status   |
+|  |-- MockGateway ----------> CPU-only contract tests           |
+|  +-- LegacyCacheAdapter ---> legacy Redis compatibility only   |
+|                                                               |
+|  optional                                                     |
+|  +-- L2PluginGateway ------> only for a proven capability gap  |
++---------------------------------------------------------------+
+          |
+          v
+LMCache MP public interfaces and loaded adapters
 ```
 
-The provider can later be replaced by Mooncake, NIXL, S3, filesystem, object storage, a native connector, or another LMCache-supported/extended backend without changing the KDN Knowledge API.
+### 3.6 Startup Capability Discovery
 
-## 2. Relationship Between KDN and LMCache
+At startup, the v1 Gateway should:
 
-### 2.1 Data-Path Relationship
+1. query LMCache version, build ID, and runtime mode;
+2. query config, connector, and loaded adapters;
+3. probe required HTTP routes, SDK methods, metrics, and events;
+4. build an immutable `CapabilitySnapshot`;
+5. validate chunk size, hash, layout, serde, tier, and completion profiles;
+6. create an `EndpointGeneration`;
+7. record the Profile in Instance Capability and traces.
+
+Unknown capability is never treated as supported. An LMCache route rename or minor-release change replaces a Gateway Adapter rather than changing KDN domain objects.
+
+## 4. v1, Legacy, and Auto Boundaries
+
+### 4.1 Runtime Profile Split Diagram
 
 ```text
-vLLM Instance
-    |
-    v
-Instance-side LMCache
-    |
-    | KDN Connector / L2 Adapter
-    v
-Independent KDN Server
-    |
-    +-- knowledge-aware serving decisions
-    +-- namespace / artifact mapping
-    +-- request and maintenance accounting
-    |
-    v
-KDN Provider Compatibility Layer
-    |
-    +-- LMCache-aligned adapter/provider
-    +-- supported storage or transport backend
+                         process startup
+                               |
+                               v
+                    CACHEROUTE_RUNTIME_PROFILE
+                               |
+              +----------------+----------------+
+              |                                 |
+           explicit                           auto
+        v1 / legacy                             |
+              |                        detect environment once
+              |                                 |
+              +----------------+----------------+
+                               |
+                         freeze profile
+                               |
+          +====================+====================+
+          |                                         |
+          v                                         v
++--------------------- v1 ----------------+  +---------------- Legacy ----------------+
+| new development                         |  | compatibility-only                     |
+|                                         |  |                                        |
+| KDN Cache Service Facade                |  | LegacyCacheAdapter                     |
+|        -- LMCache Gateway               |  |        -- Redis scan/dump/restore      |
+|        -- MP HTTP/Coordinator/SDK       |  |        -- historical KV injection      |
+|        -- Metrics/Events                |  |        -- legacy startup/request       |
+|                                         |  |                                        |
+| vLLM == LMCacheMPConnector == LMCache MP|  | old vLLM/LMCache/Redis path            |
++-----------------------------------------+  +----------------------------------------+
+          |                                         |
+          +-- no implicit Legacy write fallback ----+
+          +-- migration/rebuild must be explicit ---+
 ```
 
-Instance-side LMCache treats KDN as a retrievable remote cache service. KDN maps upper-layer knowledge identity into a physical cache reference that a Provider can execute.
+### 4.2 v1
 
-KDN does not require every LMCache request to run complex policy logic. The data hot path is separated from the knowledge-policy path:
+- All new features target v1 only.
+- The Gateway uses LMCache public control and observation interfaces.
+- New code does not scan, copy, or infer Redis keys directly.
+- Missing capabilities produce structured failure or explicit text fallback.
+- Actual reuse is confirmed through hit-token or remote-read observation.
 
-- ordinary Lookup/Load uses a fast Serving Path;
-- policy changes, maintenance, rebuild, and placement use an asynchronous Control Path;
-- the Serving Path may consume versioned snapshots and policy results published by the control plane.
+### 4.3 Legacy
 
-### 2.2 Authority Boundary
+- Preserve Redis scan/dump/restore/inject, old startup, and old request paths.
+- Feature-freeze the path and accept only availability, security, critical-defect, and compatibility fixes.
+- Legacy keys and directories do not become v1 Artifact identities.
+- Legacy physical operations appear only inside `LegacyCacheAdapter`.
+
+### 4.4 Auto
+
+```text
+auto --> v1
+```
+
+or:
+
+```text
+auto --> legacy
+```
+
+The resolved Profile is immutable for the process lifetime and cannot change dynamically based on requests or key existence.
+
+## 5. Authority and Overall Role Boundaries
 
 | Information | Authority |
 |---|---|
-| KnowledgeObject content, version, and semantics | KDN |
-| KnowledgeObject-to-CacheArtifact relationship | KDN |
-| Artifact compatibility and invalidation reason | KDN |
-| desired Pin, prefetch, retention, and placement intent | KDN Policy |
-| LMCache client capability and interface Profile | LMCache Compatibility Layer |
-| physical KV data, layout, serde, and chunk index | LMCache/Provider |
-| physical object existence and operation completion | Provider runtime observation |
-| actual local hit tokens at the Instance | Instance-side LMCache |
+| KnowledgeObject content, version, and semantics | KDN Knowledge Control Plane |
+| KnowledgeObject-to-CacheArtifact relationship | KDN Knowledge Control Plane |
+| Artifact compatibility and invalidation reason | KDN Knowledge Control Plane |
+| desired Prefetch, Pin, Clear, and Rebuild state | KDN Policy |
+| LMCache Endpoint, interfaces, and capability Profile | Gateway Capability Snapshot |
+| tokens, chunks, hashes, keys, physical KV, layout, and serde | LMCache Runtime |
+| L1/L2, adapters, capacity, quota, and eviction | LMCache Runtime |
+| physical operation completion | LMCache Runtime Observation |
+| actual local hit tokens | Instance-side LMCache |
 | request waiting, bypass, and compute release | Proxy |
-| global Proxy/KDN resource-pool selection | Scheduler |
+| coarse Proxy, Instance, and KDN Endpoint selection | Scheduler |
 
-KDN may cache physical observations, but they carry:
+Every physical observation carries:
 
 ```text
 observation_source
 observed_at
 expires_at
-provider_generation
+endpoint_generation
 lmcache_profile_id
+adapter_or_tier
 confidence
 ```
 
-### 2.3 Provider Alignment Rules
+## 6. Core Objects
 
-KDN Providers must not invent a KV-data abstraction unrelated to LMCache. The priority is:
-
-1. use an LMCache MP L2 Adapter or public equivalent;
-2. use `native_plugin` or a public native-connector contract for high-performance native backends;
-3. use the current recommended Remote Storage Plugin for external distributed storage;
-4. retain in-process Remote Connector, Controller, or old-configuration adapters only for compatibility;
-5. when LMCache lacks a required capability, prefer contributing through its extension mechanism;
-6. discuss a CacheRoute-specific data mechanism only after showing that LMCache extensions cannot reasonably provide it.
-
-## 3. Compatibility With LMCache Evolution
-
-LMCache is evolving from in-process mode toward standalone MP Server, multi-level L1/L2, asynchronous Store/Lookup/Load, and plugin-based adapters. CacheRoute must not make one point-in-time Python class, module path, or HTTP endpoint part of its long-term architecture.
-
-### 3.1 Compatibility-Layer Goal
+### 6.1 RuntimeProfile
 
 ```text
-Stable CacheRoute/KDN Contracts
-             |
-             v
-LMCache Compatibility Layer
-             |
-   +---------+-----------+----------------+
-   |                     |                |
-MP L2 Profile      Native Profile   Legacy Profile
-   |                     |                |
-Current LMCache     high-performance   old deployment
+profile_id
+resolved_mode
+source
+resolved_at
+immutable
 ```
 
-The layer isolates:
+Persisted active modes are `v1`, `legacy`, or `mock/test`; `auto` is startup input only.
 
-- LMCache version;
-- runtime mode;
-- request/response types;
-- Adapter class paths;
-- ZMQ/HTTP/in-process call differences;
-- asynchronous completion mechanisms;
-- lock and unlock semantics;
-- key/hash and layout differences;
-- event and observation formats;
-- deprecated configurations and interfaces.
-
-### 3.2 LMCacheCompatibilityProfile
+### 6.2 LMCacheCompatibilityProfile
 
 ```text
 profile_id
 lmcache_version_range
 integration_family
-integration_mode
 protocol_version
+configuration_schema_version
+connector_profile
 key_format_version
 layout_profile
 serde_profile
+chunk_size_profile
 supported_operations
 batching_capabilities
 locking_model
 completion_model
 event_model
 cancellation_model
-configuration_schema_version
 status
 validated_at
 ```
@@ -305,12 +468,14 @@ validated_at
 Recommended `integration_family` values:
 
 ```text
+mp_http_api
+mp_coordinator
+mp_sdk
+mp_metrics_events
 mp_l2_plugin
-mp_native_plugin
-remote_storage_plugin
-controller_api
-in_process_legacy
+legacy_redis
 mock
+unknown_future
 ```
 
 Profile status:
@@ -323,169 +488,22 @@ deprecated
 unsupported
 ```
 
-### 3.3 Handshake and Capability Negotiation
-
-When KDN and an LMCache Connector connect, they exchange:
-
-- KDN Serving Protocol Version;
-- LMCache Compatibility Profile;
-- supported operations;
-- maximum batch size;
-- Key/Layout/Serde Profiles;
-- synchronous or asynchronous completion model;
-- Lock/Unlock/Lease semantics;
-- Event/Metric support;
-- Provider Generation;
-- recommended fallback.
-
-An uncertain capability is never assumed to be supported.
-
-### 3.4 Prefer Public Interfaces
-
-- Reference LMCache public interfaces only inside stable adapters.
-- Do not import LMCache private classes into KDN domain models, Proxy queues, or Scheduler.
-- Private or experimental interfaces belong in independent adapters with explicit version gates.
-- An LMCache interface rename replaces an adapter rather than KnowledgeObject, CachePlan, or ExecutionGraph.
-- Do not make deprecated `remote_url`, old in-process mode, or one module path a stable KDN configuration field.
-
-### 3.5 Data Compatibility and Upgrade
-
-Artifact identity includes or references:
+### 6.3 LMCacheEndpoint
 
 ```text
-model_fingerprint
-tokenizer_fingerprint
-adapter_fingerprint
-kv_layout_profile
-kv_dtype
-parallelism_profile
-lmcache_data_profile
-key_format_version
-serde_profile
+endpoint_id
+runtime_profile
+lmcache_profile_id
+endpoint_generation
+api_endpoints
+loaded_adapters
+capability_snapshot
+health
+capacity_summary
+last_observed_at
 ```
 
-When LMCache is upgraded:
-
-1. compare Compatibility Profiles;
-2. reuse data when it is directly readable;
-3. create a migration task when migration is required and supported;
-4. rebuild an incompatible Artifact;
-5. forbid silent reuse and fall back to text when compatibility is unknown;
-6. retain old-Profile observation and a rollback window.
-
-### 3.6 Support Policy
-
-Each CacheRoute release declares:
-
-- minimum supported LMCache version or capability Profile;
-- default validated version;
-- latest experimentally validated version;
-- deprecated Profiles;
-- known-incompatible combinations;
-- Compatibility Matrix;
-- upgrade and rollback guidance.
-
-Tests cover at least:
-
-```text
-baseline validated LMCache profile
-latest validated LMCache profile
-one deprecated/legacy profile
-mock future profile with unknown capabilities
-```
-
-## 4. Overall Role Boundaries
-
-```text
-Scheduler
-- Select Proxy / KDN resource pools
-- Consume coarse knowledge and resource summaries
-- Do not handle physical cache keys, blocks, or transfer tasks
-
-Proxy
-- Resolve Knowledge
-- Build CachePlan / FusionPlan / ExecutionGraph
-- Maintain a short-lived Instance Cache Observation
-- Coordinate KDN Serving, network, Cache Load, Prefill, and Decode
-- Do not build an authoritative Block Index
-
-KDN Knowledge Control Plane
-- Authority for knowledge, Artifacts, policy, and desired state
-- Maintain KDN Endpoints, Providers, and LMCache Profiles
-- Generate maintenance and serving intents
-
-KDN Remote Cache Serving Plane
-- Receive LMCache remote-cache requests
-- Execute fast Lookup/Store/Load
-- Return structured hits and task results
-- Do not run complex global policy on the hot path
-
-KDN Provider Compatibility Layer
-- Adapt current LMCache extension contracts and concrete Providers
-- Isolate version, configuration, and completion-model differences
-
-LMCache
-- Instance-side cache client, L1/L2 management, and vLLM Connector
-- Define public extension interfaces and data-layout capabilities
-- Provide actual hit and load observations
-
-vLLM
-- Own model execution, Paged KV, and engine-internal scheduling
-```
-
-## 5. v0.2.0 Target Architecture
-
-```text
-                               Scheduler
-                                   |
-                    global knowledge/resource routing
-                                   |
-                                 Proxy
-        +--------------------------+--------------------------+
-        |                          |                          |
- Knowledge Resolver          KVCache Manager          Queue Coordinator
-        |                    observed Instance View     ExecutionGraph
-        |                          |                          |
-        +--------------------------+--------------------------+
-                                   |
-                    KDN Knowledge Management API
-                                   |
-                        Independent KDN Server
-        +--------------------------+--------------------------+
-        |                                                     |
- Knowledge Control Plane                         Remote Cache Serving Plane
- - Knowledge Catalog                             - Handshake / Capability
- - Artifact Catalog                              - Lookup / BatchedLookup
- - Policy Engine                                 - Store / Publish
- - Desired State                                 - Load / Retrieve
- - Maintenance Planner                           - Prefetch / Pin / Clear
- - Statistics                                    - Task status / metrics
-        |                                                     |
-        +-----------------------+-----------------------------+
-                                |
-                   Provider Compatibility Layer
-         +----------------------+------------------------------+
-         |                      |                              |
-   MP L2 Adapter          Native Plugin                Legacy Adapter
-         |                      |                              |
-       Provider A             Provider B                  Redis/file path
-```
-
-Key data flow:
-
-```text
-Instance LMCache
-    -> KDN Lookup
-    -> KDN Provider Lookup
-    -> KDN returns coverage / task reference
-    -> LMCache Load/Retrieve
-    -> Instance confirms actual hit
-    -> Proxy releases dependent compute
-```
-
-## 6. Core Objects
-
-### 6.1 KnowledgeObject
+### 6.4 KnowledgeObject
 
 ```text
 knowledge_id
@@ -500,68 +518,51 @@ created_at
 updated_at
 ```
 
-### 6.2 CacheArtifact
+### 6.5 CacheArtifact
 
 ```text
 artifact_id
 knowledge_id
 capability_fingerprint
-artifact_variant
+model_fingerprint
+tokenizer_fingerprint
+adapter_fingerprint
 kv_layout_profile
+kv_dtype
+parallelism_profile
 lmcache_data_profile
 key_format_version
+serde_profile
 desired_state
 policy_state
 created_at
 updated_at
 ```
 
-An Artifact is the logical materialization identity under a knowledge and compatibility environment. It does not store KV bytes.
+An Artifact is a logical materialization identity under a knowledge and compatibility environment. It does not store KV bytes.
 
-### 6.3 CacheReplicaObservation
+### 6.6 CacheReplicaObservation
 
 ```text
-replica_id
+observation_id
 artifact_id
-kdn_endpoint_id
-provider_id
-provider_profile
-location_ref
+lmcache_endpoint_id
+runtime_profile
+lmcache_profile_id
+adapter_or_tier
 observed_state
+hit_coverage
 health
 observation_source
 observed_at
 expires_at
-provider_generation
-lmcache_profile_id
+endpoint_generation
 confidence
 ```
 
-A Replica is a short-lived observation/reference, not a physical replica implemented by CacheRoute.
+It is a TTL-bound physical observation, not a CacheRoute-owned replica or chunk index.
 
-### 6.4 KDNServingEndpoint
-
-```text
-endpoint_id
-serving_protocol_version
-supported_lmcache_profiles
-supported_operations
-provider_profiles
-max_batch_size
-locking_model
-completion_model
-health
-capacity_summary
-queue_summary
-generation
-last_heartbeat_at
-```
-
-### 6.5 LMCacheCompatibilityProfile
-
-Use the definition in Section 3.2.
-
-### 6.6 KDNServingTask
+### 6.7 CacheOperationTask
 
 ```text
 task_id
@@ -569,11 +570,10 @@ idempotency_key
 operation
 artifact_id
 endpoint_id
-provider_id
-provider_task_id
+runtime_profile
+lmcache_profile_id
 state
 priority
-lease
 requested_at
 started_at
 finished_at
@@ -584,17 +584,17 @@ result
 error
 ```
 
-### 6.7 CachePlan / FusionPlan
+### 6.8 CachePlan / FusionPlan
 
 ```text
 request_id
 target_instance_id
 knowledge_blocks
 matched_artifacts
-kdn_candidates
+lmcache_endpoints
 cache_observations
 lookup_tasks
-load_tasks
+prefetch_tasks
 fusion_mode
 recompute_ranges
 fallback_mode
@@ -602,7 +602,7 @@ plan_state
 trace_context
 ```
 
-### 6.8 ExecutionGraph
+### 6.9 ExecutionGraph
 
 ```text
 node_id
@@ -624,7 +624,7 @@ Resource classes:
 ```text
 CONTROL
 KDN_LOOKUP
-KDN_SERVE
+LMCACHE_GATEWAY
 NET_KV
 CACHE_LOAD
 PREFILL
@@ -636,140 +636,137 @@ FUSION
 
 | Version | Theme | Main delivery |
 |---|---|---|
-| v0.1.10 | Contract and observation baseline | Capability, core states, dual KDN vocabulary, LMCache Profile, Trace |
-| v0.1.11 | KDN Knowledge Control Plane | KnowledgeObject, Artifact Catalog, Desired/Observed State |
-| v0.1.12 | Independent KDN Serving Plane MVP | LMCache-facing server, Provider SPI, Redis/Mock validation |
-| v0.1.13 | Multi-Provider and LMCache evolution compatibility | MP/Profile adapters, compatibility matrix, second provider, recovery |
-| v0.1.14 | Proxy KVCache Manager | LMCache/KDN-observed Instance view and single-flight |
+| v0.1.10 | v1/Legacy contract and observation baseline | RuntimeProfile, Gateway Profile, core states, traces, Legacy projection |
+| v0.1.11 | Knowledge Control + LMCache Observation | Knowledge/Artifact, token mapping, endpoint/adapter/tier observations |
+| v0.1.12 | LMCache-backed KDN Cache Service MVP | MP HTTP/Coordinator Gateway, Lookup/Prefetch/Pin/Clear |
+| v0.1.13 | Multi-tier, multi-adapter, and release compatibility | adapter cascade observation, capacity/eviction observation, compatibility matrix, recovery/rebuild |
+| v0.1.14 | Proxy KVCache Manager | short-lived Instance view and single-flight from KDN/LMCache observations |
 | v0.1.15 | Injection and compute queue model | ExecutionGraph, resource queues, Compute Fast Path |
-| v0.1.16 | Parallel network and compute | Work-conserving pipeline and overlap benchmark |
-| v0.1.17 | Queue stability and generality | Admission, backpressure, fairness, aging, adaptive concurrency |
-| v0.1.18 | KDN knowledge-aware policy | Pin/Prefetch/Placement/Clear intents, value model, replay |
-| v0.1.19 | Multi-block non-prefix fusion | Parallel lookup, selective recomputation, quality fallback |
-| v0.2.0 | Integrated research baseline | Stable interfaces, cross-version compatibility, complete experiment loop |
+| v0.1.16 | Parallel network and compute | work-conserving pipeline and overlap benchmark |
+| v0.1.17 | Queue stability and generality | admission, backpressure, fairness, aging, adaptive concurrency |
+| v0.1.18 | KDN knowledge-aware policy | Prefetch/Pin/Clear/Rebuild intents, value model, replay |
+| v0.1.19 | Multi-block non-prefix fusion | parallel token/artifact lookup, selective recomputation, quality fallback |
+| v0.2.0 | Integrated research baseline | v1 default, Legacy preserved, cross-LMCache compatibility, complete experiment loop |
 
 ## 8. Per-Version Plan
 
-## v0.1.10: Contract and Observation Baseline
+## v0.1.10: v1/Legacy Contract and Observation Baseline
 
 ### Goal
 
-Freeze the stable vocabulary required by later work without implementing the complete KDN Server:
+Freeze stable vocabulary for later work:
 
-- Instance Capability;
-- CacheArtifact and CacheReplicaObservation;
-- KDNServingEndpoint;
-- KDNServingTask;
+- RuntimeProfile;
 - LMCacheCompatibilityProfile;
-- QueueWork;
-- Trace sources and stages;
-- Legacy compatibility mapping.
+- LMCacheEndpoint and CapabilitySnapshot;
+- CacheArtifact and CacheReplicaObservation;
+- CacheOperationTask;
+- QueueWork, trace sources, and stages;
+- read-only Legacy `kv_ready` and Redis compatibility projection.
 
 ### Acceptance
 
-- completed #138 Capability remains compatible;
-- core objects contain no KV bytes, raw Redis keys, credentials, or LMCache private classes;
-- KDN Knowledge API and LMCache-facing Serving API are distinct;
-- LMCache Profiles represent MP, Plugin, Legacy, and unknown capabilities;
-- Trace distinguishes KDN, Provider, LMCache, Proxy, and vLLM sources;
-- CPU-only tests require no external vLLM, Redis, or LMCache cluster.
+- Completed #138 Capability remains compatible.
+- `auto` resolves and freezes at startup.
+- v1 operations cannot silently invoke a Legacy write adapter.
+- Core objects contain no KV bytes, raw Redis keys, credentials, or LMCache private classes.
+- Token lookup, prefetch, pin, and clear are represented as LMCache-backed operations.
+- CPU-only tests use Mock Gateways and require no external services.
 
-## v0.1.11: KDN Knowledge Control Plane
+## v0.1.11: Knowledge Control and LMCache Observation
 
 ### Main Steps
 
 1. Implement KnowledgeObject and version management.
 2. Allow one KnowledgeObject to map to multiple CacheArtifacts.
-3. Evaluate Artifact compatibility through Capability and LMCache Data Profiles.
-4. Separate Desired State from Provider Observation.
-5. Build KDN Endpoint and Provider registries.
-6. Map knowledge into a KDN Serving Namespace/Location Reference.
-7. Let Scheduler consume only coarse knowledge availability.
-8. Map Legacy `kv_ready` into `compatibility=unknown`.
+3. Map KnowledgeObjects to token references and Artifacts.
+4. Evaluate Artifact compatibility through Capability and LMCache Data Profiles.
+5. Separate Desired State from LMCache Observation.
+6. Build LMCacheEndpoint, Adapter, and Tier registries.
+7. Record source, Profile, Generation, timestamp, and TTL for every physical observation.
+8. Let Scheduler consume only coarse knowledge and Endpoint availability.
+9. Map Legacy `kv_ready` into a read-only observation with `compatibility=unknown`.
 
 ### Acceptance
 
-- one knowledge item supports multiple models, adapters, and LMCache Profiles;
-- the control plane does not access or copy physical KV data;
-- expired Provider observations are no longer authoritative;
-- Redis does not appear in stable Knowledge domain models.
+- One knowledge item supports multiple models, adapters, and LMCache Profiles.
+- KDN does not access or copy physical KV data.
+- Expired observations are no longer authoritative.
+- Redis does not appear in stable v1 domain models.
 
-## v0.1.12: Independent KDN Remote Cache Serving Plane MVP
+## v0.1.12: LMCache-Backed KDN Cache Service MVP
 
 ### Main Steps
 
-1. Start an independent KDN Server.
-2. Implement Serving Handshake and Capability Negotiation.
-3. Implement a minimum set of Lookup, Store, Load/Retrieve, and TaskStatus.
-4. Define a Provider SPI aligned with public LMCache L2/Remote Storage semantics.
-5. Implement a Mock Provider.
-6. Implement the first real Provider; Redis may be used only as a Provider.
-7. Implement an Instance-side LMCache KDN Connector/Adapter.
-8. Keep complex policy queries out of the data hot path.
-9. Record actual bytes, hit coverage, queueing, and operation time.
+1. Implement versioned KDN Knowledge and Cache Service APIs.
+2. Implement `MPHTTPGateway`.
+3. Implement the minimum `MPCoordinatorGateway` capability set.
+4. Implement LookupTokens, GetCacheObservation, Prefetch, Pin, Unpin, Clear, and OperationStatus.
+5. Build CapabilityFactory and AdapterFactory.
+6. Implement Mock Gateways for CPU-only CI.
+7. Validate actual reuse using LMCache hit-token or remote-read observations.
+8. Return `unsupported` or explicit fallback when a capability is missing.
+9. Do not implement a physical KV store or per-chunk data path in KDN.
 
 ### Acceptance
 
-- LMCache can treat KDN as a remote cache service;
-- KDN Server is decoupled from a concrete Provider;
-- replacing Mock/Redis does not change the Serving Protocol;
-- Redis keys and credentials do not enter CacheRoute APIs;
-- failure falls back to text computation.
+- vLLM and LMCache MP retain the direct data path.
+- KDN maps stable domain operations to LMCache public interfaces.
+- Gateway replacement does not change KnowledgeObject, CacheArtifact, or CachePlan.
+- Failure can fall back to text computation with a structured reason.
+- Legacy behavior remains unchanged.
 
-## v0.1.13: Multi-Provider and LMCache Evolution Compatibility
+## v0.1.13: Multi-Tier, Multi-Adapter, and LMCache Release Compatibility
 
 ### Main Steps
 
-1. Prefer an LMCache MP L2 Plugin Profile.
-2. Support at least one compatibility Profile such as Remote Storage Plugin or Legacy.
-3. Add a second real Provider to prove Redis independence.
-4. Build a Compatibility Matrix and Profile Conformance Suite.
-5. Allow different LMCache Profiles to register concurrently.
+1. Discover and observe multiple L2 adapters and tiers.
+2. Reuse LMCache adapter cascades, capacity, quota, and eviction.
+3. Build a Compatibility Matrix and Gateway Conformance Suite.
+4. Support baseline, latest, Legacy, and unknown-future Profiles.
+5. Implement Endpoint Generation, reconnect, and observation invalidation.
 6. Implement Profile upgrade, downgrade, and deprecation status.
-7. Implement Provider generation, reconnect, and task recovery.
-8. Migrate or rebuild incompatible Key/Layout/Serde data.
-9. Add a periodic process for validating the latest LMCache Profile.
+7. Migrate or rebuild incompatible key/layout/serde data.
+8. Add an L2 Plugin only after proving a real LMCache capability gap.
+9. Add periodic validation for LMCache minor releases.
 
 ### Acceptance
 
-- KDN runs with at least two Provider configurations;
-- MP Profile is the default evolution direction;
-- old Profiles are explicitly compatible or rejected;
-- LMCache interface changes require only Compatibility Adapter updates;
-- incompatible upgrades do not silently reuse old Artifacts.
+- At least two adapter/tier configurations are representable.
+- LMCache interface changes modify only Gateway Adapters.
+- Incompatible upgrades never silently reuse old Artifacts.
+- KDN does not implement its own adapter cascade, capacity, or eviction thread.
 
 ## v0.1.14: Proxy KVCache Manager
 
 ### Main Steps
 
 1. Build an Instance Cache Observation View.
-2. Sources include KDN Lookup, LMCache events, Load results, and actual hits.
-3. Every observation carries time, source, Profile, Generation, and TTL.
-4. States include UNKNOWN, REMOTE_AVAILABLE, PREPARING, LOCAL_AVAILABLE, STALE, and FAILED.
-5. Implement single-flight per Artifact/Instance.
-6. Invalidate observations when Instance, KDN, or Provider generation changes.
-7. Proxy does not copy a Provider Chunk Index.
+2. Sources include KDN observations, LMCache events, Gateway results, and actual hits.
+3. States include UNKNOWN, REMOTE_AVAILABLE, PREPARING, LOCAL_AVAILABLE, STALE, and FAILED.
+4. Implement single-flight per Artifact/Instance.
+5. Invalidate on Endpoint, Instance, or Profile Generation changes.
+6. Proxy does not copy the LMCache chunk index.
 
 ### Acceptance
 
-- Proxy distinguishes KDN availability, Provider hit, loading, and Instance-local availability;
-- expired observations become UNKNOWN;
-- one preparation task serves concurrent waiters;
-- LMCache Profile changes invalidate related observations.
+- Proxy distinguishes remote availability, preparation, local availability, and staleness.
+- One preparation task serves concurrent waiters.
+- Actual hits are confirmed through LMCache-native observations.
 
 ## v0.1.15: Knowledge Injection and Compute Queue Model
 
 - Compile CachePlan into ExecutionGraph.
-- Include Control, KDN Lookup, KDN Serve, Network KV, Cache Load, Prefill, Decode, and Fusion nodes.
+- Include Control, KDN Lookup, LMCache Gateway, Network KV, Cache Load, Prefill, Decode, and Fusion nodes.
 - Define dependency, Share Key, priority, deadline, cost, and fallback.
 - Text tasks use a Compute Fast Path.
 - Scheduler does not execute fine-grained nodes.
 
 ## v0.1.16: Parallel Network KV and Pure Compute
 
-- Create independent concurrency domains for Control, KDN, Network, Cache Load, and Compute.
-- Overlap network KV transfer with other-request Prefill/Decode.
-- Remain work-conserving when requests wait for KV.
+- Create independent concurrency domains for Control, Gateway, Network, Cache Load, and Compute.
+- Overlap network KV with other-request Prefill/Decode.
+- Remain work-conserving while requests wait for KV.
 - Add network-compute Gantt and Overlap Ratio.
 - Support cancellation, timeout, and fallback.
 
@@ -779,16 +776,16 @@ Freeze the stable vocabulary required by later work without implementing the com
 - Fairness, aging, and starvation guards.
 - Adaptive concurrency.
 - Single-flight lifecycle.
-- Test across models, Instances, KDNs, bandwidths, and injection mixes.
-- Policy plugins control priority, quota, bypass, and concurrency but cannot break state-machine correctness.
+- Test across models, Instances, KDNs, bandwidths, and workload mixes.
+- Policy plugins cannot break state-machine correctness.
 
 ## v0.1.18: KDN Knowledge-Aware Cache Policy
 
 ### Inputs
 
 - knowledge access frequency and co-occurrence;
-- LMCache Lookup/Event;
-- Provider capacity, hits, health, and queueing;
+- LMCache token lookup, metrics, and events;
+- Endpoint, adapter, and tier capacity and health;
 - Proxy waiting and GPU idle;
 - network cost and compute savings;
 - build, refresh, and migration cost;
@@ -799,13 +796,13 @@ Freeze the stable vocabulary required by later work without implementing the com
 
 ```text
 BUILD
-PUBLISH
 PREFETCH
 PIN
 UNPIN
-MOVE
 CLEAR
 REFRESH
+REBUILD
+MIGRATE
 REPLICATE_INTENT
 ```
 
@@ -815,30 +812,30 @@ REPLICATE_INTENT
 - Prevent pollution and oscillation.
 - Prioritize online SLOs.
 - Support shadow, replay, and controlled enablement.
-- Do not operate on Provider-private keys.
-- Use physical operations exposed by LMCache.
+- Do not operate on LMCache or Provider private keys.
+- Compile knowledge-policy intents into LMCache public operations.
 
 ## v0.1.19: Multi-Knowledge-Block Non-Prefix Fusion
 
 - Resolve multiple knowledge blocks per request.
-- Parallelize Artifact Resolve and Lookup.
+- Parallelize Artifact Resolve and token/cache lookup.
 - Plan Full/Partial/Overlap/Reorder uniformly.
-- Use LMCache non-prefix reuse, CacheBlend, or an equivalent capability.
+- Use LMCache non-prefix reuse, CacheBlend, or an equivalent public capability.
 - Selectively recompute required tokens.
 - Add multi-block preparation to ExecutionGraph.
-- Fall back to text when unsupported, quality validation fails, or timeout occurs.
+- Fall back to text on unsupported capability, quality failure, or timeout.
 - Compare serial loading, parallel loading, pure text, and single-prefix reuse.
 
 ## v0.2.0: Integration, Stability, and Research Baseline
 
 v0.2.0 is complete when:
 
-- KDN is independently deployable and scalable;
-- KDN is not bound to Redis or one LMCache mode;
-- at least two Providers are validated;
+- v1 is the default development and experiment path;
+- Legacy remains runnable with an explicit deprecation policy;
+- KDN deploys independently as Knowledge Control + Cache Service Facade + LMCache Gateway;
+- the vLLM-LMCache MP data hot path does not cross KDN business services;
 - at least baseline and latest LMCache Profiles are validated;
-- MP is the default Profile and Legacy has an explicit deprecation policy;
-- the Knowledge Control Plane and Serving Hot Path scale independently;
+- at least two adapter/tier configurations are represented;
 - Proxy uses short-lived observations rather than an authoritative Block Index;
 - network KV and pure compute overlap;
 - queues support single-flight, backpressure, fairness, cancellation, and fallback;
@@ -851,67 +848,69 @@ v0.2.0 is complete when:
 
 ### 9.1 Contract Tests
 
-Run the same KDN Serving Contract Tests against:
+Run the same domain and Gateway Contract Tests against:
 
-- Mock Profile;
-- MP L2 Plugin Profile;
-- Native Plugin Profile;
-- Remote Storage Plugin Profile;
-- Legacy Profile.
+- Mock MP HTTP Profile;
+- Mock Coordinator Profile;
+- Mock SDK Profile;
+- Mock Metrics/Event Profile;
+- current validated v1 Profile;
+- Legacy Profile;
+- unknown-future Profile.
 
 ### 9.2 Compatibility Matrix
 
-Record:
-
 ```text
 CacheRoute version
-KDN serving protocol
-LMCache profile
-LMCache version range
-vLLM version range
-provider profile
+runtime profile
+vLLM version/profile
+LMCache version/profile
+Gateway adapters
+storage adapters/tiers
 validated operations
+hit-observation mechanism
 known limitations
 status
 ```
 
 ### 9.3 Upgrade Scenarios
 
-- LMCache minor-version upgrade;
-- Adapter API rename;
-- Completion Model change;
-- Key Format change;
-- incompatible Layout/Serde;
-- Provider restart;
-- KDN rolling upgrade;
-- old and new LMCache clients connecting concurrently;
-- Profile deprecation;
-- downgrade rollback.
+- LMCache minor-release upgrade;
+- HTTP route, SDK method, or metric rename;
+- completion-model change;
+- key-format, layout, or serde change;
+- Endpoint restart and Generation change;
+- adapter addition, removal, or order change;
+- old and new Profiles coexisting;
+- Profile deprecation and rollback;
+- explicit Legacy-to-v1 migration or rebuild.
 
 ### 9.4 Failure Principles
 
 - Unknown capability is not supported by default.
 - Incompatible Artifacts are not loaded.
-- Provider operation failure does not corrupt the knowledge catalog.
-- KDN control-plane failure does not interrupt authorized data tasks.
-- Proxy can fall back to text when the Serving Plane fails.
+- Gateway failure does not corrupt the knowledge catalog.
+- KDN control-plane failure does not alter the running LMCache data path.
+- v1 never silently performs a Legacy write operation.
+- Proxy may fall back to text on failure.
 - Upgrade failure can return to the previous validated Profile.
 
-## 10. Queue Research Metrics
+## 10. Queue and Cache Research Metrics
 
 - TTFT P50/P95/P99;
 - throughput and completion time;
-- KDN Lookup Wait;
-- KDN Serving Queue/Execution;
-- Provider Lookup/Load;
+- Knowledge Resolve Wait;
+- LMCache Gateway Request/Operation Time;
+- Token Lookup Coverage;
+- Hit Tokens and Remote Reads;
+- Prefetch/Pin/Clear success rate;
+- Endpoint/Adapter/Tier capacity and health;
 - Network-Compute Overlap Ratio;
 - GPU Idle Due to Cache Wait;
-- Network Idle With Pending Work;
 - Head-of-Line Blocking Time;
 - single-flight saved tasks and bytes;
 - Profile negotiation failure rate;
 - incompatible rebuild and fallback rate;
-- multi-Provider load distribution;
 - result consistency across LMCache upgrades.
 
 ## 11. State Boundaries
@@ -920,17 +919,21 @@ status
 
 Authoritative for knowledge, Artifacts, policy, Desired State, Profile support, and historical value.
 
-### KDN Serving Plane
+### KDN Cache Service Facade
 
-Authoritative for KDN requests, tasks, and current serving results, but historical task results do not become permanent Provider physical facts.
+Authoritative for logical CacheRoute operations, idempotency, task state, audit, and structured outcomes, but not for physical KV.
 
-### Provider / LMCache Runtime
+### LMCache Gateway
 
-Authoritative for physical object existence, bytes, layouts, storage location, and low-level operation results.
+Maintains the active Endpoint Capability Snapshot, release adapters, and short-lived invocation observations; it is not a second source of physical truth.
+
+### LMCache Runtime
+
+Authoritative for tokens, chunks, keys, physical KV, L1/L2, adapters, serde, locks, capacity, eviction, and low-level operation results.
 
 ### Proxy
 
-Maintains request-level plans, short-lived Instance/KDN observations, shared preparation tasks, and queues.
+Maintains request-level plans, short-lived Instance/LMCache observations, shared preparation tasks, and queues.
 
 ### Instance / vLLM
 
@@ -940,95 +943,90 @@ Authoritative for actual hit tokens, model execution, Prefill, and Decode outcom
 
 ### Unit Tests
 
+- RuntimeProfile resolution and freeze;
 - object IDs and state transitions;
 - LMCacheCompatibilityProfile;
-- capability negotiation;
-- protocol version;
+- CapabilitySnapshot;
 - secret/private-key rejection;
-- observation TTL;
+- observation TTL and Endpoint Generation;
+- CacheOperationTask idempotency;
 - CachePlan/FusionPlan;
 - ExecutionGraph;
-- single-flight;
 - trace provenance.
 
-### Component Tests
+### CPU-Only Component Tests
 
-- separate KDN Control and Serving startup;
-- Mock Provider;
-- two Provider implementations;
-- two LMCache Profiles;
-- KDN Connector;
-- Provider restart;
-- Profile upgrade/downgrade;
-- multi-resource queue parallelism.
+- Mock HTTP/Coordinator/SDK/Metrics Gateways;
+- Knowledge and Cache Service contracts;
+- supported/unsupported/incompatible/fallback behavior;
+- read-only Legacy projection;
+- proof that v1 does not call a Legacy write path;
+- two adapter/tier representations;
+- generic pytest collection makes no external request.
 
-### End-to-End Tests
+### GPU End-to-End Tests
 
-- vLLM + LMCache + Proxy + KDN;
-- text, single-knowledge KV, and Hybrid;
-- KDN remote Lookup/Load;
-- network-compute parallelism;
-- multi-Provider;
-- multi-knowledge-block;
-- KDN/Provider/LMCache failure;
-- Profile incompatibility and text fallback.
+- vLLM + LMCache MP + CacheRoute;
+- token lookup, warm prefetch, and operation status;
+- cold request with no cache read;
+- warm request with hit-token or remote-read evidence;
+- deterministic cold-versus-hit output equality;
+- Endpoint restart and Generation invalidation;
+- text, single-knowledge KV, Hybrid, and Legacy regression.
 
 ### Experiment Reproduction
 
 Store:
 
-- CacheRoute, vLLM, LMCache, and Provider versions;
-- the relevant Compatibility Matrix row;
-- KDN protocol/Profile;
-- workload;
-- KDN and Provider topology;
+- CacheRoute, vLLM, and LMCache versions;
+- Runtime and Compatibility Profiles;
+- Gateway Adapters and Capability Snapshot;
+- workload and Endpoint/Adapter/Tier topology;
 - queue and policy parameters;
 - ExecutionGraph;
-- request-level results;
+- request-level traces and results;
 - aggregate metrics and anomalies.
 
 ## 13. Version Dependencies
 
 ```text
-v0.1.10 contracts
-       |
-v0.1.11 knowledge control
-       |
-v0.1.12 independent serving MVP
-       |
-v0.1.13 multi-provider + LMCache compatibility
-       |
+v0.1.10 contracts + gateway vocabulary
+                 |
+v0.1.11 knowledge + LMCache observation
+                 |
+v0.1.12 LMCache-backed cache service MVP
+                 |
+v0.1.13 multi-tier + release compatibility
+                 |
 v0.1.14 observed Proxy manager
-       |
+                 |
 v0.1.15 execution graph
-       |
+                 |
 v0.1.16 overlap pipeline
-       |
+                 |
 v0.1.17 queue stability
-       +----------------------+
-       |                      |
-v0.1.18 policy          v0.1.19 planning/tools
-       |                      |
-       +----------+-----------+
-                  |
-               v0.1.19
-                  |
-               v0.2.0
+        +--------+--------+
+        |                 |
+v0.1.18 policy     v0.1.19 fusion/tools
+        |                 |
+        +--------+--------+
+                 |
+              v0.2.0
 ```
 
 ## 14. Long-Term KDN Evolution
 
 After v0.2.0, KDN should evolve:
 
-1. from a monolithic KDN into a Control Plane plus multiple Serving Nodes;
-2. from one Provider into a heterogeneous Provider federation;
-3. from static Profiles into automatic capability negotiation;
-4. from one region into multi-region KDN;
-5. from coarse Artifacts into multi-block, partial, and composed knowledge cache;
-6. from rule policies into SLO- and uncertainty-aware policies;
-7. in continuous alignment with new LMCache MP, Native, Transport, and Observability capabilities;
-8. while preserving isolation among Knowledge API, KDN Serving Protocol, and Provider SPI.
+1. from one service into Knowledge Control, Cache Service, and multiple Gateway Workers;
+2. from one LMCache Endpoint into multi-Endpoint and multi-region orchestration;
+3. from static Profiles into automatic capability negotiation and conformance;
+4. from coarse Artifacts into multi-block, partial, and composed knowledge cache;
+5. from rule policies into SLO- and uncertainty-aware policies;
+6. in continuous alignment with new LMCache MP, Coordinator, SDK, Adapter, Metrics, and Event capabilities;
+7. by adding a CacheRoute-specific data extension only after proving LMCache extension mechanisms cannot satisfy the need;
+8. while preserving isolation among Knowledge API, Cache Service Domain, Gateway Adapters, and LMCache Runtime.
 
 Regardless of how LMCache evolves, CacheRoute's long-term core remains:
 
-> **connect knowledge semantics, remote cache serving, injection decisions, and compute-queue orchestration into an observable, extensible, and reproducible experimental loop.**
+> **connect knowledge semantics, LMCache-native cache capabilities, cache policy, and compute-queue orchestration into an observable, extensible, and reproducible experimental loop.**
