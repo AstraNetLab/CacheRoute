@@ -40,7 +40,7 @@
 </p>
 
 > [!IMPORTANT]
-> **Modern v1 environment:** for CUDA 13 / PyTorch 2.11 / vLLM 0.25.1 / LMCache 0.5.2, use the [complete v1 end-to-end guide](docs/quickstart_v1.md) and the [v1 image/environment guide](env/docker/cu130/README.md). The existing deployment content below remains the legacy stable path; do not mix its YAML/offloading commands with the LMCache MP startup interface.
+> **Modern v1 environment:** for CUDA 13 / PyTorch 2.11 / vLLM 0.25.1 / LMCache 0.5.2, use the [complete v1 end-to-end guide](doc/quickstart_v1.md) and the [v1 image/environment guide](env/docker/cu130/README.md). The existing deployment content below remains the legacy stable path; do not mix its YAML/offloading commands with the LMCache MP startup interface.
 
 ## CacheRoute
 
