@@ -34,25 +34,97 @@ CacheRoute 不应在 KDN 中重复实现这些能力的简化版本。重复实�
 
 KDN 仍是独立部署、独立扩展、可由 Scheduler 管理的服务实体，但在 v1 中不再默认充当 LMCache 的另一套远端 KV 数据服务器。
 
-### 2.1 数据热路径
+### 2.1 全局组件、数据路径与控制路径结构图
+
+图例：
+
+```text
+==  高频请求或 KV 数据热路径
+--  控制、管理、策略或观测 API
+|   组件内部包含或层级归属
+```
+
+```text
++------------------- CacheRoute Client / Workload -------------------+
+|                                                                     |
+|  OpenAI-compatible request                                          |
++==============================+======================================+
+                               |
+                               v
++------------------------- CacheRoute Scheduler ----------------------+
+| - Proxy / Instance selection                                        |
+| - KDN endpoint selection                                            |
+| - coarse routing and admission                                      |
++==================+===========================+-----------------------+
+                   |                           |
+                   | request route             | Knowledge API
+                   v                           v
++---------------- CacheRoute Proxy ------------+      +--------------- KDN Server ----------------+
+| - request queue / single-flight             |      |                                               |
+| - CachePlan / ExecutionGraph                 |      | +-- Knowledge Control Plane                 |
+| - text fallback                              |      | |   - KnowledgeObject / version             |
++==================+===========================+      | |   - CacheArtifact / compatibility         |
+                   |                                  | |   - desired state / policy / audit        |
+                   | request execution                | |                                             |
+                   v                                  | +-- Cache Service Facade                    |
++---------------- CacheRoute Instance ---------+      | |   - LookupArtifact / LookupTokens          |
+| - Instance Capability                        |      | |   - Prefetch / Pin / Clear / Rebuild intent|
+| - vLLM request forwarding                    |      | |   - operation status / normalized view     |
+| - LMCache hit-token and remote-read report   |      | |                                             |
++==================+===========================+      | +-- LMCache Orchestration Gateway           |
+                   |                                  |     - MPHTTPGateway                          |
+                   | OpenAI request                   |     - MPCoordinatorGateway                   |
+                   v                                  |     - MPSDKGateway                           |
++------------------------- vLLM ----------------+      |     - MPMetricsEventGateway                  |
+| model execution / prefill / decode            |      +-------------------+---------------------------+
++==================+=============================+                          |
+                   | LMCacheMPConnector KV path                             | LMCache public control APIs
+                   v                                                        |
++---------------------- LMCache MP Runtime ---------------------------------+--------------------------+
+|                                                                                                      |
+|  +-- Token DB / token-hash lookup                                                                  |
+|  +-- L1 memory tier                                                                                |
+|  +-- L2 adapter cascade                                                                           |
+|  |   +-- Redis / Valkey / Mooncake / NIXL / FS / object store / custom plugin                     |
+|  +-- Store / Retrieve / Prefetch                                                                  |
+|  +-- Pin / Unpin / Clear / operation status                                                       |
+|  +-- capacity / quota / eviction / metrics / events                                                |
+|                                                                                                      |
++======================================================================================================+
+
+Control relations not on the KV hot path:
+Scheduler / Proxy / Instance -- Knowledge API / Cache Service API --> KDN
+KDN -- MP HTTP / Coordinator / SDK / Metrics / Events -------------> LMCache MP
+LMCache MP -- observations / operation results ---------------------> KDN
+KDN -- normalized observations / policy results --------------------> Scheduler / Proxy / Instance
+```
+
+该图表达两个不可混淆的事实：
+
+1. `vLLM == LMCacheMPConnector == LMCache MP` 是 v1 的 KV 数据热路径；
+2. KDN 通过 `--` 控制与观测接口管理 LMCache，不进入逐 Chunk 的高频数据传输路径。
+
+### 2.2 数据热路径
 
 ```text
 vLLM
-  <-> LMCacheMPConnector
-  <-> LMCache MP
-      <-> L1
-      <-> cascaded L2 adapters
+  == LMCacheMPConnector
+  == LMCache MP
+      |-- L1
+      |-- cascaded L2 adapters
 ```
 
 高频 Lookup、Store、Retrieve、Prefetch 和 KV 数据传输不经过 KDN 业务服务。
 
-### 2.2 CacheRoute 控制路径
+### 2.3 CacheRoute 控制路径
 
 ```text
 Scheduler / Proxy / Instance
-          -> KDN Cache Service Facade
-          -> LMCache Orchestration Gateway
-          -> LMCache MP HTTP / Coordinator / SDK / Metrics / Events
+          -- KDN Knowledge API / Cache Service API
+          --> KDN Cache Service Facade
+          --> LMCache Orchestration Gateway
+          -- MP HTTP / Coordinator / SDK / Metrics / Events
+          --> LMCache MP
 ```
 
 KDN 负责：
@@ -82,7 +154,61 @@ LMCache 负责：
 
 KDN 仍需要自己的稳定 API，但这些 API 是 CacheRoute 领域接口，不是另一套物理 KV 存储协议。
 
-### 3.1 Knowledge API
+### 3.1 API 分层与映射结构图
+
+```text
+CacheRoute callers
+|-- Scheduler
+|-- Proxy
+|-- Instance
+|-- management / experiment tools
+|
++-- Knowledge API --------------------------------------------------------------+
+|   |-- RegisterKnowledge                 == KDN domain implementation           |
+|   |-- UpdateKnowledgeVersion            == KDN domain implementation           |
+|   |-- ResolveKnowledge                  == KDN domain implementation           |
+|   |-- ListCompatibleArtifacts           == KDN catalog + compatibility          |
+|   |-- GetPolicyDecision                 == KDN policy                           |
+|   +-- ReportRequestOutcome              == KDN statistics / feedback           |
+|                                                                                |
++-- Cache Service API ----------------------------------------------------------+
+    |-- GetCacheObservation   -- Gateway --> LMCache status / metrics / events   |
+    |-- LookupArtifact        -- Gateway --> token lookup + KDN Artifact mapping |
+    |-- LookupTokens          -- Gateway --> LMCache token/hash lookup           |
+    |-- CreatePrefetchIntent  -- Gateway --> MP HTTP / Coordinator / SDK         |
+    |-- CreatePinIntent       -- Gateway --> Pin API / Coordinator               |
+    |-- CreateUnpinIntent     -- Gateway --> Unpin API / Coordinator             |
+    |-- CreateClearIntent     -- Gateway --> cache-object clear/delete           |
+    |-- CreateRebuildIntent   -- KDN task --> LMCache-backed rebuild workflow    |
+    |-- GetOperationStatus    -- Gateway --> operation/task status               |
+    |-- CancelOperation       -- Gateway --> cancellation when supported         |
+    |-- GetLMCacheEndpoints   -- Gateway --> endpoint/config/capability discovery|
+    |-- GetTierAndAdapterSummary -- Gateway --> L1/L2/adapter/config/metrics      |
+    +-- GetMaintenanceStatus  -- Gateway --> quota/eviction/health observations  |
+```
+
+接口映射规则：
+
+```text
+CacheRoute Domain Request
+        |
+        v
+KDN versioned API
+        |
+        v
+CacheOperationTask / Observation
+        |
+        v
+LMCacheCompatibilityProfile + CapabilitySnapshot
+        |
+        +-- supported ----> versioned Gateway Adapter ----> LMCache public API
+        |
+        +-- unsupported --> structured unsupported / explicit text fallback
+        |
+        +-- incompatible -> reject reuse / migrate / rebuild
+```
+
+### 3.2 Knowledge API
 
 ```text
 RegisterKnowledge
@@ -93,7 +219,7 @@ GetPolicyDecision
 ReportRequestOutcome
 ```
 
-### 3.2 Cache Service API
+### 3.3 Cache Service API
 
 ```text
 GetCacheObservation
@@ -101,9 +227,11 @@ LookupArtifact
 LookupTokens
 CreatePrefetchIntent
 CreatePinIntent
+CreateUnpinIntent
 CreateClearIntent
 CreateRebuildIntent
 GetOperationStatus
+CancelOperation
 GetLMCacheEndpoints
 GetTierAndAdapterSummary
 GetMaintenanceStatus
@@ -129,7 +257,43 @@ GetMaintenanceStatus
 
 ## 4. v1 与 Legacy 边界
 
-### 4.1 v1
+### 4.1 运行 Profile 分流结构图
+
+```text
+                         process startup
+                               |
+                               v
+                    CACHEROUTE_RUNTIME_PROFILE
+                               |
+              +----------------+----------------+
+              |                                 |
+           explicit                           auto
+        v1 / legacy                             |
+              |                        detect environment once
+              |                                 |
+              +----------------+----------------+
+                               |
+                         freeze profile
+                               |
+          +====================+====================+
+          |                                         |
+          v                                         v
++--------------------- v1 ----------------+  +---------------- Legacy ----------------+
+| new development                         |  | compatibility-only                     |
+|                                         |  |                                        |
+| KDN Cache Service Facade                |  | LegacyCacheAdapter                     |
+|        -- LMCache Gateway               |  |        -- Redis scan/dump/restore      |
+|        -- MP HTTP/Coordinator/SDK       |  |        -- historical KV injection      |
+|        -- Metrics/Events                |  |        -- legacy startup/request       |
+|                                         |  |                                        |
+| vLLM == LMCacheMPConnector == LMCache MP|  | old vLLM/LMCache/Redis path            |
++-----------------------------------------+  +----------------------------------------+
+          |                                         |
+          +-- no implicit Legacy write fallback ----+
+          +-- migration/rebuild must be explicit ---+
+```
+
+### 4.2 v1
 
 - 所有新功能只开发在 `v1`；
 - 使用 LMCache MP 和公开控制/观测接口；
@@ -138,7 +302,7 @@ GetMaintenanceStatus
 - 缺少能力时返回 `unsupported`、`incompatible` 或明确文本回退；
 - 不允许 v1 请求静默切换到 Legacy 写路径。
 
-### 4.2 Legacy
+### 4.3 Legacy
 
 - 保留当前 Redis scan/dump/restore/inject；
 - 保留旧启动、请求和实验流程；
@@ -147,18 +311,18 @@ GetMaintenanceStatus
 - Legacy Key 和目录不能成为 v1 Artifact 身份；
 - Legacy 数据进入 v1 必须经过显式迁移或重建。
 
-### 4.3 Auto
+### 4.4 Auto
 
 `auto` 只用于迁移发现。进程启动时必须将其解析并冻结为明确 Profile：
 
 ```text
-auto -> v1
+auto --> v1
 ```
 
 或：
 
 ```text
-auto -> legacy
+auto --> legacy
 ```
 
 同一进程或单次请求中不得根据 Key 是否存在而动态切换主执行语义。
@@ -167,7 +331,36 @@ auto -> legacy
 
 Gateway 是唯一允许了解 LMCache 具体版本和接口形态的模块。
 
-### 5.1 推荐 Adapter
+### 5.1 Gateway 内部结构图
+
+```text
+KDN Cache Service Facade
+          |
+          v
++---------------- LMCache Orchestration Gateway ----------------+
+|                                                               |
+|  CapabilityFactory                                            |
+|  |-- detect LMCache version / build                           |
+|  |-- detect endpoint generation                               |
+|  |-- build immutable CapabilitySnapshot                       |
+|                                                               |
+|  AdapterFactory                                               |
+|  |-- MPHTTPGateway --------> health/config/cache/prefetch API  |
+|  |-- MPCoordinatorGateway -> multi-server/pin/quota/eviction   |
+|  |-- MPSDKGateway ---------> typed lookup/operation calls      |
+|  |-- MPMetricsEventGateway -> hit tokens/reads/events/status   |
+|  |-- MockGateway ----------> CPU-only contract tests           |
+|  +-- LegacyCacheAdapter ---> legacy Redis compatibility only   |
+|                                                               |
+|  optional                                                     |
+|  +-- L2PluginGateway ------> only for a proven capability gap  |
++---------------------------------------------------------------+
+          |
+          v
+LMCache MP public interfaces and loaded adapters
+```
+
+### 5.2 推荐 Adapter
 
 ```text
 MPHTTPGateway
@@ -186,7 +379,7 @@ L2PluginGateway
 
 仅当 CacheRoute 需要 LMCache 尚未提供的后端能力时，才实现 L2 Plugin；它仍应遵循 LMCache Adapter 契约。
 
-### 5.2 启动期能力发现
+### 5.3 启动期能力发现
 
 v1 Gateway 启动时应：
 
@@ -200,7 +393,7 @@ v1 Gateway 启动时应：
 
 未知能力不得视为支持。
 
-### 5.3 稳定对象
+### 5.4 稳定对象
 
 ```text
 RuntimeProfile
