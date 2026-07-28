@@ -1,5 +1,6 @@
-"""Compatibility re-export for the dependency-light runtime profile helpers."""
-from cacheroute_compat.runtime import (
+"""Dependency-light CacheRoute compatibility helpers."""
+
+from .runtime import (
     RUNTIME_PROFILE_AUTO,
     RUNTIME_PROFILE_LEGACY,
     RUNTIME_PROFILE_TEST_MOCK,
