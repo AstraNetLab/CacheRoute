@@ -24,7 +24,8 @@ def observation(**kw):
     ep = endpoint()
     base = dict(artifact_id=artifact().artifact_id, state="available", source="sdk",
                 endpoint_id=ep.endpoint_id, endpoint_generation=1, gateway_profile="mp_sdk",
-                compatibility_profile_id="compat", observed_at=NOW, expires_at=NOW + timedelta(seconds=10))
+                compatibility_profile_id="compat", source_observed_at=NOW, projected_at=NOW,
+                expires_at=NOW + timedelta(seconds=10))
     return CacheReplicaObservation(**(base | kw))
 
 
@@ -71,7 +72,7 @@ def test_observation_state_id_expiry_and_endpoint_matching():
     assert not current.applies_to(endpoint(generation=2), NOW)
     assert not current.applies_to(endpoint(runtime_profile="legacy"), NOW)
     assert not current.applies_to(endpoint(compatibility_profile_id="other"), NOW)
-    with pytest.raises(ValidationError): observation(observed_at=datetime(2026, 1, 1), expires_at=datetime(2026, 1, 2))
+    with pytest.raises(ValidationError): observation(source_observed_at=datetime(2026, 1, 1), expires_at=datetime(2026, 1, 2))
     with pytest.raises(ValidationError): observation(expires_at=NOW)
 
 
@@ -83,13 +84,36 @@ def test_legacy_projection_is_read_only_and_uncertain(monkeypatch):
     one = CacheReplicaObservation.from_legacy_kv_ready(
         {"kv_ready": 1, "kv_updated_at": int(NOW.timestamp()), "kv_rel_dir": "logical/dir", "kv_dumped_keys": 2},
         artifact_id=artifact().artifact_id, endpoint_id=endpoint().endpoint_id)
-    assert zero.state is ObservationState.UNKNOWN
+    assert zero.state is ObservationState.PENDING
+    assert zero.source_observed_at is None and zero.stale
     assert one.state is ObservationState.AVAILABLE
     assert one.legacy_projection and one.compatibility_uncertain
     assert one.runtime_profile is RuntimeProfile.LEGACY and one.endpoint_generation == 0
     assert one.legacy_kv_rel_dir == "logical/dir" and one.legacy_kv_dumped_keys == 2
-    with pytest.raises(ValueError): CacheReplicaObservation.from_legacy_kv_ready(
+    malformed = CacheReplicaObservation.from_legacy_kv_ready(
         {"kv_ready": "yes"}, artifact_id=artifact().artifact_id, endpoint_id=endpoint().endpoint_id)
+    assert malformed.state is ObservationState.UNKNOWN and malformed.stale
+    missing = CacheReplicaObservation.from_legacy_kv_ready(
+        {}, artifact_id=artifact().artifact_id, endpoint_id=endpoint().endpoint_id, now=NOW)
+    assert missing.state is ObservationState.UNKNOWN and missing.source_observed_at is None
+
+
+@pytest.mark.parametrize("changes", [
+    {"runtime_profile": "v1"}, {"gateway_profile": "mp_sdk"}, {"source": "sdk"},
+    {"compatibility_uncertain": False}, {"endpoint_generation": 1},
+])
+def test_legacy_projection_invariants_reject_contradictions(changes):
+    projected = CacheReplicaObservation.from_legacy_kv_ready(
+        {"kv_ready": 0}, artifact_id=artifact().artifact_id,
+        endpoint_id=endpoint().endpoint_id, now=NOW)
+    with pytest.raises(ValidationError):
+        projected.model_copy(update=changes)
+
+
+def test_nonlegacy_rejects_legacy_only_fields_and_unknown_generation():
+    with pytest.raises(ValidationError): observation(legacy_kv_rel_dir="legacy/path")
+    with pytest.raises(ValidationError): observation(endpoint_generation=0)
+    with pytest.raises(ValidationError): observation(source="legacy_projection")
 
 
 OP_ALLOWED = {
@@ -129,6 +153,11 @@ def test_terminal_retryable_and_time_validation():
     for state in QueueState: assert not (state.terminal and state.retryable)
     with pytest.raises(ValueError): task().transition("running", at=NOW - timedelta(seconds=1))
     with pytest.raises(ValidationError): work(updated_at=NOW - timedelta(seconds=1))
+    offset = timezone(timedelta(hours=1))
+    for obj, target in ((task(), "running"), (work(), "claimed")):
+        with pytest.raises(ValueError, match="timezone-aware"): obj.transition(target, at=datetime(2026, 1, 1))
+        with pytest.raises(ValueError, match="UTC"): obj.transition(target, at=NOW.astimezone(offset))
+        assert obj.transition(target, at=NOW).updated_at == NOW
 
 
 def test_v1_write_cannot_use_legacy_gateway():

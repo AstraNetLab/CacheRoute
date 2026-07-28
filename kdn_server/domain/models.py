@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from core.runtime_compat import normalize_runtime_profile
+from runtime_compat import normalize_runtime_profile
 
 
 def utc_now() -> datetime:
@@ -24,6 +24,14 @@ def _canonical_id(kind: str, identity: Mapping[str, Any]) -> str:
 def _nonempty(value: str) -> str:
     if not value.strip():
         raise ValueError("identity fields must not be empty")
+    return value
+
+
+def _require_utc(value: datetime, field: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field} must be timezone-aware UTC")
+    if value.utcoffset() != timedelta(0):
+        raise ValueError(f"{field} must use UTC")
     return value
 
 
@@ -241,8 +249,9 @@ class CacheReplicaObservation(Snapshot):
     compatibility_profile_id: str
     adapter: str | None = None
     tier: str | None = None
-    observed_at: AwareDatetime
-    expires_at: AwareDatetime
+    source_observed_at: AwareDatetime | None = None
+    projected_at: AwareDatetime = Field(default_factory=utc_now)
+    expires_at: AwareDatetime | None = None
     confidence: ObservationConfidence = ObservationConfidence.MEDIUM
     legacy_projection: bool = False
     compatibility_uncertain: bool = False
@@ -256,10 +265,35 @@ class CacheReplicaObservation(Snapshot):
 
     @model_validator(mode="after")
     def validate_and_id(self):
-        if self.observed_at.utcoffset() != timedelta(0) or self.expires_at.utcoffset() != timedelta(0):
-            raise ValueError("timestamps must be UTC")
-        if self.expires_at <= self.observed_at:
-            raise ValueError("expires_at must be later than observed_at")
+        _require_utc(self.projected_at, "projected_at")
+        if self.source_observed_at is not None:
+            _require_utc(self.source_observed_at, "source_observed_at")
+        if self.expires_at is not None:
+            _require_utc(self.expires_at, "expires_at")
+        if self.source_observed_at is None and not self.legacy_projection:
+            raise ValueError("non-Legacy observations require source_observed_at")
+        if self.source_observed_at is not None and (
+            self.expires_at is None or self.expires_at <= self.source_observed_at
+        ):
+            raise ValueError("expires_at must be later than source_observed_at")
+        legacy_values = (
+            self.runtime_profile is RuntimeProfile.LEGACY,
+            self.gateway_profile is LMCacheGatewayProfile.LEGACY_GATEWAY,
+            self.source is ObservationSource.LEGACY_PROJECTION,
+            self.compatibility_uncertain,
+        )
+        if self.legacy_projection and not all(legacy_values):
+            raise ValueError("legacy_projection requires Legacy runtime, Gateway, source, and uncertainty")
+        if self.source is ObservationSource.LEGACY_PROJECTION and not self.legacy_projection:
+            raise ValueError("legacy_projection source requires legacy_projection=True")
+        if not self.legacy_projection and (
+            self.legacy_kv_rel_dir is not None or self.legacy_kv_dumped_keys is not None
+        ):
+            raise ValueError("Legacy metadata is only valid on Legacy projections")
+        if self.endpoint_generation == 0 and not self.legacy_projection:
+            raise ValueError("unknown endpoint generation is only valid for Legacy projections")
+        if self.legacy_projection and self.endpoint_generation != 0:
+            raise ValueError("Legacy projections must use unknown endpoint_generation=0")
         identity = self.model_dump(mode="json", exclude={"observation_id"})
         expected = _canonical_id("observation", identity)
         if self.observation_id is not None and self.observation_id != expected:
@@ -273,9 +307,8 @@ class CacheReplicaObservation(Snapshot):
 
     def is_fresh(self, at: datetime | None = None) -> bool:
         at = at or utc_now()
-        if at.tzinfo is None:
-            raise ValueError("freshness timestamp must be timezone-aware")
-        return at.astimezone(timezone.utc) < self.expires_at
+        _require_utc(at, "freshness timestamp")
+        return self.source_observed_at is not None and self.expires_at is not None and at < self.expires_at
 
     def applies_to(self, endpoint: LMCacheEndpoint, at: datetime | None = None) -> bool:
         return self.is_fresh(at) and all((
@@ -293,19 +326,29 @@ class CacheReplicaObservation(Snapshot):
                              now: datetime | None = None):
         """Read-only projection of a KBItem/dict; this method performs no I/O."""
         get = record.get if isinstance(record, Mapping) else lambda key, default=None: getattr(record, key, default)
-        raw = get("kv_ready", 0)
-        if raw not in (0, 1, False, True):
-            raise ValueError("legacy kv_ready must be 0 or 1")
+        missing = object()
+        raw = get("kv_ready", missing)
+        malformed = raw is missing or raw not in (0, 1, False, True)
         if freshness <= timedelta(0):
             raise ValueError("freshness must be positive")
         stamp = get("kv_updated_at")
-        observed = datetime.fromtimestamp(stamp, timezone.utc) if stamp is not None else (now or utc_now())
+        projected = now or utc_now()
+        _require_utc(projected, "projected_at")
+        try:
+            observed = datetime.fromtimestamp(stamp, timezone.utc) if stamp is not None else None
+        except (TypeError, ValueError, OSError):
+            observed = None
+            malformed = True
+        state = ObservationState.UNKNOWN if malformed else (
+            ObservationState.AVAILABLE if int(raw) else ObservationState.PENDING
+        )
         return cls(
-            artifact_id=artifact_id, state=ObservationState.AVAILABLE if int(raw) else ObservationState.UNKNOWN,
+            artifact_id=artifact_id, state=state,
             source=ObservationSource.LEGACY_PROJECTION, endpoint_id=endpoint_id, endpoint_generation=0,
             runtime_profile=RuntimeProfile.LEGACY, gateway_profile=LMCacheGatewayProfile.LEGACY_GATEWAY,
-            compatibility_profile_id=compatibility_profile_id, observed_at=observed,
-            expires_at=observed + freshness, confidence=ObservationConfidence.LOW,
+            compatibility_profile_id=compatibility_profile_id, source_observed_at=observed,
+            projected_at=projected, expires_at=observed + freshness if observed else None,
+            confidence=ObservationConfidence.LOW,
             legacy_projection=True, compatibility_uncertain=True,
             legacy_kv_rel_dir=get("kv_rel_dir"), legacy_kv_dumped_keys=get("kv_dumped_keys"),
         )
@@ -334,6 +377,8 @@ class CacheOperationTask(Snapshot):
 
     @model_validator(mode="after")
     def consistency(self):
+        _require_utc(self.created_at, "created_at")
+        _require_utc(self.updated_at, "updated_at")
         _nonempty(self.idempotency_key)
         _nonempty(self.compatibility_profile_id)
         if self.updated_at < self.created_at:
@@ -351,6 +396,7 @@ class CacheOperationTask(Snapshot):
         allowed = self._TRANSITIONS[self.state]
         if requested not in allowed: raise StateTransitionError(type(self).__name__, self.state, requested, allowed)
         stamp = at or utc_now()
+        _require_utc(stamp, "transition timestamp")
         if stamp < self.updated_at: raise ValueError("transition timestamp must not move backwards")
         return type(self).model_validate(self.model_dump() | {"state": requested, "attempt": self.attempt + int(requested is CacheOperationState.RUNNING), "updated_at": stamp})
 
@@ -377,6 +423,8 @@ class QueueWork(Snapshot):
 
     @model_validator(mode="after")
     def timestamp_order(self):
+        _require_utc(self.created_at, "created_at")
+        _require_utc(self.updated_at, "updated_at")
         _nonempty(self.idempotency_key)
         if self.updated_at < self.created_at: raise ValueError("updated_at must not precede created_at")
         return self
@@ -387,6 +435,7 @@ class QueueWork(Snapshot):
         allowed = self._TRANSITIONS[self.state]
         if requested not in allowed: raise StateTransitionError(type(self).__name__, self.state, requested, allowed)
         stamp = at or utc_now()
+        _require_utc(stamp, "transition timestamp")
         if stamp < self.updated_at: raise ValueError("transition timestamp must not move backwards")
         return type(self).model_validate(self.model_dump() | {"state": requested, "updated_at": stamp})
 
