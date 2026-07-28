@@ -12,10 +12,12 @@ from typing import Iterable, Optional
 RUNTIME_PROFILE_AUTO = "auto"
 RUNTIME_PROFILE_LEGACY = "legacy"
 RUNTIME_PROFILE_V1 = "v1"
+RUNTIME_PROFILE_TEST_MOCK = "test/mock"
 SUPPORTED_RUNTIME_PROFILES = {
     RUNTIME_PROFILE_AUTO,
     RUNTIME_PROFILE_LEGACY,
     RUNTIME_PROFILE_V1,
+    RUNTIME_PROFILE_TEST_MOCK,
 }
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
@@ -33,6 +35,9 @@ def normalize_runtime_profile(value: Optional[str] = None) -> str:
         "modern": RUNTIME_PROFILE_V1,
         "new": RUNTIME_PROFILE_V1,
         "current": RUNTIME_PROFILE_V1,
+        "mock": RUNTIME_PROFILE_TEST_MOCK,
+        "test": RUNTIME_PROFILE_TEST_MOCK,
+        "test/mock": RUNTIME_PROFILE_TEST_MOCK,
     }
     profile = aliases.get(profile, profile)
     if profile not in SUPPORTED_RUNTIME_PROFILES:
