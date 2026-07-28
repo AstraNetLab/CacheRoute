@@ -67,6 +67,7 @@ def test_observation_state_id_expiry_and_endpoint_matching():
     assert observation(state="available").observation_id != observation(state="unavailable").observation_id
     current = observation()
     assert current.is_fresh(NOW)
+    assert not current.is_fresh(NOW - timedelta(microseconds=1))
     assert not current.is_fresh(NOW + timedelta(seconds=10))
     assert current.applies_to(endpoint(), NOW)
     assert not current.applies_to(endpoint(generation=2), NOW)
@@ -74,6 +75,18 @@ def test_observation_state_id_expiry_and_endpoint_matching():
     assert not current.applies_to(endpoint(compatibility_profile_id="other"), NOW)
     with pytest.raises(ValidationError): observation(source_observed_at=datetime(2026, 1, 1), expires_at=datetime(2026, 1, 2))
     with pytest.raises(ValidationError): observation(expires_at=NOW)
+    with pytest.raises(ValidationError): observation(projected_at=NOW - timedelta(seconds=1))
+
+
+def test_freshness_requires_complete_closed_open_source_interval():
+    assert not observation(source_observed_at=None, expires_at=None,
+                           legacy_projection=True, runtime_profile="legacy",
+                           gateway_profile="legacy_gateway", source="legacy_projection",
+                           compatibility_uncertain=True, endpoint_generation=0).is_fresh(NOW)
+    current = observation()
+    assert not current.is_fresh(NOW - timedelta(microseconds=1))
+    assert current.is_fresh(NOW)
+    assert not current.is_fresh(NOW + timedelta(seconds=10))
 
 
 def test_legacy_projection_is_read_only_and_uncertain(monkeypatch):
@@ -96,6 +109,11 @@ def test_legacy_projection_is_read_only_and_uncertain(monkeypatch):
     missing = CacheReplicaObservation.from_legacy_kv_ready(
         {}, artifact_id=artifact().artifact_id, endpoint_id=endpoint().endpoint_id, now=NOW)
     assert missing.state is ObservationState.UNKNOWN and missing.source_observed_at is None
+    future = CacheReplicaObservation.from_legacy_kv_ready(
+        {"kv_ready": 1, "kv_updated_at": int((NOW + timedelta(seconds=1)).timestamp())},
+        artifact_id=artifact().artifact_id, endpoint_id=endpoint().endpoint_id, now=NOW)
+    assert future.state is ObservationState.UNKNOWN
+    assert future.source_observed_at is None and future.stale
 
 
 @pytest.mark.parametrize("changes", [

@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from runtime_compat import normalize_runtime_profile
+from cacheroute_compat.runtime import normalize_runtime_profile
 
 
 def utc_now() -> datetime:
@@ -268,6 +268,8 @@ class CacheReplicaObservation(Snapshot):
         _require_utc(self.projected_at, "projected_at")
         if self.source_observed_at is not None:
             _require_utc(self.source_observed_at, "source_observed_at")
+            if self.source_observed_at > self.projected_at:
+                raise ValueError("source_observed_at must not be later than projected_at")
         if self.expires_at is not None:
             _require_utc(self.expires_at, "expires_at")
         if self.source_observed_at is None and not self.legacy_projection:
@@ -308,7 +310,11 @@ class CacheReplicaObservation(Snapshot):
     def is_fresh(self, at: datetime | None = None) -> bool:
         at = at or utc_now()
         _require_utc(at, "freshness timestamp")
-        return self.source_observed_at is not None and self.expires_at is not None and at < self.expires_at
+        return (
+            self.source_observed_at is not None
+            and self.expires_at is not None
+            and self.source_observed_at <= at < self.expires_at
+        )
 
     def applies_to(self, endpoint: LMCacheEndpoint, at: datetime | None = None) -> bool:
         return self.is_fresh(at) and all((
@@ -337,6 +343,9 @@ class CacheReplicaObservation(Snapshot):
         try:
             observed = datetime.fromtimestamp(stamp, timezone.utc) if stamp is not None else None
         except (TypeError, ValueError, OSError):
+            observed = None
+            malformed = True
+        if observed is not None and observed > projected:
             observed = None
             malformed = True
         state = ObservationState.UNKNOWN if malformed else (
