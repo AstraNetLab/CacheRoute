@@ -25,10 +25,10 @@ def test_wheel_contains_dependency_light_compatibility_package(tmp_path):
     script = f"""
 import sys
 sys.path.insert(0, {str(installed)!r})
-from core.runtime_compat import normalize_runtime_profile
-from kdn_server.domain import RuntimeProfile
+from cacheroute.compat import normalize_runtime_profile
+from cacheroute_compat.runtime import normalize_runtime_profile as legacy_normalize
 assert normalize_runtime_profile('modern') == 'v1'
-assert RuntimeProfile.normalize('old') is RuntimeProfile.LEGACY
-print('installed domain compatibility: passed')
+assert legacy_normalize is normalize_runtime_profile
+print('installed compatibility namespace: passed')
 """
     subprocess.run([sys.executable, "-I", "-c", script], cwd=outside, check=True)

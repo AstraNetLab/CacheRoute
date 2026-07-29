@@ -3,7 +3,7 @@ name = "cacheroute"
 version = "0.1.9"
 description = "Compute-network-aware LLM scheduling for flexible KV cache reuse across vLLM and LMCache systems."
 authors = [
-  { name = "xxx", email = "xxx" }
+  { name = "xxx" }
 ]
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,7 +37,8 @@ dev = [
 ]
 
 [tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 exclude = ["tests*", "docs*", "examples*"]

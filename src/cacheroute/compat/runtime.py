@@ -123,3 +123,16 @@ def filter_supported_keys(
         key for key in key_set
         if classify_lmcache_redis_key(key) in allowed
     }
+
+
+__all__ = [
+    "RUNTIME_PROFILE_AUTO",
+    "RUNTIME_PROFILE_LEGACY",
+    "RUNTIME_PROFILE_TEST_MOCK",
+    "RUNTIME_PROFILE_V1",
+    "SUPPORTED_RUNTIME_PROFILES",
+    "classify_lmcache_redis_key",
+    "filter_supported_keys",
+    "normalize_runtime_profile",
+    "resolve_scan_match",
+]

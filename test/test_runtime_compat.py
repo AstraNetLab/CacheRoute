@@ -1,6 +1,16 @@
 import pytest
 
-from core.runtime_compat import filter_supported_keys, normalize_runtime_profile, resolve_scan_match
+import cacheroute.compat.runtime as canonical_runtime
+import cacheroute_compat.runtime as legacy_runtime
+
+filter_supported_keys = canonical_runtime.filter_supported_keys
+normalize_runtime_profile = canonical_runtime.normalize_runtime_profile
+resolve_scan_match = canonical_runtime.resolve_scan_match
+
+
+def test_legacy_import_forwards_to_canonical_objects():
+    assert legacy_runtime.normalize_runtime_profile is canonical_runtime.normalize_runtime_profile
+    assert legacy_runtime.filter_supported_keys is canonical_runtime.filter_supported_keys
 
 
 @pytest.mark.parametrize("value, expected", [

@@ -86,7 +86,7 @@ python3 -m pytest -q \
   test/test_instance_capability_registration.py
 
 python3 -m compileall -q \
-  cacheroute_compat \
+  src/cacheroute \
   kdn_server/contracts \
   kdn_server/domain \
   kdn_server/gateway \
