@@ -3,6 +3,10 @@
 import ast
 from pathlib import Path
 import re
+import subprocess
+import tomllib
+
+from setuptools import find_namespace_packages
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,17 +26,56 @@ LEGACY_REFERENCE_ALLOWLIST = {
     Path("test/test_runtime_compat.py"),
     Path("test/test_wheel_install.py"),
 }
+OBSERVABILITY_REFERENCE_ALLOWLIST = {
+    Path("doc/package_migration_phase_a.md"),
+    Path("test/test_repository_governance.py"),
+}
+CANONICAL_PACKAGES = {
+    "cacheroute", "cacheroute.compat", "cacheroute.observability",
+    "cacheroute_compat",
+}
+GENERATED_PACKAGE_EXCLUDES = [
+    "src", "src.*", "build", "build.*", "dist", "dist.*", "wheelhouse",
+    "wheelhouse.*", ".venv", ".venv.*", "*.egg-info", "*.egg-info.*",
+    ".pytest_cache", ".pytest_cache.*", "__pycache__", "__pycache__.*",
+    ".mypy_cache", ".mypy_cache.*", ".ruff_cache", ".ruff_cache.*",
+    "tests", "tests.*", "docs", "docs.*",
+]
 
 
 def test_no_unreviewed_functional_root_directories():
-    current = {
-        path.name for path in ROOT.iterdir()
-        if path.is_dir() and path.name != "build" and not path.name.endswith(".egg-info")
+    result = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True,
+    )
+    tracked = {
+        Path(raw.decode()).parts[0]
+        for raw in result.stdout.split(b"\0") if raw and len(Path(raw.decode()).parts) > 1
     }
-    assert current <= ALLOWED_TOP_LEVEL_DIRECTORIES
+    assert tracked <= ALLOWED_TOP_LEVEL_DIRECTORIES
+
+
+def test_transitional_explicit_packages_match_root_discovery():
+    configuration = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    configured = set(configuration["tool"]["setuptools"]["packages"])
+    discovered_root = set(find_namespace_packages(
+        where=str(ROOT), exclude=GENERATED_PACKAGE_EXCLUDES,
+    ))
+    assert CANONICAL_PACKAGES <= configured
+    assert configured - CANONICAL_PACKAGES == discovered_root
 
 
 def test_legacy_compatibility_references_are_narrowly_allowlisted():
+    references = _files_containing("cacheroute_compat")
+    assert references <= LEGACY_REFERENCE_ALLOWLIST
+
+
+def test_observability_legacy_references_are_narrowly_allowlisted():
+    assert not (ROOT / "cacheroute_observability").exists()
+    references = _files_containing("cacheroute_observability")
+    assert references <= OBSERVABILITY_REFERENCE_ALLOWLIST
+
+
+def _files_containing(needle):
     references = set()
     for path in ROOT.rglob("*"):
         if (
@@ -44,11 +87,11 @@ def test_legacy_compatibility_references_are_narrowly_allowlisted():
         ):
             continue
         try:
-            if "cacheroute_compat" in path.read_text(encoding="utf-8"):
+            if needle in path.read_text(encoding="utf-8"):
                 references.add(path.relative_to(ROOT))
         except UnicodeDecodeError:
             continue
-    assert references <= LEGACY_REFERENCE_ALLOWLIST
+    return references
 
 
 def test_legacy_shim_contains_imports_only():
@@ -68,11 +111,15 @@ def test_legacy_shim_contains_imports_only():
 
 def test_local_markdown_links_resolve():
     missing = []
-    link_pattern = re.compile(r"(?<!!)\[[^]]*]\(([^)]+)\)")
+    inline_pattern = re.compile(r"!?\[[^]]*]\(([^)]+)\)")
+    reference_pattern = re.compile(r"^\s*\[[^]]+]\s*:\s*(\S+)", re.MULTILINE)
+    fence_pattern = re.compile(r"^\s*```.*?^\s*```\s*$", re.MULTILINE | re.DOTALL)
     for markdown in ROOT.rglob("*.md"):
         if ".git" in markdown.parts:
             continue
-        for raw_target in link_pattern.findall(markdown.read_text(encoding="utf-8")):
+        text = fence_pattern.sub("", markdown.read_text(encoding="utf-8"))
+        targets = inline_pattern.findall(text) + reference_pattern.findall(text)
+        for raw_target in targets:
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
             if not target or target.startswith(("#", "http://", "https://", "mailto:")):
                 continue

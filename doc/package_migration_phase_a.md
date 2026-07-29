@@ -97,6 +97,63 @@ The baseline wheel required the unrelated invalid placeholder author email to
 be removed in its temporary archived copy before current setuptools could build
 it; no package-discovery setting was changed for that inspection.
 
+### Normalized wheel member and package-data audit
+
+After excluding `.dist-info` metadata and normalizing the intentional
+`cacheroute_compat/runtime.py` relocation to `cacheroute/compat/runtime.py`, the
+baseline has 155 members and the corrected Phase A wheel has 197. No normalized
+member was removed. The 42 added members are:
+
+```text
+UI/client_ui/static/app.js
+UI/client_ui/static/style.css
+UI/client_ui/templates/index.html
+UI/proxy_ui/static/app.js
+UI/proxy_ui/static/index.html
+UI/proxy_ui/static/style.css
+cacheroute/__init__.py
+cacheroute/observability/__init__.py
+cacheroute_compat/__init__.py
+cacheroute_compat/runtime.py
+instance/TTFT_predictor/data/README.md
+instance/TTFT_predictor/data/log-bs1-rtx5090-8-llama3-70b.txt
+instance/TTFT_predictor/data/log-bs2-rtx5090-8-llama3-70b.txt
+instance/TTFT_predictor/data/log-bs3-rtx5090-8-llama3-70b.txt
+instance/TTFT_predictor/data/log-bs4-rtx5090-8-llama3-70b.txt
+instance/TTFT_predictor/data/log-bs5-rtx5090-8-llama3-70b.txt
+instance/TTFT_predictor/data/log-bs6-rtx5090-8-llama3-70b.txt
+instance/TTFT_predictor/data/log-bs7-rtx5090-8-llama3-70b.txt
+instance/TTFT_predictor/data/log-bs8-rtx5090-8-llama3-70b.txt
+instance/TTFT_predictor/data/补录数据.txt
+instance/TTFT_predictor/data/补录数据（小长度）.txt
+instance/TTFT_predictor/prompt_length_validation.log
+instance/resource_dashboard/static/app.js
+instance/resource_dashboard/static/index.html
+instance/resource_dashboard/static/style.css
+model/model_configs.yaml
+proxy/metrics/data/log-bs1-rtx5090-8-llama3-70b.txt
+proxy/metrics/data/log-bs2-rtx5090-8-llama3-70b.txt
+proxy/metrics/data/log-bs3-rtx5090-8-llama3-70b.txt
+proxy/metrics/data/log-bs4-rtx5090-8-llama3-70b.txt
+proxy/metrics/data/log-bs5-rtx5090-8-llama3-70b.txt
+proxy/metrics/data/log-bs6-rtx5090-8-llama3-70b.txt
+proxy/metrics/data/log-bs7-rtx5090-8-llama3-70b.txt
+proxy/metrics/data/log-bs8-rtx5090-8-llama3-70b.txt
+proxy/metrics/data/redis_pull_table_from_image.json
+proxy/metrics/redis_pull_coefficients.json
+proxy/metrics/tpot_benchmark_table.json
+proxy/metrics/tpot_coefficients.json
+proxy/metrics/ttft_benchmark_table.json
+proxy/metrics/ttft_coefficients.json
+test/test_namespace_layout.py
+test/test_repository_governance.py
+```
+
+The baseline wheel contained zero non-Python, non-metadata members. The
+corrected wheel contains 36: the UI/dashboard assets, predictor data, model
+configuration, and metric tables listed above. These additions make required
+runtime package data explicit; they do not replace or remove baseline data.
+
 ## Reference audit
 
 The inventory searched all tracked repository files, including Python, TOML,
@@ -154,8 +211,9 @@ package is migrated or intentionally deprecated through review.
    import path, then replace the transitional explicit package list.
 3. CacheRoute 0.3.0 removes `cacheroute_compat` after downstream imports migrate.
 4. Root runtime package initializers currently import optional application
-   dependencies. Wheel smoke tests therefore install declared dependencies;
-   namespace isolation tests separately prove canonical imports remain light.
+   dependencies. The wheel tests use separate clean virtual environments: a
+   no-dependency environment for lightweight namespaces and a second environment
+   that installs declared dependencies before exercising the full public surface.
 5. Packaging data files used by runtime modules requires review during each
    component migration; Phase A deliberately preserves the prior package list
    and runtime behavior rather than broadening that scope.

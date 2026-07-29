@@ -62,3 +62,11 @@ packages = [
   "scheduler.resource", "scheduler.strategy", "scripts", "store", "test",
   "test.kdn", "util",
 ]
+
+[tool.setuptools.package-data]
+"UI.client_ui" = ["static/*", "templates/*"]
+"UI.proxy_ui" = ["static/*"]
+"instance.resource_dashboard" = ["static/*"]
+"instance.TTFT_predictor" = ["data/*.md", "data/*.txt", "*.log"]
+"proxy.metrics" = ["*.json", "data/*.json", "data/*.txt"]
+model = ["*.yaml"]
