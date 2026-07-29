@@ -426,3 +426,22 @@ The batch script is useful for preparing knowledge-intensive workloads used in C
 - The standalone `kv_injector.py` path is mainly for debugging. In the full CacheRoute workflow, KVCache injection should be triggered by the scheduling and KDN matching process.
 - Some paths and model names in the examples should be adjusted according to your local deployment.
 - For full deployment with vLLM, LMCache, Redis, Scheduler, Proxy, and Instance, see the main `README.md`.
+
+## Versioned control-plane contracts
+
+The v0.1.10 versioned control-plane layer supplements the operational KDN
+workflows documented above. It defines storage-neutral domain objects,
+versioned Knowledge and Cache Service messages, explicit
+Runtime/Profile/Endpoint negotiation, immutable capability discovery, a
+CPU-only Mock Gateway, and a read-only Legacy adapter. It does not replace the
+existing KDN HTTP service, CLI, text database, KV construction, injection
+workflow, Redis integration, or LMCache data path. Production LMCache HTTP,
+Coordinator, SDK, Redis, and KV data movement are not implemented by this
+contract layer.
+
+Detailed references:
+
+- [Domain vocabulary](domain/README.md)
+- [Service contracts](contracts/README.md)
+- [Gateway architecture](gateway/README.md)
+- [CPU-only tests and workflows](../test/kdn/README.md)
