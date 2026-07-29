@@ -25,22 +25,48 @@ This allows the Scheduler and Proxy to make knowledge-aware routing and compute-
 kdn_server/
 ├── KV_database/
 │   └── <knowledge_id>/
-│       ├── blocks/              # dumped KVCache blocks
-│       ├── manifest.jsonl        # KVCache block metadata
-│       └── run_meta.json         # build-time metadata
+│       ├── blocks/                 # dumped KVCache blocks
+│       ├── manifest.jsonl          # KVCache block metadata
+│       └── run_meta.json           # build-time metadata
 ├── text_database/
-│   ├── blocks/                   # registered text blocks
-│   ├── tmp/                      # temporary files
-│   └── index.sqlite3             # text knowledge index
+│   ├── blocks/                      # registered text blocks
+│   ├── tmp/                         # temporary files
+│   └── index.sqlite3                # text knowledge index
+├── contracts/
+│   ├── __init__.py                  # stable public service-contract exports
+│   ├── common.py                    # versioned envelopes and shared wire types
+│   ├── errors.py                    # structured outcomes and error details
+│   ├── knowledge.py                 # Knowledge Service request/response contracts
+│   ├── cache_service.py             # Cache Service Facade contracts
+│   └── README.md                    # contract reference
+├── domain/
+│   ├── __init__.py                  # stable domain-model exports
+│   ├── models.py                    # artifacts, observations, endpoints, tasks, queues
+│   └── README.md                    # domain vocabulary and state semantics
+├── gateway/
+│   ├── __init__.py                  # stable Gateway exports
+│   ├── profiles.py                  # transport bindings and compatibility profiles
+│   ├── capabilities.py              # immutable capability snapshots
+│   ├── protocol.py                  # LMCacheGateway Protocol
+│   ├── base.py                      # shared negotiation and capability gates
+│   ├── factory.py                   # explicit adapter construction boundary
+│   ├── mock.py                      # deterministic CPU-only Mock Gateway
+│   ├── legacy.py                    # explicit read-only Legacy adapter
+│   └── README.md                    # Gateway architecture and extension guide
+├── util/
+│   └── batch_register_kdn.py         # batch knowledge registration helper
 ├── __init__.py
-├── kdn_api.py                    # KDN HTTP service
-├── kdn_register_cli.py           # interactive KDN management CLI
-├── kv_builder.py                 # KVCache construction
-├── kv_injector.py                # KVCache injection into Redis / LMCache backend
-├── text_db.py                    # text knowledge database
+├── kdn_api.py                        # KDN HTTP service
+├── kdn_register_cli.py               # interactive KDN management CLI
+├── kv_builder.py                     # KVCache construction
+├── kv_injector.py                    # KVCache injection into Redis / LMCache backend
+├── text_db.py                        # text knowledge database
 └── README.md
 ```
+
 Each knowledge block is identified by a content-based hash ID. Text knowledge and KVCache blocks are stored separately, while the KDN metadata links them together.
+
+The operational HTTP, CLI, database, build, and injection paths remain documented in this file. The new storage-neutral control-plane packages are documented progressively in [domain](domain/README.md), [contracts](contracts/README.md), [gateway](gateway/README.md), and the [CPU-only KDN workflow tests](../test/kdn/README.md).
 
 ---
 
