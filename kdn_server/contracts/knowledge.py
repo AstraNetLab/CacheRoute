@@ -1,7 +1,7 @@
 """Storage-neutral Knowledge Service request and response contracts."""
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from kdn_server.domain import CacheArtifact
 from .common import VersionedMessage
@@ -30,6 +30,18 @@ class KnowledgeResponse(VersionedMessage):
     artifacts: tuple[CacheArtifact, ...] = ()
     compatible: bool | None = None
     error: ContractError | None = None
+
+    @model_validator(mode="after")
+    def consistent_outcome(self):
+        if self.outcome is OutcomeCode.SUCCESS and self.error is not None:
+            raise ValueError("successful responses cannot carry an error")
+        if self.outcome is not OutcomeCode.SUCCESS and (
+            self.error is None or self.error.code is not self.outcome
+        ):
+            raise ValueError("non-success responses require a matching error detail")
+        if self.outcome is OutcomeCode.TEXT_FALLBACK and not self.error.fallback_eligible:
+            raise ValueError("text fallback must be explicitly fallback eligible")
+        return self
 
 RegisterKnowledgeResponse = KnowledgeResponse
 UpdateKnowledgeResponse = KnowledgeResponse

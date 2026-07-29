@@ -1,4 +1,4 @@
-"""Gateway transport and LMCache compatibility profile vocabulary."""
+"""Gateway adapter and LMCache compatibility profile vocabulary."""
 from enum import Enum
 
 from pydantic import Field
@@ -17,6 +17,11 @@ class GatewayTransportKind(str, Enum):
     UNKNOWN_FUTURE = "unknown_future"
 
 
+class GatewayAdapterBinding(ContractModel):
+    transport_kind: GatewayTransportKind
+    binding_id: str = Field(min_length=1)
+
+
 class LMCacheCompatibilityProfile(ContractModel):
     compatibility_profile_id: str = Field(min_length=1)
     lmcache_version: str | None = None
@@ -26,3 +31,4 @@ class LMCacheCompatibilityProfile(ContractModel):
     serde_profile: str | None = None
     chunk_size: int | None = Field(default=None, gt=0)
     connector_profile: str | None = None
+    key_hash_profile: str | None = None

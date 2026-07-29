@@ -11,6 +11,7 @@ from kdn_server.domain import RuntimeProfile
 
 KDN_CONTRACT_VERSION = "kdn.v1"
 GATEWAY_CONTRACT_VERSION = "lmcache-gateway.v1"
+ENDPOINT_ID_PATTERN = r"^endpoint_[0-9a-f]{32}$"
 
 
 def utc_now() -> datetime:
@@ -31,9 +32,6 @@ class VersionedMessage(ContractModel):
     runtime_profile: RuntimeProfile
     request_id: str = Field(default_factory=lambda: f"req_{uuid4().hex}", min_length=1)
     correlation_id: str | None = None
-    compatibility_profile_id: str | None = None
-    endpoint_id: str | None = None
-    endpoint_generation: int | None = Field(default=None, ge=0)
     timestamp: AwareDatetime = Field(default_factory=utc_now)
 
     @field_validator("contract_version")
@@ -57,6 +55,12 @@ class VersionedMessage(ContractModel):
         if value.utcoffset() != timedelta(0):
             raise ValueError("timestamp must use UTC")
         return value
+
+
+class GatewayTargetedRequest(VersionedMessage):
+    compatibility_profile_id: str = Field(min_length=1)
+    endpoint_id: str = Field(pattern=ENDPOINT_ID_PATTERN)
+    endpoint_generation: int = Field(ge=1)
 
 
 class TokenReference(ContractModel):

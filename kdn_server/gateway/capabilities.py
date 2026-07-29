@@ -1,12 +1,12 @@
 """Immutable, provenance-bearing gateway capability discovery."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from kdn_server.contracts.common import ContractModel, GATEWAY_CONTRACT_VERSION, utc_now
+from kdn_server.contracts.common import ContractModel, ENDPOINT_ID_PATTERN, GATEWAY_CONTRACT_VERSION, utc_now
 from kdn_server.domain import RuntimeProfile
-from .profiles import GatewayTransportKind, LMCacheCompatibilityProfile
+from .profiles import GatewayAdapterBinding, GatewayTransportKind, LMCacheCompatibilityProfile
 
 
 class SupportState(str, Enum):
@@ -21,10 +21,10 @@ class SupportState(str, Enum):
 class CapabilitySnapshot(ContractModel):
     contract_version: str = GATEWAY_CONTRACT_VERSION
     runtime_profile: RuntimeProfile
-    transport_kind: GatewayTransportKind
+    adapter_bindings: tuple[GatewayAdapterBinding, ...]
     compatibility_profile: LMCacheCompatibilityProfile
-    endpoint_id: str
-    endpoint_generation: int = Field(ge=0)
+    endpoint_id: str = Field(pattern=ENDPOINT_ID_PATTERN)
+    endpoint_generation: int = Field(ge=1)
     runtime_mode: str | None = None
     observed_at: AwareDatetime = Field(default_factory=utc_now)
     source: str = Field(min_length=1)
@@ -59,12 +59,34 @@ class CapabilitySnapshot(ContractModel):
         if value is RuntimeProfile.AUTO: raise ValueError("runtime_profile 'auto' is startup-only")
         return value
 
+    @field_validator("observed_at")
+    @classmethod
+    def utc_only(cls, value: datetime):
+        if value.utcoffset() != timedelta(0): raise ValueError("observed_at must use UTC")
+        return value
+
+    @field_validator("loaded_adapters", "l1_tiers", "l2_tiers")
+    @classmethod
+    def ordered_unique_names(cls, value):
+        if any(not item.strip() for item in value) or len(set(value)) != len(value):
+            raise ValueError("adapter and tier names must be non-empty and unique")
+        return value
+
     @model_validator(mode="after")
     def coherent_profile(self):
-        if self.transport_kind is GatewayTransportKind.LEGACY_REDIS and self.runtime_profile is not RuntimeProfile.LEGACY:
-            raise ValueError("legacy_redis requires the explicit Legacy runtime profile")
-        if self.runtime_profile is RuntimeProfile.V1 and self.transport_kind in {
-            GatewayTransportKind.LEGACY_REDIS, GatewayTransportKind.MOCK
-        }:
-            raise ValueError("v1 runtime cannot negotiate Legacy or Mock gateway transports")
+        kinds = tuple(binding.transport_kind for binding in self.adapter_bindings)
+        if not kinds or len(set(kinds)) != len(kinds):
+            raise ValueError("adapter_bindings must be non-empty and unique by transport kind")
+        mp = {GatewayTransportKind.MP_HTTP_API, GatewayTransportKind.MP_COORDINATOR,
+              GatewayTransportKind.MP_SDK, GatewayTransportKind.MP_METRICS_EVENTS,
+              GatewayTransportKind.MP_L2_PLUGIN, GatewayTransportKind.UNKNOWN_FUTURE}
+        allowed = (set(kinds) <= mp if self.runtime_profile is RuntimeProfile.V1 else
+                   set(kinds) == {GatewayTransportKind.LEGACY_REDIS} if self.runtime_profile is RuntimeProfile.LEGACY else
+                   set(kinds) == {GatewayTransportKind.MOCK})
+        if not allowed:
+            raise ValueError("adapter bindings are incompatible with runtime profile")
         return self
+
+    def supports_adapter(self, kind: GatewayTransportKind | str) -> bool:
+        requested = GatewayTransportKind(kind)
+        return any(item.transport_kind is requested for item in self.adapter_bindings)
