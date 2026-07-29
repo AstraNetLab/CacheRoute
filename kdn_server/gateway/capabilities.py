@@ -1,21 +1,10 @@
 """Immutable, provenance-bearing gateway capability discovery."""
 from datetime import datetime, timedelta
-from enum import Enum
-
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from kdn_server.contracts.common import ContractModel, ENDPOINT_ID_PATTERN, GATEWAY_CONTRACT_VERSION, utc_now
+from kdn_server.contracts.common import ContractModel, ENDPOINT_ID_PATTERN, GATEWAY_CONTRACT_VERSION, SupportState, utc_now
 from kdn_server.domain import RuntimeProfile
 from .profiles import GatewayAdapterBinding, GatewayTransportKind, LMCacheCompatibilityProfile
-
-
-class SupportState(str, Enum):
-    SUPPORTED = "supported"
-    UNSUPPORTED = "unsupported"
-    UNKNOWN = "unknown"
-
-    def __bool__(self):
-        return self is SupportState.SUPPORTED
 
 
 class CapabilitySnapshot(ContractModel):
@@ -24,7 +13,7 @@ class CapabilitySnapshot(ContractModel):
     adapter_bindings: tuple[GatewayAdapterBinding, ...]
     compatibility_profile: LMCacheCompatibilityProfile
     endpoint_id: str = Field(pattern=ENDPOINT_ID_PATTERN)
-    endpoint_generation: int = Field(ge=1)
+    endpoint_generation: int = Field(ge=0)
     runtime_mode: str | None = None
     observed_at: AwareDatetime = Field(default_factory=utc_now)
     source: str = Field(min_length=1)
@@ -45,6 +34,8 @@ class CapabilitySnapshot(ContractModel):
     lock_lease: SupportState = SupportState.UNKNOWN
     async_completion: SupportState = SupportState.UNKNOWN
     cancellation: SupportState = SupportState.UNKNOWN
+    artifact_lookup: SupportState = SupportState.UNKNOWN
+    cache_observation: SupportState = SupportState.UNKNOWN
 
     @field_validator("contract_version")
     @classmethod
@@ -85,6 +76,8 @@ class CapabilitySnapshot(ContractModel):
                    set(kinds) == {GatewayTransportKind.MOCK})
         if not allowed:
             raise ValueError("adapter bindings are incompatible with runtime profile")
+        if self.runtime_profile is not RuntimeProfile.LEGACY and self.endpoint_generation == 0:
+            raise ValueError("endpoint_generation=0 is only valid for Legacy capabilities")
         return self
 
     def supports_adapter(self, kind: GatewayTransportKind | str) -> bool:

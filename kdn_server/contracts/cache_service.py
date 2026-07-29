@@ -6,8 +6,8 @@ from enum import Enum
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from kdn_server.domain import CacheArtifact, CacheOperationState, CacheOperationTask, CacheReplicaObservation, LMCacheEndpoint, CacheOperationType
-from .common import ContractModel, GatewayTargetedRequest, TokenInput, VersionedMessage, utc_now
+from kdn_server.domain import RuntimeProfile, CacheArtifact, CacheOperationState, CacheOperationTask, CacheReplicaObservation, LMCacheEndpoint, CacheOperationType
+from .common import ContractModel, GatewayTargetedRequest, SupportState, TokenInput, VersionedMessage, utc_now
 from .errors import ContractErrorDetail, OutcomeCode
 
 
@@ -49,17 +49,14 @@ class TokenCoverage(ContractModel):
         return self
 
 
-class SummarySupport(str, Enum):
-    SUPPORTED = "supported"
-    UNSUPPORTED = "unsupported"
-    UNKNOWN = "unknown"
-
-
 class SummaryBase(ContractModel):
     source: str = Field(min_length=1)
     observed_at: AwareDatetime = Field(default_factory=utc_now)
-    endpoint_generation: int = Field(ge=1)
-    support: SummarySupport
+    runtime_profile: RuntimeProfile
+    compatibility_profile_id: str = Field(min_length=1)
+    endpoint_id: str = Field(pattern=r"^endpoint_[0-9a-f]{32}$")
+    endpoint_generation: int = Field(ge=0)
+    support: SupportState
     partial: bool = False
 
     @field_validator("observed_at")
@@ -67,6 +64,12 @@ class SummaryBase(ContractModel):
     def utc_only(cls, value: datetime):
         if value.utcoffset() != timedelta(0): raise ValueError("observed_at must use UTC")
         return value
+
+    @model_validator(mode="after")
+    def data_semantics(self):
+        if self.runtime_profile is not RuntimeProfile.LEGACY and self.endpoint_generation == 0:
+            raise ValueError("unknown generation is Legacy-only")
+        return self
 
 
 class AdapterSummary(SummaryBase):
@@ -79,7 +82,21 @@ class AdapterSummary(SummaryBase):
             raise ValueError("loaded adapters must be non-empty and unique")
         return value
 
+    @model_validator(mode="after")
+    def supported_has_data(self):
+        if self.support is not SupportState.SUPPORTED and self.loaded_adapters:
+            raise ValueError("unsupported or unknown summaries cannot carry adapter data")
+        return self
+
+
+class TierLevel(str, Enum):
+    L1 = "l1"
+    L2 = "l2"
+
+
 class CapacityUsageObservation(SummaryBase):
+    tier_name: str = Field(min_length=1)
+    tier_level: TierLevel
     capacity_bytes: int | None = Field(default=None, ge=0)
     used_bytes: int | None = Field(default=None, ge=0)
 
@@ -87,7 +104,10 @@ class CapacityUsageObservation(SummaryBase):
     def bounded(self):
         if self.capacity_bytes is not None and self.used_bytes is not None and self.used_bytes > self.capacity_bytes:
             raise ValueError("used_bytes cannot exceed capacity_bytes")
+        if self.support is not SupportState.SUPPORTED and (self.capacity_bytes is not None or self.used_bytes is not None):
+            raise ValueError("unsupported or unknown capacity cannot carry measurements")
         return self
+
 
 class TierSummary(SummaryBase):
     l1_tiers: tuple[str, ...] = ()
@@ -101,23 +121,37 @@ class TierSummary(SummaryBase):
             raise ValueError("tier names must be non-empty and unique")
         return value
 
+    @model_validator(mode="after")
+    def tier_consistency(self):
+        if self.support is not SupportState.SUPPORTED and (self.l1_tiers or self.l2_tiers or self.capacity):
+            raise ValueError("unsupported or unknown summaries cannot carry tier data")
+        known = {(name, TierLevel.L1) for name in self.l1_tiers} | {(name, TierLevel.L2) for name in self.l2_tiers}
+        if any((item.tier_name, item.tier_level) not in known for item in self.capacity):
+            raise ValueError("capacity observations must identify a listed tier and level")
+        return self
+
+
 class MaintenanceSummary(SummaryBase):
     active: bool | None = None
     eviction_observable: bool | None = None
     detail: str | None = None
 
+    @model_validator(mode="after")
+    def maintenance_semantics(self):
+        if self.support is not SupportState.SUPPORTED and (self.active is not None or self.eviction_observable is not None):
+            raise ValueError("unsupported or unknown maintenance cannot carry observations")
+        return self
+
 
 class CacheServiceResponse(VersionedMessage):
     compatibility_profile_id: str | None = None
     endpoint_id: str | None = None
-    endpoint_generation: int | None = Field(default=None, ge=1)
+    endpoint_generation: int | None = Field(default=None, ge=0)
     outcome: OutcomeCode = OutcomeCode.SUCCESS
     artifact: CacheArtifact | None = None
-    artifacts: tuple[CacheArtifact, ...] = ()
     observation: CacheReplicaObservation | None = None
-    observations: tuple[CacheReplicaObservation, ...] = ()
     operation: CacheOperationTask | None = None
-    endpoints: tuple[LMCacheEndpoint, ...] = ()
+    endpoints: tuple[LMCacheEndpoint, ...] | None = None
     token_coverage: TokenCoverage | None = None
     adapter_summary: AdapterSummary | None = None
     tier_summary: TierSummary | None = None
@@ -126,35 +160,77 @@ class CacheServiceResponse(VersionedMessage):
 
     @model_validator(mode="after")
     def consistent_outcome(self):
+        if self.runtime_profile is not RuntimeProfile.LEGACY and self.endpoint_generation == 0:
+            raise ValueError("endpoint_generation=0 is only valid for Legacy responses")
         if self.outcome is OutcomeCode.SUCCESS and self.error is not None:
             raise ValueError("successful responses cannot carry an error")
-        if self.outcome is not OutcomeCode.SUCCESS:
-            if self.error is None or self.error.code is not self.outcome:
-                raise ValueError("non-success responses require a matching error detail")
-        if self.outcome is OutcomeCode.CANCELLED and (
-            self.operation is None or self.operation.state is not CacheOperationState.CANCELLED
-        ):
+        if self.outcome is not OutcomeCode.SUCCESS and (self.error is None or self.error.code is not self.outcome):
+            raise ValueError("non-success responses require a matching error detail")
+        if self.outcome is OutcomeCode.CANCELLED and (self.operation is None or self.operation.state is not CacheOperationState.CANCELLED):
             raise ValueError("cancelled responses require a cancelled operation")
-        if self.outcome is OutcomeCode.STALE and self.observation is not None and self.observation.is_fresh():
-            raise ValueError("stale responses cannot carry a fresh observation")
+        if self.outcome is OutcomeCode.STALE and self.observation is not None and self.observation.is_fresh(at=self.timestamp):
+            raise ValueError("stale responses cannot carry an observation fresh at response timestamp")
         if self.outcome is OutcomeCode.TEXT_FALLBACK and not self.error.fallback_eligible:
             raise ValueError("text fallback must be explicitly fallback eligible")
+        for summary in (self.adapter_summary, self.tier_summary, self.maintenance_summary):
+            if summary is not None and any((summary.runtime_profile is not self.runtime_profile,
+                    summary.compatibility_profile_id != self.compatibility_profile_id,
+                    summary.endpoint_id != self.endpoint_id, summary.endpoint_generation != self.endpoint_generation)):
+                raise ValueError("summary provenance must match response envelope")
+        if self.observation is not None and self.observation.endpoint_generation != self.endpoint_generation:
+            raise ValueError("observation generation must match response envelope")
         return self
 
 
-GetCacheObservationResponse = CacheServiceResponse
-LookupArtifactResponse = CacheServiceResponse
-LookupTokensResponse = CacheServiceResponse
-CreatePrefetchIntentResponse = CacheServiceResponse
-CreatePinIntentResponse = CacheServiceResponse
-CreateUnpinIntentResponse = CacheServiceResponse
-CreateClearIntentResponse = CacheServiceResponse
-CreateRebuildIntentResponse = CacheServiceResponse
-GetOperationStatusResponse = CacheServiceResponse
-CancelOperationResponse = CacheServiceResponse
-GetLMCacheEndpointsResponse = CacheServiceResponse
-GetTierAndAdapterSummaryResponse = CacheServiceResponse
-GetMaintenanceStatusResponse = CacheServiceResponse
+class GetCacheObservationResponse(CacheServiceResponse):
+    @model_validator(mode="after")
+    def success_payload(self):
+        if self.outcome is OutcomeCode.SUCCESS and self.observation is None: raise ValueError("successful observation response requires observation")
+        return self
+
+class LookupArtifactResponse(CacheServiceResponse):
+    @model_validator(mode="after")
+    def success_payload(self):
+        if self.outcome is OutcomeCode.SUCCESS and self.artifact is None: raise ValueError("successful artifact response requires artifact")
+        return self
+
+class LookupTokensResponse(CacheServiceResponse):
+    @model_validator(mode="after")
+    def success_payload(self):
+        if self.outcome is OutcomeCode.SUCCESS and self.token_coverage is None: raise ValueError("successful token response requires coverage")
+        return self
+
+class OperationResponse(CacheServiceResponse):
+    @model_validator(mode="after")
+    def success_payload(self):
+        if self.outcome is OutcomeCode.SUCCESS and self.operation is None: raise ValueError("successful operation response requires operation")
+        return self
+
+class CreatePrefetchIntentResponse(OperationResponse): pass
+class CreatePinIntentResponse(OperationResponse): pass
+class CreateUnpinIntentResponse(OperationResponse): pass
+class CreateClearIntentResponse(OperationResponse): pass
+class CreateRebuildIntentResponse(OperationResponse): pass
+class GetOperationStatusResponse(OperationResponse): pass
+class CancelOperationResponse(OperationResponse): pass
+
+class GetLMCacheEndpointsResponse(CacheServiceResponse):
+    @model_validator(mode="after")
+    def success_payload(self):
+        if self.outcome is OutcomeCode.SUCCESS and self.endpoints is None: raise ValueError("successful endpoint response requires endpoints")
+        return self
+
+class GetTierAndAdapterSummaryResponse(CacheServiceResponse):
+    @model_validator(mode="after")
+    def success_payload(self):
+        if self.outcome is OutcomeCode.SUCCESS and (self.adapter_summary is None or self.tier_summary is None): raise ValueError("successful tier response requires both summaries")
+        return self
+
+class GetMaintenanceStatusResponse(CacheServiceResponse):
+    @model_validator(mode="after")
+    def success_payload(self):
+        if self.outcome is OutcomeCode.SUCCESS and self.maintenance_summary is None: raise ValueError("successful maintenance response requires summary")
+        return self
 
 INTENT_OPERATION_TYPES = {
     CreatePrefetchIntentRequest: CacheOperationType.PREFETCH,

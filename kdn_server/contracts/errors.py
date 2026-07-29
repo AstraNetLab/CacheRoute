@@ -1,7 +1,7 @@
 """Safe structured outcomes shared by KDN facade and gateways."""
 from enum import Enum
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .common import ContractModel, KDN_CONTRACT_VERSION
 
@@ -25,11 +25,12 @@ class ContractErrorDetail(ContractModel):
     retryable: bool = False
     fallback_eligible: bool = False
 
+    @field_validator("contract_version")
+    @classmethod
+    def exact_version(cls, value):
+        if value != KDN_CONTRACT_VERSION:
+            raise ValueError("unsupported error contract version")
+        return value
+
 
 ContractError = ContractErrorDetail
-
-
-class GatewayContractException(ValueError):
-    def __init__(self, error: ContractErrorDetail):
-        self.error = error
-        super().__init__(error.message)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any
 from uuid import uuid4
 
@@ -12,6 +13,15 @@ from kdn_server.domain import RuntimeProfile
 KDN_CONTRACT_VERSION = "kdn.v1"
 GATEWAY_CONTRACT_VERSION = "lmcache-gateway.v1"
 ENDPOINT_ID_PATTERN = r"^endpoint_[0-9a-f]{32}$"
+
+
+class SupportState(str, Enum):
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+    UNKNOWN = "unknown"
+
+    def __bool__(self):
+        return self is SupportState.SUPPORTED
 
 
 def utc_now() -> datetime:
@@ -60,7 +70,13 @@ class VersionedMessage(ContractModel):
 class GatewayTargetedRequest(VersionedMessage):
     compatibility_profile_id: str = Field(min_length=1)
     endpoint_id: str = Field(pattern=ENDPOINT_ID_PATTERN)
-    endpoint_generation: int = Field(ge=1)
+    endpoint_generation: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def valid_generation(self):
+        if self.runtime_profile is not RuntimeProfile.LEGACY and self.endpoint_generation == 0:
+            raise ValueError("endpoint_generation=0 is only valid for Legacy targets")
+        return self
 
 
 class TokenReference(ContractModel):

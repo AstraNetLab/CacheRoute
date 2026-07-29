@@ -22,7 +22,8 @@ def capabilities(**changes):
         endpoint_id=ENDPOINT_ID, endpoint_generation=1, source="fixture", loaded_adapters=("a", "b"),
         token_lookup="supported", warm_prefetch="supported", pin_unpin="supported",
         object_deletion="supported", operation_status="supported", cancellation="supported",
-        tier_capacity_usage="supported", maintenance_eviction="supported")
+        tier_capacity_usage="supported", maintenance_eviction="supported",
+        artifact_lookup="supported", cache_observation="supported")
     return CapabilitySnapshot(**(values | changes))
 
 
@@ -127,6 +128,8 @@ def test_negotiation_mismatch_and_generation_stale_preserve_correlation():
 
 
 @pytest.mark.parametrize("request_factory,capability", [
+    (lambda: LookupArtifactRequest(**target(), artifact_id=artifact().artifact_id), "artifact_lookup"),
+    (lambda: GetCacheObservationRequest(**target(), artifact_id=artifact().artifact_id), "cache_observation"),
     (lambda: LookupTokensRequest(**target(), tokens=TokenInput(token_ids=(1,))), "token_lookup"),
     (lambda: intent(), "warm_prefetch"), (lambda: intent(CreateRebuildIntentRequest), "warm_prefetch"),
     (lambda: intent(CreatePinIntentRequest), "pin_unpin"), (lambda: intent(CreateUnpinIntentRequest), "pin_unpin"),
@@ -141,6 +144,8 @@ def test_every_capability_gate_rejects_unsupported_and_unknown(request_factory, 
     gateway = MockGateway(capabilities(**{capability: state}))
     request = request_factory()
     method = (gateway.lookup_tokens if isinstance(request, LookupTokensRequest) else
+              gateway.lookup_artifact if isinstance(request, LookupArtifactRequest) else
+              gateway.get_cache_observation if isinstance(request, GetCacheObservationRequest) else
               gateway.submit_operation if isinstance(request, OperationIntentRequest) else
               gateway.get_operation_status if isinstance(request, GetOperationStatusRequest) and not isinstance(request, CancelOperationRequest) else
               gateway.cancel_operation if isinstance(request, CancelOperationRequest) else
@@ -155,7 +160,9 @@ def test_lookup_fallback_idempotency_completion_and_terminal_cancel():
     assert fallback.outcome is OutcomeCode.TEXT_FALLBACK and fallback.error.fallback_eligible
     first = gateway.submit_operation(intent()).operation
     assert gateway.submit_operation(intent()).operation.task_id == first.task_id
-    with pytest.raises(GatewayContractException): gateway.submit_operation(intent(artifact_id=artifact("different").artifact_id))
+    conflict = gateway.submit_operation(intent(artifact_id=artifact("different").artifact_id))
+    assert conflict.outcome is OutcomeCode.IDEMPOTENCY_CONFLICT
+    assert conflict.runtime_profile.value == "test/mock" and conflict.endpoint_id == ENDPOINT_ID
     running = gateway.start(first.task_id)
     cancelled = gateway.cancel_operation(CancelOperationRequest(**target(), task_id=running.task_id))
     assert cancelled.outcome is OutcomeCode.CANCELLED and cancelled.operation.state.value == "cancelled"
@@ -166,10 +173,12 @@ def test_lookup_fallback_idempotency_completion_and_terminal_cancel():
 
 
 def test_summary_models_and_response_consistency():
-    capacity = CapacityUsageObservation(source="mock", endpoint_generation=1, support="supported", capacity_bytes=10, used_bytes=4)
-    adapter = AdapterSummary(source="mock", endpoint_generation=1, support="supported", loaded_adapters=("a",))
-    tier = TierSummary(source="mock", endpoint_generation=1, support="supported", l1_tiers=("cpu",), capacity=(capacity,))
-    maintenance = MaintenanceSummary(source="mock", endpoint_generation=1, support="unknown", partial=True)
+    provenance = dict(source="mock", runtime_profile="test/mock", compatibility_profile_id="cpu-test",
+        endpoint_id=ENDPOINT_ID, endpoint_generation=1)
+    capacity = CapacityUsageObservation(**provenance, support="supported", tier_name="cpu", tier_level="l1", capacity_bytes=10, used_bytes=4)
+    adapter = AdapterSummary(**provenance, support="supported", loaded_adapters=("a",))
+    tier = TierSummary(**provenance, support="supported", l1_tiers=("cpu",), capacity=(capacity,))
+    maintenance = MaintenanceSummary(**provenance, support="unknown", partial=True)
     for model in (capacity, adapter, tier, maintenance): assert type(model).model_validate_json(model.model_dump_json()) == model
     gateway = MockGateway(capabilities(), adapter_summary=adapter, tier_summary=tier, maintenance_summary=maintenance)
     assert gateway.get_tier_adapter_summary(GetTierAndAdapterSummaryRequest(**target())).tier_summary == tier
@@ -181,13 +190,13 @@ def test_summary_models_and_response_consistency():
 
 def test_legacy_fresh_stale_read_only_and_v1_incompatible():
     caps = capabilities(runtime_profile="legacy", adapter_bindings=(binding("legacy_redis"),),
-        token_lookup="unsupported", warm_prefetch="unsupported", cancellation="unsupported")
+        endpoint_generation=0, token_lookup="unsupported", warm_prefetch="unsupported", cancellation="unsupported")
     fresh, stale = observation(fresh=True, runtime_profile="legacy", legacy=True), observation(fresh=False, runtime_profile="legacy", legacy=True)
-    request = GetCacheObservationRequest(**target(runtime_profile="legacy"), artifact_id=fresh.artifact_id)
+    request = GetCacheObservationRequest(**target(runtime_profile="legacy", endpoint_generation=0), artifact_id=fresh.artifact_id)
     assert LegacyCacheAdapter(caps, observations=(fresh,)).get_cache_observation(request).outcome is OutcomeCode.SUCCESS
     assert LegacyCacheAdapter(caps, observations=(stale,)).get_cache_observation(request).outcome is OutcomeCode.STALE
     legacy = create_gateway("legacy_redis", caps)
-    assert legacy.submit_operation(intent(runtime_profile="legacy")).outcome is OutcomeCode.UNSUPPORTED
+    assert legacy.submit_operation(intent(runtime_profile="legacy", endpoint_generation=0)).outcome is OutcomeCode.UNSUPPORTED
     assert legacy.submit_operation(intent(runtime_profile="v1")).outcome is OutcomeCode.INCOMPATIBLE
     endpoints = legacy.get_endpoints(GetLMCacheEndpointsRequest(runtime_profile="legacy", request_id="r", correlation_id="c"))
     assert endpoints.outcome is OutcomeCode.UNSUPPORTED and (endpoints.request_id, endpoints.correlation_id) == ("r", "c")
@@ -209,5 +218,52 @@ def test_contract_families_reject_secrets_and_physical_payloads(factory, field):
 def test_protocol_conformance_and_dependency_isolation(monkeypatch):
     gateway = MockGateway(capabilities())
     assert isinstance(gateway, LMCacheGateway)
+    legacy_caps = capabilities(runtime_profile="legacy", endpoint_generation=0,
+        adapter_bindings=(binding("legacy_redis"),))
+    assert isinstance(LegacyCacheAdapter(legacy_caps), LMCacheGateway)
     forbidden = {"socket", "redis", "torch", "vllm", "lmcache"}
     assert not forbidden.intersection(type(gateway).__module__.split("."))
+
+
+def test_legacy_unknown_generation_and_mixed_generation_rejection():
+    assert GetCacheObservationRequest(**target(runtime_profile="legacy", endpoint_generation=0), artifact_id=artifact("x", "legacy").artifact_id)
+    with pytest.raises(ValidationError): GetCacheObservationRequest(**target(endpoint_generation=0), artifact_id=artifact().artifact_id)
+    with pytest.raises(ValidationError): CapabilitySnapshot(**(capabilities().model_dump() | {"endpoint_generation": 0}))
+    legacy_observation = observation(fresh=True, runtime_profile="legacy", legacy=True)
+    with pytest.raises(ValidationError):
+        GetCacheObservationResponse(**target(runtime_profile="legacy", endpoint_generation=1),
+            outcome="success", observation=legacy_observation)
+
+
+def test_fixture_provenance_and_dedicated_response_invariants():
+    wrong_artifact = artifact(runtime_profile="legacy")
+    gateway = MockGateway(capabilities(), artifacts=(wrong_artifact,))
+    request = LookupArtifactRequest(**target(), artifact_id=wrong_artifact.artifact_id)
+    assert gateway.lookup_artifact(request).outcome is OutcomeCode.INCOMPATIBLE
+    endpoint = LMCacheEndpoint(name="different", runtime_profile="test/mock", gateway_profile="mock",
+        compatibility_profile_id="cpu-test", generation=1)
+    endpoint_result = MockGateway(capabilities(), endpoints=(endpoint,)).get_endpoints(
+        GetLMCacheEndpointsRequest(runtime_profile="test/mock"))
+    assert endpoint_result.outcome is OutcomeCode.INCOMPATIBLE
+    required = ((GetCacheObservationResponse, "observation"), (LookupArtifactResponse, "artifact"),
+        (LookupTokensResponse, "token_coverage"), (GetOperationStatusResponse, "operation"),
+        (GetLMCacheEndpointsResponse, "endpoints"),
+        (GetTierAndAdapterSummaryResponse, "adapter_summary"),
+        (GetMaintenanceStatusResponse, "maintenance_summary"))
+    for response_type, _ in required:
+        with pytest.raises(ValidationError): response_type(runtime_profile="test/mock")
+
+
+def test_deterministic_stale_round_trip_and_error_version():
+    stale = observation(fresh=False)
+    response = GetCacheObservationResponse(**target(), timestamp=NOW, outcome="stale",
+        error=error(OutcomeCode.STALE), observation=stale)
+    assert GetCacheObservationResponse.model_validate_json(response.model_dump_json()) == response
+    with pytest.raises(ValidationError): ContractErrorDetail(code="failed", message="bad", contract_version="v2")
+
+
+def test_public_exports_are_explicit():
+    import kdn_server.contracts as contracts
+    import kdn_server.gateway as gateway
+    assert "BaseModel" not in contracts.__all__ and "datetime" not in contracts.__all__
+    assert "CapabilitySnapshot" in gateway.__all__ and "MockGateway" in gateway.__all__

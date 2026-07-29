@@ -10,7 +10,7 @@ class GatewayAdapterBase:
     def discover_capabilities(self):
         return self.capabilities
 
-    def _response(self, request, *, outcome=OutcomeCode.SUCCESS, message=None,
+    def _response(self, request, *, response_type=CacheServiceResponse, outcome=OutcomeCode.SUCCESS, message=None,
                   retryable=False, fallback_eligible=False, **values):
         metadata = dict(runtime_profile=request.runtime_profile, request_id=request.request_id,
                         correlation_id=request.correlation_id)
@@ -20,7 +20,7 @@ class GatewayAdapterBase:
         if outcome is not OutcomeCode.SUCCESS:
             error = ContractErrorDetail(code=outcome, message=message or outcome.value.replace("_", " "),
                                         retryable=retryable, fallback_eligible=fallback_eligible)
-        return CacheServiceResponse(**metadata, outcome=outcome, error=error, **values)
+        return response_type(**metadata, outcome=outcome, error=error, **values)
 
     def _negotiate(self, request):
         cap = self.capabilities

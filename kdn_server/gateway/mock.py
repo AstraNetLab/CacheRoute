@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from kdn_server.contracts.cache_service import *
-from kdn_server.contracts.errors import GatewayContractException, OutcomeCode, ContractErrorDetail
+from kdn_server.contracts.common import utc_now
+from kdn_server.contracts.errors import OutcomeCode
 from kdn_server.domain import CacheOperationState, CacheOperationTask, CacheOperationType
 from .base import GatewayAdapterBase
 
@@ -27,47 +28,59 @@ class MockGateway(GatewayAdapterBase):
         self._tasks, self._logical = {}, {}
 
     def lookup_artifact(self, request):
-        if (guard := self._negotiate(request)): return guard
+        if (guard := self._gate(request, self.capabilities.artifact_lookup)): return LookupArtifactResponse.model_validate(guard.model_dump())
         value = self.artifacts.get(request.artifact_id)
-        if value is None: return self._response(request, outcome=OutcomeCode.STALE, message="artifact not observed")
-        return self._response(request, artifact=value)
+        if value is None: return self._response(request, response_type=LookupArtifactResponse, outcome=OutcomeCode.STALE, message="artifact not observed")
+        if value.runtime_profile is not request.runtime_profile or value.compatibility_profile_id != request.compatibility_profile_id:
+            return self._response(request, response_type=LookupArtifactResponse, outcome=OutcomeCode.INCOMPATIBLE, message="artifact provenance mismatch")
+        return self._response(request, response_type=LookupArtifactResponse, artifact=value)
 
     def get_cache_observation(self, request):
-        if (guard := self._negotiate(request)): return guard
+        response_at = utc_now()
+        if (guard := self._gate(request, self.capabilities.cache_observation)): return GetCacheObservationResponse.model_validate(guard.model_dump())
         value = self.observations.get(request.artifact_id)
-        if value is None or not value.is_fresh():
-            return self._response(request, outcome=OutcomeCode.STALE, message="observation is absent or stale",
-                                  observation=value)
-        return self._response(request, observation=value)
+        if value is None:
+            return self._response(request, response_type=GetCacheObservationResponse, outcome=OutcomeCode.STALE, message="observation is absent or stale",
+                                  observation=None)
+        incompatible = any((value.artifact_id != request.artifact_id, value.runtime_profile is not request.runtime_profile,
+            value.compatibility_profile_id != request.compatibility_profile_id, value.endpoint_id != request.endpoint_id))
+        if incompatible: return self._response(request, response_type=GetCacheObservationResponse, outcome=OutcomeCode.INCOMPATIBLE, message="observation provenance mismatch")
+        if value.endpoint_generation != request.endpoint_generation: return self._response(request, response_type=GetCacheObservationResponse, outcome=OutcomeCode.STALE, message="observation generation mismatch")
+        if not value.is_fresh(at=response_at):
+            return self._response(request, response_type=GetCacheObservationResponse, timestamp=response_at, outcome=OutcomeCode.STALE, message="observation is stale", observation=value)
+        return self._response(request, response_type=GetCacheObservationResponse, timestamp=response_at, observation=value)
 
     def lookup_tokens(self, request):
-        if (guard := self._gate(request, self.capabilities.token_lookup)): return guard
+        if (guard := self._gate(request, self.capabilities.token_lookup)): return LookupTokensResponse.model_validate(guard.model_dump())
         key = request.tokens.token_ids or request.tokens.token_reference.reference_id
         coverage = self.token_fixtures.get(key)
         if coverage is None:
-            return self._response(request, outcome=OutcomeCode.TEXT_FALLBACK, message="tokens are not cached",
+            return self._response(request, response_type=LookupTokensResponse, outcome=OutcomeCode.TEXT_FALLBACK, message="tokens are not cached",
                                   fallback_eligible=True)
-        return self._response(request, token_coverage=coverage)
+        return self._response(request, response_type=LookupTokensResponse, token_coverage=coverage)
 
     def submit_operation(self, request):
         operation = INTENT_OPERATION_TYPES.get(type(request))
         if operation is None: raise TypeError("unknown operation intent")
         capability = getattr(self.capabilities, _OPERATION_CAPABILITY[operation])
-        if (guard := self._gate(request, capability)): return guard
+        response_type = {CreatePrefetchIntentRequest: CreatePrefetchIntentResponse, CreatePinIntentRequest: CreatePinIntentResponse,
+            CreateUnpinIntentRequest: CreateUnpinIntentResponse, CreateClearIntentRequest: CreateClearIntentResponse,
+            CreateRebuildIntentRequest: CreateRebuildIntentResponse}[type(request)]
+        if (guard := self._gate(request, capability)): return response_type.model_validate(guard.model_dump())
         logical = (operation.value, request.artifact_id, request.endpoint_id, request.endpoint_generation,
                    request.runtime_profile.value, request.compatibility_profile_id)
         existing = self._tasks.get(request.idempotency_key)
         if existing:
             if self._logical[request.idempotency_key] != logical:
-                raise GatewayContractException(ContractErrorDetail(code=OutcomeCode.IDEMPOTENCY_CONFLICT,
-                    message="idempotency key was used for a different logical request"))
-            return self._response(request, operation=existing)
+                return self._response(request, response_type=response_type, outcome=OutcomeCode.IDEMPOTENCY_CONFLICT,
+                    message="idempotency key was used for a different logical request")
+            return self._response(request, response_type=response_type, operation=existing)
         task = CacheOperationTask(idempotency_key=request.idempotency_key, operation=operation,
             artifact_id=request.artifact_id, runtime_profile=request.runtime_profile,
             compatibility_profile_id=request.compatibility_profile_id, gateway_profile="mock",
             endpoint_id=request.endpoint_id, endpoint_generation=request.endpoint_generation)
         self._tasks[request.idempotency_key], self._logical[request.idempotency_key] = task, logical
-        return self._response(request, operation=task)
+        return self._response(request, response_type=response_type, operation=task)
 
     def complete(self, task_id, *, failed=False):
         key, task = self._find(task_id)
@@ -87,26 +100,32 @@ class MockGateway(GatewayAdapterBase):
         return next(((key, task) for key, task in self._tasks.items() if task.task_id == task_id), (None, None))
 
     def get_operation_status(self, request):
-        if (guard := self._gate(request, self.capabilities.operation_status)): return guard
+        if (guard := self._gate(request, self.capabilities.operation_status)): return GetOperationStatusResponse.model_validate(guard.model_dump())
         _, task = self._find(request.task_id)
-        if task is None: return self._response(request, outcome=OutcomeCode.STALE, message="operation was not found")
-        return self._response(request, operation=task)
+        if task is None: return self._response(request, response_type=GetOperationStatusResponse, outcome=OutcomeCode.STALE, message="operation was not found")
+        return self._response(request, response_type=GetOperationStatusResponse, operation=task)
 
     def cancel_operation(self, request):
-        if (guard := self._gate(request, self.capabilities.cancellation)): return guard
+        if (guard := self._gate(request, self.capabilities.cancellation)): return CancelOperationResponse.model_validate(guard.model_dump())
         key, task = self._find(request.task_id)
-        if task is None: return self._response(request, outcome=OutcomeCode.STALE, message="operation was not found")
-        if task.terminal: return self._response(request, operation=task)
+        if task is None: return self._response(request, response_type=CancelOperationResponse, outcome=OutcomeCode.STALE, message="operation was not found")
+        if task.terminal: return self._response(request, response_type=CancelOperationResponse, operation=task)
         task = task.transition("cancelled"); self._tasks[key] = task
-        return self._response(request, outcome=OutcomeCode.CANCELLED, message="operation cancelled", operation=task)
+        return self._response(request, response_type=CancelOperationResponse, outcome=OutcomeCode.CANCELLED, message="operation cancelled", operation=task)
 
     def get_endpoints(self, request):
-        return self._response(request, endpoints=self.endpoints)
+        for endpoint in self.endpoints:
+            if any((endpoint.runtime_profile is not self.capabilities.runtime_profile,
+                    endpoint.compatibility_profile_id != self.capabilities.compatibility_profile.compatibility_profile_id,
+                    endpoint.endpoint_id != self.capabilities.endpoint_id,
+                    endpoint.generation != self.capabilities.endpoint_generation)):
+                return self._response(request, response_type=GetLMCacheEndpointsResponse, outcome=OutcomeCode.INCOMPATIBLE, message="endpoint fixture provenance mismatch")
+        return self._response(request, response_type=GetLMCacheEndpointsResponse, endpoints=self.endpoints)
 
     def get_tier_adapter_summary(self, request):
-        if (guard := self._gate(request, self.capabilities.tier_capacity_usage)): return guard
-        return self._response(request, adapter_summary=self.adapter_summary, tier_summary=self.tier_summary)
+        if (guard := self._gate(request, self.capabilities.tier_capacity_usage)): return GetTierAndAdapterSummaryResponse.model_validate(guard.model_dump())
+        return self._response(request, response_type=GetTierAndAdapterSummaryResponse, adapter_summary=self.adapter_summary, tier_summary=self.tier_summary)
 
     def get_maintenance_status(self, request):
-        if (guard := self._gate(request, self.capabilities.maintenance_eviction)): return guard
-        return self._response(request, maintenance_summary=self.maintenance_summary)
+        if (guard := self._gate(request, self.capabilities.maintenance_eviction)): return GetMaintenanceStatusResponse.model_validate(guard.model_dump())
+        return self._response(request, response_type=GetMaintenanceStatusResponse, maintenance_summary=self.maintenance_summary)
