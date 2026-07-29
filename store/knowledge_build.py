@@ -7,9 +7,19 @@ from typing import List, Dict, Any, Optional
 import yaml
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-for source_root in (ROOT_DIR, ROOT_DIR / "src"):
-    if str(source_root) not in sys.path:
-        sys.path.insert(0, str(source_root))
+
+
+def _bootstrap_source_checkout() -> None:
+    """Expose repository packages only for direct source-file execution."""
+    for source_root in (ROOT_DIR, ROOT_DIR / "src"):
+        if str(source_root) not in sys.path:
+            sys.path.insert(0, str(source_root))
+
+
+if __package__ in (None, ""):
+    _bootstrap_source_checkout()
+
+
 KNOWLEDGE_YAML_PATH = ROOT_DIR / "data"
 
 from core.config import DEFAULT_EMBED_MODEL

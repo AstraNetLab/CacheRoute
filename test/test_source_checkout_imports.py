@@ -38,8 +38,23 @@ def test_application_imports_from_outside_source_checkout(tmp_path):
         text=True,
         capture_output=True,
     )
-    assert "1 passed" in result.stdout
+    assert "2 passed" in result.stdout
     assert "src/cacheroute/compat/__init__.py" in result.stdout
     assert "kdn_server/kv_builder.py" in result.stdout
     print(result.stdout, end="")
     _assert_source_imports()
+
+
+def test_direct_kdn_builder_entrypoint_bootstraps_source_checkout(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [sys.executable, "-I", str(repo / "util" / "kdn_build_kv.py"), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "--kv-root" in result.stdout

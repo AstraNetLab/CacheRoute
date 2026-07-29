@@ -61,3 +61,27 @@ assert path.is_relative_to({str(repo / 'src')!r})
         capture_output=True,
     )
     assert "src/cacheroute/compat/__init__.py" in result.stdout
+
+
+def test_normal_package_imports_do_not_mutate_sys_path(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    script = f"""
+import sys
+import runpy
+runpy.run_path({str(repo / 'conftest.py')!r})
+before = tuple(sys.path)
+import client.client
+assert tuple(sys.path) == before
+import store.knowledge_build
+assert tuple(sys.path) == before
+assert not any(path.endswith('/site-packages/src') for path in sys.path)
+print('normal import sys.path unchanged')
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert result.stdout.strip() == "normal import sys.path unchanged"

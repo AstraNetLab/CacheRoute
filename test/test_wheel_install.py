@@ -146,6 +146,11 @@ for module in modules:
     path = Path(module.__file__).resolve()
     print(f"{module.__name__}={path}")
     assert path.is_relative_to(Path(sys.prefix).resolve())
+before_imports = tuple(sys.path)
+import client.client
+assert tuple(sys.path) == before_imports
+import store.knowledge_build
+assert tuple(sys.path) == before_imports
 assert normalize_runtime_profile("modern") == "v1"
 assert RuntimeProfile.normalize("old") is RuntimeProfile.LEGACY
 assert canonical_runtime.__all__ == legacy_runtime.__all__ == core_runtime.__all__

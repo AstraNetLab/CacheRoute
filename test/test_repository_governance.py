@@ -47,6 +47,22 @@ SOURCE_BOOTSTRAP_ENTRYPOINTS = {
     Path("test/demo_scheduler.py"),
     Path("util/kdn_build_kv.py"),
 }
+GUARDED_SOURCE_BOOTSTRAP_MODULES = {
+    Path("client/client.py"),
+    Path("client/kv_timing_sender.py"),
+    Path("kdn_server/kdn_register_cli.py"),
+    Path("scheduler/scheduler_cli.py"),
+    Path("scripts/validate_v1_kdn_roundtrip.py"),
+    Path("store/knowledge_build.py"),
+    Path("util/kdn_build_kv.py"),
+}
+SYS_PATH_ALLOWLIST = SOURCE_BOOTSTRAP_ENTRYPOINTS | {
+    Path("conftest.py"),
+    Path("test/test_demo_instance_ui.py"),
+    Path("test/test_namespace_layout.py"),
+    Path("test/test_repository_governance.py"),
+    Path("test/test_wheel_install.py"),
+}
 GENERATED_PACKAGE_EXCLUDES = [
     "src", "src.*", "build", "build.*", "dist", "dist.*", "wheelhouse",
     "wheelhouse.*", ".venv", ".venv.*", "*.egg-info", "*.egg-info.*",
@@ -142,10 +158,48 @@ def test_source_bootstraps_stay_at_test_and_entrypoint_boundaries():
     ) for node in config_tree.body)
     assert "sys.path" not in (ROOT / "core/config.py").read_text(encoding="utf-8")
 
-    for relative in SOURCE_BOOTSTRAP_ENTRYPOINTS:
-        text = (ROOT / relative).read_text(encoding="utf-8")
-        assert ' / "src"' in text
-        assert "sys.path" in text
+    files_with_sys_path = {
+        path.relative_to(ROOT) for path in _tracked_files()
+        if path.suffix == ".py" and "sys.path" in path.read_text(encoding="utf-8")
+    }
+    assert files_with_sys_path <= SYS_PATH_ALLOWLIST
+
+    project_roots = {"core", "kdn_server", "proxy", "instance", "scheduler", "cacheroute"}
+    for relative in GUARDED_SOURCE_BOOTSTRAP_MODULES:
+        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+        bootstrap_index = next(
+            index for index, node in enumerate(tree.body)
+            if isinstance(node, ast.FunctionDef) and node.name == "_bootstrap_source_checkout"
+        )
+        guard_index = next(
+            index for index, node in enumerate(tree.body)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "__package__"
+            and any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "_bootstrap_source_checkout"
+                for child in ast.walk(node)
+            )
+        )
+        project_import_indexes = [
+            index for index, node in enumerate(tree.body)
+            if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in project_roots
+            or isinstance(node, ast.Import) and any(
+                alias.name.split(".")[0] in project_roots for alias in node.names
+            )
+        ]
+        assert bootstrap_index < guard_index < min(project_import_indexes)
+        function = tree.body[bootstrap_index]
+        assert any(
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "sys"
+            and node.attr == "path"
+            for node in ast.walk(function)
+        )
 
 
 def test_local_markdown_links_resolve():

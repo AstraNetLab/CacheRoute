@@ -155,7 +155,7 @@ configuration, and metric tables listed above. These additions make required
 runtime package data explicit; they do not replace or remove baseline data.
 The generated `instance/TTFT_predictor/prompt_length_validation.log` is
 explicitly excluded. At the same source head, its removal reduced the wheel
-from 585,197 bytes to 584,806 bytes.
+from 586,283 bytes to 585,892 bytes.
 
 Package-data groups are limited to runtime inputs:
 
@@ -186,7 +186,7 @@ listed under “changed mapping” were modified.
 | Monkeypatch/mock target strings | Tests under `test/` and `test/kdn/`; none target the migrated implementation path |
 | Docker/Compose/shell/CI | `Dockerfile`, `env/docker/cu130/`, `env/README.md`, `scripts/`, and `.github/`; no Compose file or migrated-package reference was found |
 | Markdown references | `core/README.md` and `test/kdn/README.md` referenced the old implementation path and were updated; compatibility history remains explicitly marked deprecated |
-| Source checkout path bootstraps | Root `conftest.py`; standalone demos in `test/`; `client/client.py`, `client/kv_timing_sender.py`, `kdn_server/kdn_register_cli.py`, `scheduler/scheduler_cli.py`, `scripts/validate_v1_kdn_roundtrip.py`, `store/knowledge_build.py`, and `util/kdn_build_kv.py` add both the repository root and `src` before project imports. `test/test_demo_instance_ui.py` has a test-only root bootstrap, while `test/demo_resource_monitor_e2e.py` uses its root path for subprocess working directories. Ordinary library modules, including `core/config.py`, do not mutate `sys.path`. Isolated wheel tests run elsewhere and do not use any source bootstrap. |
+| Source checkout path bootstraps | Root `conftest.py` and dedicated demos in `test/` bootstrap their explicit test/entrypoint boundary. Dual-purpose `client/client.py`, `client/kv_timing_sender.py`, `kdn_server/kdn_register_cli.py`, `scheduler/scheduler_cli.py`, `scripts/validate_v1_kdn_roundtrip.py`, `store/knowledge_build.py`, and `util/kdn_build_kv.py` call a local bootstrap only when `__package__ in (None, "")`; normal package imports do not mutate `sys.path`. `test/test_demo_instance_ui.py` has a test-only root bootstrap, while `test/demo_resource_monitor_e2e.py` uses its root path for subprocess working directories. Ordinary library modules, including `core/config.py`, remain side-effect free. Isolated wheel tests run elsewhere and do not use any source bootstrap. |
 
 The reproducible inventory commands are:
 

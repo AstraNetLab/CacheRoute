@@ -23,11 +23,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-# Support direct execution from a source checkout before project imports.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-for source_root in (_REPO_ROOT, _REPO_ROOT / "src"):
-    if str(source_root) not in sys.path:
-        sys.path.insert(0, str(source_root))
+def _bootstrap_source_checkout() -> None:
+    """Expose repository packages only for direct source-file execution."""
+    repo_root = Path(__file__).resolve().parents[1]
+    for source_root in (repo_root, repo_root / "src"):
+        if str(source_root) not in sys.path:
+            sys.path.insert(0, str(source_root))
+
+
+if __package__ in (None, ""):
+    _bootstrap_source_checkout()
 
 from core.config import REQUIRED_FIELDS, ALLOWED_OPTION_FIELDS
 
