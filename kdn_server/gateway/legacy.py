@@ -59,5 +59,6 @@ class LegacyCacheAdapter(GatewayAdapterBase):
     def get_tier_adapter_summary(self, request): return self._unsupported(request, GetTierAndAdapterSummaryResponse)
     def get_maintenance_status(self, request): return self._unsupported(request, GetMaintenanceStatusResponse)
     def get_endpoints(self, request):
+        if (guard := self._discovery_negotiate(request, GetLMCacheEndpointsResponse)): return guard
         return self._response(request, response_type=GetLMCacheEndpointsResponse, outcome=OutcomeCode.UNSUPPORTED,
                               message="Legacy endpoint discovery is unavailable")

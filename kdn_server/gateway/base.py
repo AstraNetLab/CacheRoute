@@ -41,3 +41,10 @@ class GatewayAdapterBase:
             return self._response(request, outcome=OutcomeCode.UNSUPPORTED,
                                   message="gateway capability is unsupported or unknown")
         return None
+
+    def _discovery_negotiate(self, request, response_type):
+        if request.runtime_profile is not self.capabilities.runtime_profile:
+            return self._response(request, response_type=response_type,
+                                  outcome=OutcomeCode.INCOMPATIBLE,
+                                  message="discovery runtime profile is incompatible")
+        return None

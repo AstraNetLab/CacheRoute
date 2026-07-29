@@ -114,6 +114,7 @@ class MockGateway(GatewayAdapterBase):
         return self._response(request, response_type=CancelOperationResponse, outcome=OutcomeCode.CANCELLED, message="operation cancelled", operation=task)
 
     def get_endpoints(self, request):
+        if (guard := self._discovery_negotiate(request, GetLMCacheEndpointsResponse)): return guard
         for endpoint in self.endpoints:
             if any((endpoint.runtime_profile is not self.capabilities.runtime_profile,
                     endpoint.compatibility_profile_id != self.capabilities.compatibility_profile.compatibility_profile_id,

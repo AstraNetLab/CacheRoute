@@ -42,12 +42,12 @@ def intent(cls=CreatePrefetchIntentRequest, **changes):
 
 
 def observation(*, fresh=True, runtime_profile="test/mock", legacy=False):
-    observed = NOW - timedelta(seconds=1 if fresh else 20)
+    observed = datetime.now(timezone.utc) - timedelta(seconds=1) if fresh else NOW - timedelta(minutes=20)
     return CacheReplicaObservation(artifact_id=artifact(runtime_profile=runtime_profile).artifact_id,
         state="available", source="legacy_projection" if legacy else "mock", endpoint_id=ENDPOINT_ID,
         endpoint_generation=0 if legacy else 1, runtime_profile=runtime_profile,
         gateway_profile="legacy_gateway" if legacy else "mock", compatibility_profile_id="cpu-test",
-        source_observed_at=observed, projected_at=NOW, expires_at=observed + timedelta(seconds=10),
+        source_observed_at=observed, projected_at=max(NOW, observed), expires_at=observed + timedelta(minutes=10),
         legacy_projection=legacy, compatibility_uncertain=legacy)
 
 
@@ -267,3 +267,61 @@ def test_public_exports_are_explicit():
     import kdn_server.gateway as gateway
     assert "BaseModel" not in contracts.__all__ and "datetime" not in contracts.__all__
     assert "CapabilitySnapshot" in gateway.__all__ and "MockGateway" in gateway.__all__
+
+
+def test_targeted_error_responses_require_target_metadata():
+    for response_type in (GetCacheObservationResponse, LookupArtifactResponse, LookupTokensResponse,
+                          GetOperationStatusResponse, GetTierAndAdapterSummaryResponse,
+                          GetMaintenanceStatusResponse):
+        with pytest.raises(ValidationError):
+            response_type(runtime_profile="test/mock", outcome="unsupported",
+                          error=error(OutcomeCode.UNSUPPORTED))
+
+
+def test_response_level_object_provenance_and_freshness():
+    stale = observation(fresh=False)
+    with pytest.raises(ValidationError):
+        GetCacheObservationResponse(**target(), timestamp=NOW, observation=stale)
+    wrong_artifact = artifact(runtime_profile="legacy")
+    with pytest.raises(ValidationError):
+        LookupArtifactResponse(**target(), artifact=wrong_artifact)
+    fresh = observation(fresh=True)
+    for changes in ({"runtime_profile": "legacy"}, {"compatibility_profile_id": "other"},
+                    {"endpoint_id": "endpoint_" + "2" * 32}):
+        with pytest.raises(ValidationError):
+            GetCacheObservationResponse(**target(**changes), observation=fresh)
+    gateway = MockGateway(capabilities())
+    operation = gateway.submit_operation(intent()).operation
+    with pytest.raises(ValidationError):
+        GetOperationStatusResponse(**target(compatibility_profile_id="other"), operation=operation)
+
+
+def test_nested_capacity_provenance_and_discovery_runtime_negotiation():
+    provenance = dict(source="mock", runtime_profile="test/mock", compatibility_profile_id="cpu-test",
+        endpoint_id=ENDPOINT_ID, endpoint_generation=1, support="supported")
+    capacity = CapacityUsageObservation(**provenance, tier_name="cpu", tier_level="l1")
+    with pytest.raises(ValidationError):
+        TierSummary(**(provenance | {"compatibility_profile_id": "other"}),
+                    l1_tiers=("cpu",), capacity=(capacity,))
+    request = GetLMCacheEndpointsRequest(runtime_profile="v1")
+    assert MockGateway(capabilities()).get_endpoints(request).outcome is OutcomeCode.INCOMPATIBLE
+    legacy_caps = capabilities(runtime_profile="legacy", endpoint_generation=0,
+        adapter_bindings=(binding("legacy_redis"),))
+    assert LegacyCacheAdapter(legacy_caps).get_endpoints(request).outcome is OutcomeCode.INCOMPATIBLE
+
+
+def test_protocol_dedicated_return_annotations_and_repeat_round_trip():
+    import inspect
+    expected = {"lookup_artifact": "LookupArtifactResponse", "lookup_tokens": "LookupTokensResponse",
+        "get_cache_observation": "GetCacheObservationResponse", "submit_operation": "OperationResponse",
+        "get_operation_status": "GetOperationStatusResponse", "cancel_operation": "CancelOperationResponse",
+        "get_endpoints": "GetLMCacheEndpointsResponse",
+        "get_tier_adapter_summary": "GetTierAndAdapterSummaryResponse",
+        "get_maintenance_status": "GetMaintenanceStatusResponse"}
+    for method, return_name in expected.items():
+        assert inspect.signature(getattr(LMCacheGateway, method)).return_annotation.__name__ == return_name
+    value = LookupTokensResponse(**target(), token_coverage=TokenCoverage(total_tokens=2, covered_ranges=((0, 2),)))
+    encoded = value.model_dump_json()
+    for _ in range(3):
+        value = LookupTokensResponse.model_validate_json(encoded)
+        assert value.model_dump_json() == encoded

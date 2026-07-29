@@ -16,7 +16,7 @@ from .cache_service import (AdapterSummary, ArtifactRequest, CacheServiceRespons
     GetLMCacheEndpointsRequest, GetLMCacheEndpointsResponse, GetMaintenanceStatusRequest,
     GetMaintenanceStatusResponse, GetOperationStatusRequest, GetOperationStatusResponse,
     GetTierAndAdapterSummaryRequest, GetTierAndAdapterSummaryResponse,
-    LookupArtifactRequest, LookupArtifactResponse, LookupTokensRequest, LookupTokensResponse,
+    GatewayTargetedResponse, LookupArtifactRequest, LookupArtifactResponse, LookupTokensRequest, LookupTokensResponse,
     MaintenanceSummary, OperationIntentRequest, OperationResponse, SummaryBase, TierLevel,
     TierSummary, TokenCoverage)
 
@@ -35,7 +35,7 @@ __all__ = [
     "GetOperationStatusRequest", "CancelOperationRequest", "GetLMCacheEndpointsRequest",
     "GetTierAndAdapterSummaryRequest", "GetMaintenanceStatusRequest", "TokenCoverage",
     "SummaryBase", "AdapterSummary", "TierLevel", "CapacityUsageObservation", "TierSummary",
-    "MaintenanceSummary", "CacheServiceResponse", "GetCacheObservationResponse",
+    "MaintenanceSummary", "CacheServiceResponse", "GatewayTargetedResponse", "GetCacheObservationResponse",
     "LookupArtifactResponse", "LookupTokensResponse", "OperationResponse",
     "CreatePrefetchIntentResponse", "CreatePinIntentResponse", "CreateUnpinIntentResponse",
     "CreateClearIntentResponse", "CreateRebuildIntentResponse", "GetOperationStatusResponse",

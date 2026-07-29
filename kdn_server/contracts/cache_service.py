@@ -128,6 +128,12 @@ class TierSummary(SummaryBase):
         known = {(name, TierLevel.L1) for name in self.l1_tiers} | {(name, TierLevel.L2) for name in self.l2_tiers}
         if any((item.tier_name, item.tier_level) not in known for item in self.capacity):
             raise ValueError("capacity observations must identify a listed tier and level")
+        for item in self.capacity:
+            if any((item.runtime_profile is not self.runtime_profile,
+                    item.compatibility_profile_id != self.compatibility_profile_id,
+                    item.endpoint_id != self.endpoint_id,
+                    item.endpoint_generation != self.endpoint_generation)):
+                raise ValueError("capacity provenance must match its tier summary")
         return self
 
 
@@ -179,28 +185,54 @@ class CacheServiceResponse(VersionedMessage):
                 raise ValueError("summary provenance must match response envelope")
         if self.observation is not None and self.observation.endpoint_generation != self.endpoint_generation:
             raise ValueError("observation generation must match response envelope")
+        if self.artifact is not None and self.compatibility_profile_id is not None and any((
+                self.artifact.runtime_profile is not self.runtime_profile,
+                self.artifact.compatibility_profile_id != self.compatibility_profile_id)):
+            raise ValueError("artifact provenance must match response envelope")
+        if self.observation is not None and self.compatibility_profile_id is not None and any((
+                self.observation.runtime_profile is not self.runtime_profile,
+                self.observation.compatibility_profile_id != self.compatibility_profile_id,
+                self.observation.endpoint_id != self.endpoint_id,
+                self.observation.endpoint_generation != self.endpoint_generation)):
+            raise ValueError("observation provenance must match response envelope")
+        if self.operation is not None and self.compatibility_profile_id is not None and any((
+                self.operation.runtime_profile is not self.runtime_profile,
+                self.operation.compatibility_profile_id != self.compatibility_profile_id,
+                self.operation.endpoint_id != self.endpoint_id,
+                self.operation.endpoint_generation != self.endpoint_generation)):
+            raise ValueError("operation provenance must match response envelope")
+        if self.endpoints is not None and any(endpoint.runtime_profile is not self.runtime_profile for endpoint in self.endpoints):
+            raise ValueError("endpoint runtime profile must match response envelope")
         return self
 
 
-class GetCacheObservationResponse(CacheServiceResponse):
+class GatewayTargetedResponse(CacheServiceResponse):
+    compatibility_profile_id: str = Field(min_length=1)
+    endpoint_id: str = Field(pattern=r"^endpoint_[0-9a-f]{32}$")
+    endpoint_generation: int = Field(ge=0)
+
+
+class GetCacheObservationResponse(GatewayTargetedResponse):
     @model_validator(mode="after")
     def success_payload(self):
-        if self.outcome is OutcomeCode.SUCCESS and self.observation is None: raise ValueError("successful observation response requires observation")
+        if self.outcome is OutcomeCode.SUCCESS and (
+                self.observation is None or not self.observation.is_fresh(at=self.timestamp)):
+            raise ValueError("successful observation response requires a fresh observation")
         return self
 
-class LookupArtifactResponse(CacheServiceResponse):
+class LookupArtifactResponse(GatewayTargetedResponse):
     @model_validator(mode="after")
     def success_payload(self):
         if self.outcome is OutcomeCode.SUCCESS and self.artifact is None: raise ValueError("successful artifact response requires artifact")
         return self
 
-class LookupTokensResponse(CacheServiceResponse):
+class LookupTokensResponse(GatewayTargetedResponse):
     @model_validator(mode="after")
     def success_payload(self):
         if self.outcome is OutcomeCode.SUCCESS and self.token_coverage is None: raise ValueError("successful token response requires coverage")
         return self
 
-class OperationResponse(CacheServiceResponse):
+class OperationResponse(GatewayTargetedResponse):
     @model_validator(mode="after")
     def success_payload(self):
         if self.outcome is OutcomeCode.SUCCESS and self.operation is None: raise ValueError("successful operation response requires operation")
@@ -220,13 +252,13 @@ class GetLMCacheEndpointsResponse(CacheServiceResponse):
         if self.outcome is OutcomeCode.SUCCESS and self.endpoints is None: raise ValueError("successful endpoint response requires endpoints")
         return self
 
-class GetTierAndAdapterSummaryResponse(CacheServiceResponse):
+class GetTierAndAdapterSummaryResponse(GatewayTargetedResponse):
     @model_validator(mode="after")
     def success_payload(self):
         if self.outcome is OutcomeCode.SUCCESS and (self.adapter_summary is None or self.tier_summary is None): raise ValueError("successful tier response requires both summaries")
         return self
 
-class GetMaintenanceStatusResponse(CacheServiceResponse):
+class GetMaintenanceStatusResponse(GatewayTargetedResponse):
     @model_validator(mode="after")
     def success_payload(self):
         if self.outcome is OutcomeCode.SUCCESS and self.maintenance_summary is None: raise ValueError("successful maintenance response requires summary")
