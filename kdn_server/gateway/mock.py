@@ -6,6 +6,7 @@ from kdn_server.contracts.common import utc_now
 from kdn_server.contracts.errors import OutcomeCode
 from kdn_server.domain import CacheOperationState, CacheOperationTask, CacheOperationType
 from .base import GatewayAdapterBase
+from .capabilities import SupportState
 
 
 _OPERATION_CAPABILITY = {
@@ -57,6 +58,8 @@ class MockGateway(GatewayAdapterBase):
         if coverage is None:
             return self._response(request, response_type=LookupTokensResponse, outcome=OutcomeCode.TEXT_FALLBACK, message="tokens are not cached",
                                   fallback_eligible=True)
+        if self.capabilities.range_coverage is not SupportState.SUPPORTED and coverage.covered_ranges:
+            coverage = coverage.model_copy(update={"covered_ranges": ()})
         return self._response(request, response_type=LookupTokensResponse, token_coverage=coverage)
 
     def submit_operation(self, request):
@@ -125,8 +128,27 @@ class MockGateway(GatewayAdapterBase):
 
     def get_tier_adapter_summary(self, request):
         if (guard := self._gate(request, self.capabilities.tier_capacity_usage)): return GetTierAndAdapterSummaryResponse.model_validate(guard.model_dump())
+        if self.adapter_summary is None or self.tier_summary is None:
+            return self._response(request, response_type=GetTierAndAdapterSummaryResponse,
+                outcome=OutcomeCode.STALE, message="tier or adapter summary fixture is absent")
+        if not self._summary_matches(request, self.adapter_summary) or not self._summary_matches(request, self.tier_summary):
+            return self._response(request, response_type=GetTierAndAdapterSummaryResponse,
+                outcome=OutcomeCode.INCOMPATIBLE, message="tier or adapter summary provenance mismatch")
         return self._response(request, response_type=GetTierAndAdapterSummaryResponse, adapter_summary=self.adapter_summary, tier_summary=self.tier_summary)
 
     def get_maintenance_status(self, request):
         if (guard := self._gate(request, self.capabilities.maintenance_eviction)): return GetMaintenanceStatusResponse.model_validate(guard.model_dump())
+        if self.maintenance_summary is None:
+            return self._response(request, response_type=GetMaintenanceStatusResponse,
+                outcome=OutcomeCode.STALE, message="maintenance summary fixture is absent")
+        if not self._summary_matches(request, self.maintenance_summary):
+            return self._response(request, response_type=GetMaintenanceStatusResponse,
+                outcome=OutcomeCode.INCOMPATIBLE, message="maintenance summary provenance mismatch")
         return self._response(request, response_type=GetMaintenanceStatusResponse, maintenance_summary=self.maintenance_summary)
+
+    @staticmethod
+    def _summary_matches(request, summary):
+        return all((summary.runtime_profile is request.runtime_profile,
+                    summary.compatibility_profile_id == request.compatibility_profile_id,
+                    summary.endpoint_id == request.endpoint_id,
+                    summary.endpoint_generation == request.endpoint_generation))

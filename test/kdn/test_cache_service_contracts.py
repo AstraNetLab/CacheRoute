@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from kdn_server.contracts import *
+from kdn_server.contracts.cache_service import CacheServiceResponse, GatewayTargetedResponse
 from kdn_server.domain import CacheArtifact, CacheReplicaObservation, LMCacheEndpoint
 from kdn_server.gateway import *
 
@@ -89,9 +90,9 @@ def test_target_metadata_is_required_and_validated(request_cls, values):
 
 
 def test_token_coverage_boundaries():
-    assert TokenCoverage(total_tokens=5, covered_ranges=((0, 2), (2, 5)))
+    assert TokenCoverage(whole_request_hit=True, total_tokens=5, covered_ranges=((0, 2), (2, 5)))
     for ranges in (((-1, 1),), ((1, 1),), ((1, 6),), ((2, 4), (1, 2)), ((0, 3), (2, 4))):
-        with pytest.raises(ValidationError): TokenCoverage(total_tokens=5, covered_ranges=ranges)
+        with pytest.raises(ValidationError): TokenCoverage(whole_request_hit=False, total_tokens=5, covered_ranges=ranges)
 
 
 def test_transport_runtime_matrix_composition_and_factory_membership():
@@ -313,15 +314,82 @@ def test_nested_capacity_provenance_and_discovery_runtime_negotiation():
 def test_protocol_dedicated_return_annotations_and_repeat_round_trip():
     import inspect
     expected = {"lookup_artifact": "LookupArtifactResponse", "lookup_tokens": "LookupTokensResponse",
-        "get_cache_observation": "GetCacheObservationResponse", "submit_operation": "OperationResponse",
+        "get_cache_observation": "GetCacheObservationResponse",
         "get_operation_status": "GetOperationStatusResponse", "cancel_operation": "CancelOperationResponse",
         "get_endpoints": "GetLMCacheEndpointsResponse",
         "get_tier_adapter_summary": "GetTierAndAdapterSummaryResponse",
         "get_maintenance_status": "GetMaintenanceStatusResponse"}
     for method, return_name in expected.items():
         assert inspect.signature(getattr(LMCacheGateway, method)).return_annotation.__name__ == return_name
-    value = LookupTokensResponse(**target(), token_coverage=TokenCoverage(total_tokens=2, covered_ranges=((0, 2),)))
+    submit_annotation = inspect.signature(LMCacheGateway.submit_operation).return_annotation
+    assert len(submit_annotation.__args__) == 5
+    value = LookupTokensResponse(**target(), token_coverage=TokenCoverage(whole_request_hit=True, total_tokens=2, covered_ranges=((0, 2),)))
     encoded = value.model_dump_json()
     for _ in range(3):
         value = LookupTokensResponse.model_validate_json(encoded)
         assert value.model_dump_json() == encoded
+
+
+@pytest.mark.parametrize("lookup", ["supported", "unsupported", "unknown"])
+@pytest.mark.parametrize("ranges", ["supported", "unsupported", "unknown"])
+def test_token_and_range_capabilities_are_independent(lookup, ranges):
+    coverage = TokenCoverage(whole_request_hit=False, total_tokens=4, covered_ranges=((0, 2),))
+    gateway = MockGateway(capabilities(token_lookup=lookup, range_coverage=ranges),
+                          token_fixtures={(1, 2, 3, 4): coverage})
+    response = gateway.lookup_tokens(LookupTokensRequest(**target(), tokens=TokenInput(token_ids=(1, 2, 3, 4))))
+    if lookup != "supported":
+        assert response.outcome is OutcomeCode.UNSUPPORTED and response.token_coverage is None
+    else:
+        assert response.outcome is OutcomeCode.SUCCESS
+        assert response.token_coverage.whole_request_hit is False
+        assert bool(response.token_coverage.covered_ranges) is (ranges == "supported")
+
+
+def test_missing_and_mismatched_summary_fixtures_are_structured():
+    gateway = MockGateway(capabilities())
+    tier_request, maintenance_request = GetTierAndAdapterSummaryRequest(**target()), GetMaintenanceStatusRequest(**target())
+    assert gateway.get_tier_adapter_summary(tier_request).outcome is OutcomeCode.STALE
+    assert gateway.get_maintenance_status(maintenance_request).outcome is OutcomeCode.STALE
+    wrong = dict(source="mock", runtime_profile="test/mock", compatibility_profile_id="wrong",
+        endpoint_id=ENDPOINT_ID, endpoint_generation=1, support="supported")
+    adapter = AdapterSummary(**wrong, loaded_adapters=("a",))
+    tier = TierSummary(**wrong, l1_tiers=("cpu",))
+    maintenance = MaintenanceSummary(**wrong, active=True)
+    gateway = MockGateway(capabilities(), adapter_summary=adapter, tier_summary=tier, maintenance_summary=maintenance)
+    assert gateway.get_tier_adapter_summary(tier_request).outcome is OutcomeCode.INCOMPATIBLE
+    assert gateway.get_maintenance_status(maintenance_request).outcome is OutcomeCode.INCOMPATIBLE
+
+
+def test_operation_intent_response_types_reject_every_wrong_operation():
+    gateway = MockGateway(capabilities())
+    pairs = ((CreatePrefetchIntentRequest, CreatePrefetchIntentResponse),
+             (CreatePinIntentRequest, CreatePinIntentResponse),
+             (CreateUnpinIntentRequest, CreateUnpinIntentResponse),
+             (CreateClearIntentRequest, CreateClearIntentResponse),
+             (CreateRebuildIntentRequest, CreateRebuildIntentResponse))
+    tasks = [gateway.submit_operation(intent(request_type, idempotency_key=request_type.__name__)).operation
+             for request_type, _ in pairs]
+    for index, (_, response_type) in enumerate(pairs):
+        for wrong_index, task in enumerate(tasks):
+            if index != wrong_index:
+                with pytest.raises(ValidationError): response_type(**target(), operation=task)
+
+
+def test_cancel_response_success_requires_terminal_task():
+    gateway = MockGateway(capabilities())
+    pending = gateway.submit_operation(intent(idempotency_key="pending")).operation
+    running = gateway.start(gateway.submit_operation(intent(idempotency_key="running")).operation.task_id)
+    succeeded = gateway.complete(gateway.submit_operation(intent(idempotency_key="succeeded")).operation.task_id)
+    failed = gateway.complete(gateway.submit_operation(intent(idempotency_key="failed")).operation.task_id, failed=True)
+    cancelled = pending.transition("cancelled")
+    for task in (succeeded, failed, cancelled): assert CancelOperationResponse(**target(), operation=task)
+    for task in (pending, running):
+        with pytest.raises(ValidationError): CancelOperationResponse(**target(), operation=task)
+    assert CancelOperationResponse(**target(), outcome="cancelled", error=error(OutcomeCode.CANCELLED), operation=cancelled)
+
+
+def test_generic_response_cannot_bypass_target_metadata():
+    coverage = TokenCoverage(whole_request_hit=True, total_tokens=1)
+    for base in (CacheServiceResponse, GatewayTargetedResponse):
+        with pytest.raises(ValidationError): base(runtime_profile="test/mock", token_coverage=coverage)
+    assert "CacheServiceResponse" not in __import__("kdn_server.contracts", fromlist=["__all__"]).__all__

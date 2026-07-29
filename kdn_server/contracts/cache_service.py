@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from enum import Enum
+from typing import ClassVar
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
@@ -34,6 +35,7 @@ class GetMaintenanceStatusRequest(GatewayTargetedRequest): pass
 
 
 class TokenCoverage(ContractModel):
+    whole_request_hit: bool
     covered_ranges: tuple[tuple[int, int], ...] = ()
     total_tokens: int = Field(ge=0)
 
@@ -166,6 +168,12 @@ class CacheServiceResponse(VersionedMessage):
 
     @model_validator(mode="after")
     def consistent_outcome(self):
+        targeted_payload = any(value is not None for value in (
+            self.artifact, self.observation, self.operation, self.token_coverage,
+            self.adapter_summary, self.tier_summary, self.maintenance_summary))
+        if targeted_payload and any(value is None for value in (
+                self.compatibility_profile_id, self.endpoint_id, self.endpoint_generation)):
+            raise ValueError("targeted payloads require complete target metadata")
         if self.runtime_profile is not RuntimeProfile.LEGACY and self.endpoint_generation == 0:
             raise ValueError("endpoint_generation=0 is only valid for Legacy responses")
         if self.outcome is OutcomeCode.SUCCESS and self.error is not None:
@@ -238,13 +246,27 @@ class OperationResponse(GatewayTargetedResponse):
         if self.outcome is OutcomeCode.SUCCESS and self.operation is None: raise ValueError("successful operation response requires operation")
         return self
 
-class CreatePrefetchIntentResponse(OperationResponse): pass
-class CreatePinIntentResponse(OperationResponse): pass
-class CreateUnpinIntentResponse(OperationResponse): pass
-class CreateClearIntentResponse(OperationResponse): pass
-class CreateRebuildIntentResponse(OperationResponse): pass
+class _TypedOperationResponse(OperationResponse):
+    expected_operation: ClassVar[CacheOperationType]
+
+    @model_validator(mode="after")
+    def correct_operation(self):
+        if self.outcome is OutcomeCode.SUCCESS and self.operation.operation is not self.expected_operation:
+            raise ValueError(f"successful response requires {self.expected_operation.value} operation")
+        return self
+
+class CreatePrefetchIntentResponse(_TypedOperationResponse): expected_operation = CacheOperationType.PREFETCH
+class CreatePinIntentResponse(_TypedOperationResponse): expected_operation = CacheOperationType.PIN
+class CreateUnpinIntentResponse(_TypedOperationResponse): expected_operation = CacheOperationType.UNPIN
+class CreateClearIntentResponse(_TypedOperationResponse): expected_operation = CacheOperationType.CLEAR
+class CreateRebuildIntentResponse(_TypedOperationResponse): expected_operation = CacheOperationType.REBUILD
 class GetOperationStatusResponse(OperationResponse): pass
-class CancelOperationResponse(OperationResponse): pass
+class CancelOperationResponse(OperationResponse):
+    @model_validator(mode="after")
+    def cancellation_state(self):
+        if self.outcome is OutcomeCode.SUCCESS and not self.operation.terminal:
+            raise ValueError("successful cancellation no-op requires an already-terminal operation")
+        return self
 
 class GetLMCacheEndpointsResponse(CacheServiceResponse):
     @model_validator(mode="after")

@@ -3,11 +3,13 @@ from typing import Protocol, runtime_checkable
 
 from kdn_server.contracts.cache_service import (
     ArtifactRequest, CancelOperationRequest, CancelOperationResponse,
+    CreateClearIntentResponse, CreatePinIntentResponse, CreatePrefetchIntentResponse,
+    CreateRebuildIntentResponse, CreateUnpinIntentResponse,
     GetCacheObservationResponse, GetLMCacheEndpointsRequest, GetLMCacheEndpointsResponse,
     GetMaintenanceStatusRequest, GetMaintenanceStatusResponse, GetOperationStatusRequest,
     GetOperationStatusResponse, GetTierAndAdapterSummaryRequest,
     GetTierAndAdapterSummaryResponse, LookupArtifactResponse, LookupTokensRequest,
-    LookupTokensResponse, OperationIntentRequest, OperationResponse,
+    LookupTokensResponse, OperationIntentRequest,
 )
 from .capabilities import CapabilitySnapshot
 
@@ -18,7 +20,10 @@ class LMCacheGateway(Protocol):
     def lookup_artifact(self, request: ArtifactRequest) -> LookupArtifactResponse: ...
     def lookup_tokens(self, request: LookupTokensRequest) -> LookupTokensResponse: ...
     def get_cache_observation(self, request: ArtifactRequest) -> GetCacheObservationResponse: ...
-    def submit_operation(self, request: OperationIntentRequest) -> OperationResponse: ...
+    def submit_operation(self, request: OperationIntentRequest) -> (
+        CreatePrefetchIntentResponse | CreatePinIntentResponse | CreateUnpinIntentResponse |
+        CreateClearIntentResponse | CreateRebuildIntentResponse
+    ): ...
     def get_operation_status(self, request: GetOperationStatusRequest) -> GetOperationStatusResponse: ...
     def cancel_operation(self, request: CancelOperationRequest) -> CancelOperationResponse: ...
     def get_endpoints(self, request: GetLMCacheEndpointsRequest) -> GetLMCacheEndpointsResponse: ...

@@ -7,7 +7,7 @@ from .knowledge import (KnowledgeDescriptor, KnowledgeResponse, ListCompatibleAr
     QueryArtifactCompatibilityResponse, RegisterKnowledgeRequest, RegisterKnowledgeResponse,
     ReportRequestOutcomeRequest, ReportRequestOutcomeResponse, ResolveKnowledgeRequest,
     ResolveKnowledgeResponse, UpdateKnowledgeRequest, UpdateKnowledgeResponse)
-from .cache_service import (AdapterSummary, ArtifactRequest, CacheServiceResponse,
+from .cache_service import (AdapterSummary, ArtifactRequest,
     CancelOperationRequest, CancelOperationResponse, CapacityUsageObservation,
     CreateClearIntentRequest, CreateClearIntentResponse, CreatePinIntentRequest,
     CreatePinIntentResponse, CreatePrefetchIntentRequest, CreatePrefetchIntentResponse,
@@ -16,8 +16,8 @@ from .cache_service import (AdapterSummary, ArtifactRequest, CacheServiceRespons
     GetLMCacheEndpointsRequest, GetLMCacheEndpointsResponse, GetMaintenanceStatusRequest,
     GetMaintenanceStatusResponse, GetOperationStatusRequest, GetOperationStatusResponse,
     GetTierAndAdapterSummaryRequest, GetTierAndAdapterSummaryResponse,
-    GatewayTargetedResponse, LookupArtifactRequest, LookupArtifactResponse, LookupTokensRequest, LookupTokensResponse,
-    MaintenanceSummary, OperationIntentRequest, OperationResponse, SummaryBase, TierLevel,
+    LookupArtifactRequest, LookupArtifactResponse, LookupTokensRequest, LookupTokensResponse,
+    MaintenanceSummary, OperationIntentRequest, SummaryBase, TierLevel,
     TierSummary, TokenCoverage)
 
 __all__ = [
@@ -35,8 +35,8 @@ __all__ = [
     "GetOperationStatusRequest", "CancelOperationRequest", "GetLMCacheEndpointsRequest",
     "GetTierAndAdapterSummaryRequest", "GetMaintenanceStatusRequest", "TokenCoverage",
     "SummaryBase", "AdapterSummary", "TierLevel", "CapacityUsageObservation", "TierSummary",
-    "MaintenanceSummary", "CacheServiceResponse", "GatewayTargetedResponse", "GetCacheObservationResponse",
-    "LookupArtifactResponse", "LookupTokensResponse", "OperationResponse",
+    "MaintenanceSummary", "GetCacheObservationResponse",
+    "LookupArtifactResponse", "LookupTokensResponse",
     "CreatePrefetchIntentResponse", "CreatePinIntentResponse", "CreateUnpinIntentResponse",
     "CreateClearIntentResponse", "CreateRebuildIntentResponse", "GetOperationStatusResponse",
     "CancelOperationResponse", "GetLMCacheEndpointsResponse", "GetTierAndAdapterSummaryResponse",
