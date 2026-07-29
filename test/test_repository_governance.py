@@ -1,13 +1,12 @@
 """Repository checks that keep the Phase A migration reviewable."""
 
 import ast
+from fnmatch import fnmatchcase
+import os
 from pathlib import Path
 import re
 import subprocess
 import tomllib
-
-from setuptools import find_namespace_packages
-
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_TOP_LEVEL_DIRECTORIES = {
@@ -38,18 +37,16 @@ GENERATED_PACKAGE_EXCLUDES = [
     "src", "src.*", "build", "build.*", "dist", "dist.*", "wheelhouse",
     "wheelhouse.*", ".venv", ".venv.*", "*.egg-info", "*.egg-info.*",
     ".pytest_cache", ".pytest_cache.*", "__pycache__", "__pycache__.*",
+    "*.__pycache__", "*.__pycache__.*",
     ".mypy_cache", ".mypy_cache.*", ".ruff_cache", ".ruff_cache.*",
     "tests", "tests.*", "docs", "docs.*",
 ]
 
 
 def test_no_unreviewed_functional_root_directories():
-    result = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True,
-    )
     tracked = {
-        Path(raw.decode()).parts[0]
-        for raw in result.stdout.split(b"\0") if raw and len(Path(raw.decode()).parts) > 1
+        path.relative_to(ROOT).parts[0]
+        for path in _tracked_files() if len(path.relative_to(ROOT).parts) > 1
     }
     assert tracked <= ALLOWED_TOP_LEVEL_DIRECTORIES
 
@@ -57,11 +54,25 @@ def test_no_unreviewed_functional_root_directories():
 def test_transitional_explicit_packages_match_root_discovery():
     configuration = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     configured = set(configuration["tool"]["setuptools"]["packages"])
-    discovered_root = set(find_namespace_packages(
-        where=str(ROOT), exclude=GENERATED_PACKAGE_EXCLUDES,
-    ))
+    discovered_root = _discover_root_namespace_packages()
     assert CANONICAL_PACKAGES <= configured
     assert configured - CANONICAL_PACKAGES == discovered_root
+
+
+def _discover_root_namespace_packages():
+    packages = set()
+    for directory, child_directories, _files in os.walk(ROOT):
+        relative = Path(directory).relative_to(ROOT)
+        if relative == Path("."):
+            child_directories[:] = [name for name in child_directories if not name.startswith(".")]
+            continue
+        package = ".".join(relative.parts)
+        if any(fnmatchcase(package, pattern) for pattern in GENERATED_PACKAGE_EXCLUDES):
+            child_directories[:] = []
+            continue
+        if not any(part.startswith(".") for part in relative.parts):
+            packages.add(package)
+    return packages
 
 
 def test_legacy_compatibility_references_are_narrowly_allowlisted():
@@ -77,21 +88,22 @@ def test_observability_legacy_references_are_narrowly_allowlisted():
 
 def _files_containing(needle):
     references = set()
-    for path in ROOT.rglob("*"):
-        if (
-            not path.is_file()
-            or ".git" in path.parts
-            or "build" in path.parts
-            or "__pycache__" in path.parts
-            or any(part.endswith(".egg-info") for part in path.parts)
-        ):
-            continue
+    for path in _tracked_files():
         try:
             if needle in path.read_text(encoding="utf-8"):
                 references.add(path.relative_to(ROOT))
         except UnicodeDecodeError:
             continue
     return references
+
+
+def _tracked_files():
+    result = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True,
+    )
+    return tuple(
+        ROOT / raw.decode() for raw in result.stdout.split(b"\0") if raw
+    )
 
 
 def test_legacy_shim_contains_imports_only():
@@ -114,9 +126,7 @@ def test_local_markdown_links_resolve():
     inline_pattern = re.compile(r"!?\[[^]]*]\(([^)]+)\)")
     reference_pattern = re.compile(r"^\s*\[[^]]+]\s*:\s*(\S+)", re.MULTILINE)
     fence_pattern = re.compile(r"^\s*```.*?^\s*```\s*$", re.MULTILINE | re.DOTALL)
-    for markdown in ROOT.rglob("*.md"):
-        if ".git" in markdown.parts:
-            continue
+    for markdown in (path for path in _tracked_files() if path.suffix == ".md"):
         text = fence_pattern.sub("", markdown.read_text(encoding="utf-8"))
         targets = inline_pattern.findall(text) + reference_pattern.findall(text)
         for raw_target in targets:

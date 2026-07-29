@@ -126,7 +126,6 @@ instance/TTFT_predictor/data/log-bs7-rtx5090-8-llama3-70b.txt
 instance/TTFT_predictor/data/log-bs8-rtx5090-8-llama3-70b.txt
 instance/TTFT_predictor/data/补录数据.txt
 instance/TTFT_predictor/data/补录数据（小长度）.txt
-instance/TTFT_predictor/prompt_length_validation.log
 instance/resource_dashboard/static/app.js
 instance/resource_dashboard/static/index.html
 instance/resource_dashboard/static/style.css
@@ -147,12 +146,28 @@ proxy/metrics/ttft_benchmark_table.json
 proxy/metrics/ttft_coefficients.json
 test/test_namespace_layout.py
 test/test_repository_governance.py
+test/test_source_checkout_imports.py
 ```
 
 The baseline wheel contained zero non-Python, non-metadata members. The
-corrected wheel contains 36: the UI/dashboard assets, predictor data, model
+corrected wheel contains 35: the UI/dashboard assets, predictor data, model
 configuration, and metric tables listed above. These additions make required
 runtime package data explicit; they do not replace or remove baseline data.
+The generated `instance/TTFT_predictor/prompt_length_validation.log` is
+explicitly excluded. At the same source head, its removal reduced the wheel
+from 583,868 bytes to 583,476 bytes.
+
+Package-data groups are limited to runtime inputs:
+
+- `UI.client_ui` and `UI.proxy_ui`: browser JavaScript, CSS, and HTML assets;
+- `instance.resource_dashboard`: dashboard JavaScript, CSS, and HTML assets;
+- `instance.TTFT_predictor`: checked-in calibration tables and their data note;
+- `proxy.metrics`: checked-in prediction coefficients, benchmark tables, and
+  calibration inputs;
+- `model`: the runtime model configuration YAML.
+
+Generated logs, test output, temporary files, and standalone documentation are
+not selected by the package-data patterns.
 
 ## Reference audit
 
@@ -165,12 +180,13 @@ listed under “changed mapping” were modified.
 |---|---|
 | Normal compatibility imports | `core/runtime_compat.py`, `kdn_server/domain/models.py`, `test/test_runtime_compat.py`, and `test/test_wheel_install.py` |
 | Dynamic/importlib references | `instance/capability_builder.py` uses distribution metadata; no dynamic string names target either migrated package |
-| `python -m` commands | Operational/docs commands occur in `README.md`, `doc/`, `env/`, component READMEs, and `test/README.md`; none target the migrated package |
+| `python -m` commands | Operational/docs commands occur in `README.md`, `doc/`, `env/`, component READMEs, and `test/README.md`; application commands follow documented installation, while pytest uses the centralized root `conftest.py` source bootstrap |
 | Uvicorn/FastAPI module strings | `instance/TTFT_predictor/prefill_prediction_server.py`, its README/workflow, and `UI/proxy_ui/README.md`; none target the migrated package |
 | Subprocess module invocations | `client/perf_client.py`, Instance dashboards, test demo launchers, resource-monitor tests, and wheel tests; only the wheel test exercises the migrated imports |
 | Monkeypatch/mock target strings | Tests under `test/` and `test/kdn/`; none target the migrated implementation path |
 | Docker/Compose/shell/CI | `Dockerfile`, `env/docker/cu130/`, `env/README.md`, `scripts/`, and `.github/`; no Compose file or migrated-package reference was found |
 | Markdown references | `core/README.md` and `test/kdn/README.md` referenced the old implementation path and were updated; compatibility history remains explicitly marked deprecated |
+| Source checkout path bootstraps | Root `conftest.py`; `test/demo_client.py`, `test/demo_instance.py`, `test/demo_kdn.py`, `test/demo_proxy.py`, and `test/demo_scheduler.py`; `scripts/validate_v1_kdn_roundtrip.py`; and `core/config.py` add both the repository root and `src`. `test/test_demo_instance_ui.py` has a test-only root bootstrap, while `test/demo_resource_monitor_e2e.py` uses its root path for subprocess working directories. Isolated wheel tests run elsewhere and do not use any source bootstrap. |
 
 The reproducible inventory commands are:
 
@@ -217,3 +233,15 @@ package is migrated or intentionally deprecated through review.
 5. Packaging data files used by runtime modules requires review during each
    component migration; Phase A deliberately preserves the prior package list
    and runtime behavior rather than broadening that scope.
+
+Run the network-dependent full clean-wheel validation explicitly with:
+
+```bash
+CACHEROUTE_RUN_NETWORK_TESTS=1 \
+  python3 -m pytest -q test/test_wheel_install.py -m network
+```
+
+For an offline complete wheelhouse, also set
+`CACHEROUTE_TEST_WHEELHOUSE=/path/to/wheelhouse`; pip then uses `--no-index` and
+`--find-links`. A default skip is not release evidence: the network-marked test
+must pass once against a package index or complete wheelhouse before merge.

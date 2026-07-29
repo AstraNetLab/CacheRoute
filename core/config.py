@@ -9,8 +9,9 @@ import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+for source_root in (ROOT_DIR, ROOT_DIR / "src"):
+    if str(source_root) not in sys.path:
+        sys.path.append(str(source_root))
 
 # Default model settings
 DEFAULT_MODEL = "/workspace/llm-stack/models/LLM-Research/Meta-Llama-3-70B-Instruct"  # Default main model path, used when Scheduler/Client does not specify one

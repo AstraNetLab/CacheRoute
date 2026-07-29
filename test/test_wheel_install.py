@@ -1,6 +1,7 @@
 """Verify wheel contents and imports without using the source checkout."""
 
 from pathlib import Path
+import os
 import subprocess
 import sys
 import venv
@@ -70,6 +71,7 @@ def test_wheel_preserves_packages_and_runtime_data(built_wheel):
         }
     assert packaged == EXPECTED_TOP_LEVEL_PACKAGES
     assert REQUIRED_PACKAGE_DATA <= members
+    assert "instance/TTFT_predictor/prompt_length_validation.log" not in members
 
 
 def test_dependency_light_clean_wheel_imports(built_wheel, tmp_path):
@@ -100,11 +102,20 @@ print("dependency-light clean-wheel imports: passed")
     print(result.stdout, end="")
 
 
+@pytest.mark.network
+@pytest.mark.skipif(
+    os.getenv("CACHEROUTE_RUN_NETWORK_TESTS") != "1",
+    reason="set CACHEROUTE_RUN_NETWORK_TESTS=1 to install declared dependencies in a clean venv",
+)
 def test_full_public_imports_from_clean_wheel(built_wheel, tmp_path):
     python = _create_isolated_environment(tmp_path / "full-venv")
     # This deliberately installs declared dependencies. An unavailable package
     # index must fail the test rather than leaking host packages into the venv.
-    subprocess.run([python, "-m", "pip", "install", str(built_wheel)], check=True)
+    install = [python, "-m", "pip", "install"]
+    wheelhouse = os.getenv("CACHEROUTE_TEST_WHEELHOUSE")
+    if wheelhouse:
+        install.extend(["--no-index", "--find-links", wheelhouse])
+    subprocess.run([*install, str(built_wheel)], check=True)
     result = _run_outside_repo(python, tmp_path / "outside-full", """
 from pathlib import Path
 import sys

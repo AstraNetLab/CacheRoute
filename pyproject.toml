@@ -67,6 +67,11 @@ packages = [
 "UI.client_ui" = ["static/*", "templates/*"]
 "UI.proxy_ui" = ["static/*"]
 "instance.resource_dashboard" = ["static/*"]
-"instance.TTFT_predictor" = ["data/*.md", "data/*.txt", "*.log"]
+"instance.TTFT_predictor" = ["data/*.md", "data/*.txt"]
 "proxy.metrics" = ["*.json", "data/*.json", "data/*.txt"]
 model = ["*.yaml"]
+
+[tool.pytest.ini_options]
+markers = [
+  "network: requires external package indexes or a complete local wheelhouse",
+]
