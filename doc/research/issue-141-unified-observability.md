@@ -2,15 +2,16 @@
 
 Status: design proposal only<br>
 Baseline audited: `ad087d1` (current `main` lineage, including merged PR #154)<br>
+Lifecycle: temporary design record for Issue #141. Remove this file after the Issue is completed and its stable content has been moved into maintained package and component documentation.
+
 Non-goals: production instrumentation, Gateway I/O, routing/queue changes, or a tracing backend.
 
 ## 1. Executive decision record
 
-1. Put the dependency-light contracts in **`core/observability/`**. Scheduler,
-   Proxy, KDN, Gateway, and Instance already depend on `core`; placing them under
-   `kdn_server` would invert dependencies for Scheduler/Proxy/Instance, while a
-   new top-level distribution would add packaging work without providing more
-   isolation than a carefully constrained `core` package.
+1. Put the dependency-light contracts in **`cacheroute_observability/`**. Scheduler,
+   Proxy, KDN, Gateway, and Instance can import this standalone package without
+   loading `core` or another component; placing it under `kdn_server` would invert
+   dependencies for Scheduler/Proxy/Instance.
 2. Make an exported trace an immutable, versioned snapshot. Build it by appending
    immutable stages/measurements to a process-local collector; never mutate a
    measurement from `predicted` into `actual`.
@@ -227,18 +228,14 @@ LMCache API.
 | Candidate | Benefits | Problems | Decision |
 |---|---|---|---|
 | `kdn_server/observability/` | Close to #139/#140 types | Forces Proxy, Scheduler, Instance, and `core` to depend on a server package; likely dependency inversion and future import cycles. | Reject. |
-| `core/observability/` | Existing common inward dependency; simple imports; same repository/version | Must enforce that it does not import request forwarding, config, FastAPI, or components. | **Recommend.** |
-| standalone top-level package/distribution | Strong conceptual isolation | Packaging/versioning overhead, duplicate shared primitives, and uncertain installation in current entry points. | Revisit only if contracts become independently released. |
+| `cacheroute_observability/` | Standalone dependency-light boundary; simple imports; same repository/version | Must enforce that it imports only the standard library and Pydantic. | **Implemented.** |
+| separately released distribution | Strong release isolation | Independent packaging/versioning overhead is unnecessary in Phase 1. | Revisit only if contracts need an independent release cycle. |
 
-`core/observability/` may import Python stdlib, Pydantic, and selected immutable
-types from `kdn_server.domain`/#139 and outcome vocabulary from
-`kdn_server.contracts.errors`/#140. To keep dependency direction cleaner, the
-first PR should instead define trace-only enums in `core` and type resource IDs
-as validated opaque strings; adapters attach existing domain/contract JSON
-without importing Gateway implementations. A follow-up can move genuinely
-shared primitives (UTC validation and safe outcome vocabulary) inward if
-maintainers approve. It must never import FastAPI, Redis, vLLM, LMCache, GPU
-libraries, `httpx`, network clients, component modules, or `core.fwd/config`.
+`cacheroute_observability/` imports only Python stdlib and Pydantic. It defines
+trace-only enums and uses validated opaque resource IDs instead of importing or
+duplicating #139 domain payloads, #140 contracts, or Gateway implementations. It
+must never import FastAPI, Redis, vLLM, LMCache, GPU libraries, `httpx`, network
+clients, application components, configuration, or forwarding modules.
 
 ## 7. Stable v1 schemas
 
@@ -494,34 +491,35 @@ Gateway orchestration layer, separate from `CacheOperationTask` and scheduling.
 
 ## 12. Rollout and exact file plan
 
-### Phase 1 — contracts only
+### Phase 1 — dependency-light vertical slice
 
 Add:
 
-* `core/observability/__init__.py` — public, dependency-light exports.
-* `core/observability/enums.py` — stage, kind, outcome, component vocabularies and
+* `cacheroute_observability/__init__.py` — public, dependency-light exports.
+* `cacheroute_observability/enums.py` — stage, kind, outcome, component vocabularies and
   stable rank table.
-* `core/observability/models.py` — frozen schemas and validators.
-* `core/observability/clock.py` — clock protocol, production clock, test seam.
-* `tests/core/observability/test_models.py`
-* `tests/core/observability/test_clock.py`
-* `tests/core/observability/test_security.py`
-* `docs/observability/v1-contract.md` — stable public contract (not root README).
+* `cacheroute_observability/models.py` — frozen schemas and validators.
+* `cacheroute_observability/clock.py` — clock protocol, production clock, test seam.
+* `cacheroute_observability/collector.py` — process-local append-only collection.
+* `cacheroute_observability/legacy_proxy_trace.py` — pure Legacy projection.
+* `test/observability/` — CPU-only contract, collector, isolation, adapter, and demo tests.
+* `scripts/demo_observability_v1.py` — deterministic executable demonstration.
+* `cacheroute_observability/README.md` — maintained package documentation.
 
 Do not modify production component files. This is the independently reviewable
-first PR: enums, models, deterministic CPU-only tests, and contract documentation
-only. It must not include a collector, adapter, propagation, or I/O.
+first PR: contracts, collector, Legacy adapter, deterministic CPU-only tests, and
+package documentation. It includes no production instrumentation, propagation,
+Gateway I/O, or external tracing backend.
 
-### Phase 2 — compatibility adapter
+### Phase 2 — production compatibility integration
 
-Add `core/observability/legacy_proxy_trace.py` and its tests. Modify only
-`proxy/proxy.py` at `build_cacheroute_meta` to optionally append
+Modify `proxy/proxy.py` at `build_cacheroute_meta` to optionally append
 `request_trace_v1`, and possibly correct `ProxyTask.trace`'s annotation to
 `Dict[str, Any]` without changing values. Retain the dictionary and meta shape.
 
 ### Phase 3 — component instrumentation/propagation
 
-Add `core/observability/collector.py` and internal-envelope helpers. Modify
+Add internal-envelope helpers and modify
 `scheduler/scheduler.py`, `core/fwd.py`, `proxy/proxy.py`,
 `proxy/queue/task.py`, `proxy/queue/manager.py`, `proxy/queue/instance_queues.py`,
 `proxy/queue/knowledge.py`, KDN cache-service facade call sites,
@@ -553,18 +551,18 @@ as endpoint aggregate/isolated inference.
 | Disabled/sampled | disabled allocates no stages; unsampled propagates only context; neither changes callback results/order | None |
 | Security | reject secrets, auth headers, raw tokens/prompts, Redis keys, file paths, tensors, KV bytes/pointers, extras | None |
 | Mock Gateway timeline | request, async operation, observation, shared waiter, Instance load, completion combine deterministically | In-memory Mock Gateway only |
-| Import isolation | importing `core.observability` does not load FastAPI/httpx/redis/vllm/lmcache/torch/CUDA modules | None |
+| Import isolation | importing `cacheroute_observability` does not load FastAPI/httpx/redis/vllm/lmcache/torch/CUDA modules | None |
 | Environment independence | full suite runs with network disabled and without Redis, LMCache, vLLM, GPU, or tracing backend | None |
 
 Validation for the first PR should run from the repository root with
-`pytest -q tests/core/observability` and an import-isolation subprocess test.
+`python3 -m pytest -q test/observability` and an import-isolation subprocess test.
 Failure is any nondeterministic order, mutable exported object, negative duration
 acceptance, kind collapse, forbidden physical/secret field acceptance, external
 service access, or behavior difference when tracing is disabled.
 
 ## 14. Maintainer decisions and unresolved questions
 
-1. Is `core/observability/` accepted, or should #139/#140 common primitives first
+1. Is `cacheroute_observability/` accepted, or should #139/#140 common primitives first
    move inward to avoid `core -> kdn_server.domain/contracts` imports?
 2. Is the canonical request ID generated at Client when supplied or always at
    Scheduler? What retry semantics should preserve it?
