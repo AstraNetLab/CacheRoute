@@ -4,14 +4,15 @@ Convert raw_data to Knowledge_base.yaml through the Embedding model.
 import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from core.config import DEFAULT_EMBED_MODEL
 import yaml
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+for source_root in (ROOT_DIR, ROOT_DIR / "src"):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
 KNOWLEDGE_YAML_PATH = ROOT_DIR / "data"
 
+from core.config import DEFAULT_EMBED_MODEL
 from model import EmbeddingEngine
 
 def build_knowledge_yaml(

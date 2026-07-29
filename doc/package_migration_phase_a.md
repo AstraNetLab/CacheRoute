@@ -155,7 +155,7 @@ configuration, and metric tables listed above. These additions make required
 runtime package data explicit; they do not replace or remove baseline data.
 The generated `instance/TTFT_predictor/prompt_length_validation.log` is
 explicitly excluded. At the same source head, its removal reduced the wheel
-from 583,868 bytes to 583,476 bytes.
+from 585,197 bytes to 584,806 bytes.
 
 Package-data groups are limited to runtime inputs:
 
@@ -186,7 +186,7 @@ listed under “changed mapping” were modified.
 | Monkeypatch/mock target strings | Tests under `test/` and `test/kdn/`; none target the migrated implementation path |
 | Docker/Compose/shell/CI | `Dockerfile`, `env/docker/cu130/`, `env/README.md`, `scripts/`, and `.github/`; no Compose file or migrated-package reference was found |
 | Markdown references | `core/README.md` and `test/kdn/README.md` referenced the old implementation path and were updated; compatibility history remains explicitly marked deprecated |
-| Source checkout path bootstraps | Root `conftest.py`; `test/demo_client.py`, `test/demo_instance.py`, `test/demo_kdn.py`, `test/demo_proxy.py`, and `test/demo_scheduler.py`; `scripts/validate_v1_kdn_roundtrip.py`; and `core/config.py` add both the repository root and `src`. `test/test_demo_instance_ui.py` has a test-only root bootstrap, while `test/demo_resource_monitor_e2e.py` uses its root path for subprocess working directories. Isolated wheel tests run elsewhere and do not use any source bootstrap. |
+| Source checkout path bootstraps | Root `conftest.py`; standalone demos in `test/`; `client/client.py`, `client/kv_timing_sender.py`, `kdn_server/kdn_register_cli.py`, `scheduler/scheduler_cli.py`, `scripts/validate_v1_kdn_roundtrip.py`, `store/knowledge_build.py`, and `util/kdn_build_kv.py` add both the repository root and `src` before project imports. `test/test_demo_instance_ui.py` has a test-only root bootstrap, while `test/demo_resource_monitor_e2e.py` uses its root path for subprocess working directories. Ordinary library modules, including `core/config.py`, do not mutate `sys.path`. Isolated wheel tests run elsewhere and do not use any source bootstrap. |
 
 The reproducible inventory commands are:
 

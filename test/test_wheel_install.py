@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import sys
 import venv
@@ -38,8 +39,17 @@ REQUIRED_PACKAGE_DATA = {
 def built_wheel(tmp_path_factory):
     repo = Path(__file__).resolve().parents[1]
     wheelhouse = tmp_path_factory.mktemp("wheelhouse")
+    source = tmp_path_factory.mktemp("wheel-source") / "CacheRoute"
+    shutil.copytree(
+        repo,
+        source,
+        ignore=shutil.ignore_patterns(
+            ".git", "build", "dist", "*.egg-info", "__pycache__",
+            ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "wheelhouse",
+        ),
+    )
     subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", str(repo), "--no-deps", "--no-build-isolation", "-w", str(wheelhouse)],
+        [sys.executable, "-m", "pip", "wheel", str(source), "--no-deps", "--no-build-isolation", "-w", str(wheelhouse)],
         check=True,
     )
     return next(wheelhouse.glob("cacheroute-*.whl"))

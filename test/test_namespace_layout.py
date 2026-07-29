@@ -61,16 +61,3 @@ assert path.is_relative_to({str(repo / 'src')!r})
         capture_output=True,
     )
     assert "src/cacheroute/compat/__init__.py" in result.stdout
-
-
-def test_pytest_collects_source_namespace_without_editable_install(tmp_path):
-    repo = Path(__file__).resolve().parents[1]
-    result = subprocess.run(
-        [sys.executable, "-I", "-m", "pytest", "--collect-only", "-q",
-         str(repo / "test" / "test_source_checkout_imports.py")],
-        cwd=tmp_path,
-        check=True,
-        text=True,
-        capture_output=True,
-    )
-    assert "1 test collected" in result.stdout

@@ -21,10 +21,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-# Allow repository modules to be imported when running `python client/kv_timing_sender.py`.
+# Support direct execution from a source checkout before project imports.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+for source_root in (_REPO_ROOT, _REPO_ROOT / "src"):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
 
 from proxy.metrics.queue_predictor import queue_predictor
 from core.tokenizer_registry import estimate_tokens, TokenizerRegistry

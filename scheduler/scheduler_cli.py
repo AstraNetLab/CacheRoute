@@ -2,10 +2,18 @@
 import argparse
 import os
 import shlex
+import sys
 import time
 import requests
+from pathlib import Path
 
 from urllib.parse import urlparse, urlunparse
+
+# Support direct execution from a source checkout before project imports.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+for source_root in (_REPO_ROOT, _REPO_ROOT / "src"):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
 
 from core import config
 

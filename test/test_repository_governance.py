@@ -33,6 +33,20 @@ CANONICAL_PACKAGES = {
     "cacheroute", "cacheroute.compat", "cacheroute.observability",
     "cacheroute_compat",
 }
+SOURCE_BOOTSTRAP_ENTRYPOINTS = {
+    Path("client/client.py"),
+    Path("client/kv_timing_sender.py"),
+    Path("kdn_server/kdn_register_cli.py"),
+    Path("scheduler/scheduler_cli.py"),
+    Path("scripts/validate_v1_kdn_roundtrip.py"),
+    Path("store/knowledge_build.py"),
+    Path("test/demo_client.py"),
+    Path("test/demo_instance.py"),
+    Path("test/demo_kdn.py"),
+    Path("test/demo_proxy.py"),
+    Path("test/demo_scheduler.py"),
+    Path("util/kdn_build_kv.py"),
+}
 GENERATED_PACKAGE_EXCLUDES = [
     "src", "src.*", "build", "build.*", "dist", "dist.*", "wheelhouse",
     "wheelhouse.*", ".venv", ".venv.*", "*.egg-info", "*.egg-info.*",
@@ -119,6 +133,19 @@ def test_legacy_shim_contains_imports_only():
             )
         ]
         assert functional == []
+
+
+def test_source_bootstraps_stay_at_test_and_entrypoint_boundaries():
+    config_tree = ast.parse((ROOT / "core/config.py").read_text(encoding="utf-8"))
+    assert not any(isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+        alias.name == "sys" for alias in node.names
+    ) for node in config_tree.body)
+    assert "sys.path" not in (ROOT / "core/config.py").read_text(encoding="utf-8")
+
+    for relative in SOURCE_BOOTSTRAP_ENTRYPOINTS:
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert ' / "src"' in text
+        assert "sys.path" in text
 
 
 def test_local_markdown_links_resolve():

@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import sys
 from pathlib import Path
+
+# Support direct execution from a source checkout before project imports.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+for source_root in (REPO_ROOT, REPO_ROOT / "src"):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
 
 from kdn_server.kv_builder import KVBuildConfig, KVCacheBuilder
 
