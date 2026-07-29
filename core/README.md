@@ -8,10 +8,12 @@ It provides the common runtime interface that connects CacheRoute components tog
 
 ```text
 core/
+├── __init__.py            # Stable public exports for shared runtime helpers
 ├── config.py              # Default configuration for all CacheRoute components
 ├── request.py             # Internal Request / Prompt / Service / Task data structures
 ├── fwd.py                 # HTTP forwarding utilities
 ├── model_calculation.py   # Model-side cost and size estimation helpers
+├── runtime_compat.py      # Stable compatibility import surface for Runtime Profiles
 └── README.md
 ```
 
@@ -21,7 +23,14 @@ Main responsibilities:
 - define model, embedding, and knowledge retrieval configuration;
 - define the internal request object passed from Scheduler to Proxy;
 - normalize OpenAI-compatible requests into CacheRoute request metadata;
-- provide common forwarding utilities for component communication.
+- provide common forwarding utilities for component communication;
+- expose stable Runtime Profile normalization imports shared by Legacy, v1, and test/mock paths.
+
+## Runtime compatibility boundary
+
+`core/runtime_compat.py` is the compatibility-facing import path used by existing CacheRoute modules. The dependency-light implementation lives in `cacheroute_compat/runtime.py`, which keeps Runtime Profile normalization available without importing the full application graph.
+
+Persisted and wire-level objects must use a resolved Runtime Profile (`legacy`, `v1`, or `test/mock`). The `auto` value is limited to startup resolution and must not become an operation-time fallback. The storage-neutral KDN representation of these profiles is documented in the [KDN domain vocabulary](../kdn_server/domain/README.md); serving-stack migration and startup details remain in [runtime compatibility documentation](../docs/runtime_compatibility_v1.md).
 
 ## Configuration
 
