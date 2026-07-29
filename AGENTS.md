@@ -307,6 +307,8 @@ The user typically prefers **incremental, directly actionable code guidance**.
 
 ## 13. If You Add New Code
 
+No new functional top-level directory may be added without a dedicated architecture Issue. New Python capabilities must first be placed under `src/cacheroute/<domain>/` or an existing component hierarchy. Cross-component shared code must use a dependency-light, side-effect-free package under the `cacheroute` namespace.
+
 When introducing a new helper, field, or branch:
 - keep naming consistent with existing repository terms,
 - add comments for non-obvious logic,
