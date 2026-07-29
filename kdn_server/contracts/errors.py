@@ -19,6 +19,7 @@ class OutcomeCode(str, Enum):
 
 
 class ContractErrorDetail(ContractModel):
+    """Stable safe failure detail; backend exceptions never cross the wire."""
     code: OutcomeCode
     message: str = Field(min_length=1)
     contract_version: str = KDN_CONTRACT_VERSION

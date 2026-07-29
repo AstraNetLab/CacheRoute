@@ -13,6 +13,11 @@ from .base import GatewayAdapterBase
 
 
 class LegacyCacheAdapter(GatewayAdapterBase):
+    """Read-only Legacy projection with no Redis or filesystem access.
+
+    Legacy generation zero means unknown; shared negotiation rejects v1 calls
+    before this adapter can project or return Legacy state.
+    """
     read_only = True
 
     def __init__(self, capabilities, *, artifacts=(), observations=()):

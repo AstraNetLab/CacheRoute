@@ -16,6 +16,7 @@ ENDPOINT_ID_PATTERN = r"^endpoint_[0-9a-f]{32}$"
 
 
 class SupportState(str, Enum):
+    """Tri-state capability result; uncertainty is deliberately falsey."""
     SUPPORTED = "supported"
     UNSUPPORTED = "unsupported"
     UNKNOWN = "unknown"
@@ -38,6 +39,7 @@ class ContractModel(BaseModel):
 
 
 class VersionedMessage(ContractModel):
+    """Immutable persisted envelope with resolved runtime and UTC identity."""
     contract_version: str = KDN_CONTRACT_VERSION
     runtime_profile: RuntimeProfile
     request_id: str = Field(default_factory=lambda: f"req_{uuid4().hex}", min_length=1)
@@ -68,6 +70,7 @@ class VersionedMessage(ContractModel):
 
 
 class GatewayTargetedRequest(VersionedMessage):
+    """Pins work to one negotiated compatibility endpoint incarnation."""
     compatibility_profile_id: str = Field(min_length=1)
     endpoint_id: str = Field(pattern=ENDPOINT_ID_PATTERN)
     endpoint_generation: int = Field(ge=0)
@@ -85,6 +88,7 @@ class TokenReference(ContractModel):
 
 
 class TokenInput(ContractModel):
+    """Storage-neutral token input: inline IDs or one opaque reference, never both."""
     token_ids: tuple[int, ...] | None = None
     token_reference: TokenReference | None = None
 
@@ -97,6 +101,7 @@ class TokenInput(ContractModel):
 
     @model_validator(mode="after")
     def exactly_one(self):
+        # Ambiguous input would let adapters choose different lookup identities.
         if (self.token_ids is None) == (self.token_reference is None):
             raise ValueError("provide exactly one of token_ids or token_reference")
         return self

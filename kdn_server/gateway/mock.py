@@ -17,6 +17,7 @@ _OPERATION_CAPABILITY = {
 
 
 class MockGateway(GatewayAdapterBase):
+    """Fixture-only CPU adapter; it performs no backend or device I/O."""
     def __init__(self, capabilities, *, artifacts=(), observations=(), token_fixtures=None,
                  endpoints=(), adapter_summary=None, tier_summary=None, maintenance_summary=None):
         self.capabilities = capabilities
@@ -58,6 +59,7 @@ class MockGateway(GatewayAdapterBase):
         if coverage is None:
             return self._response(request, response_type=LookupTokensResponse, outcome=OutcomeCode.TEXT_FALLBACK, message="tokens are not cached",
                                   fallback_eligible=True)
+        # Whole-request lookup is useful even when exact range reporting is unknown.
         if self.capabilities.range_coverage is not SupportState.SUPPORTED and coverage.covered_ranges:
             coverage = coverage.model_copy(update={"covered_ranges": ()})
         return self._response(request, response_type=LookupTokensResponse, token_coverage=coverage)
@@ -74,6 +76,7 @@ class MockGateway(GatewayAdapterBase):
                    request.runtime_profile.value, request.compatibility_profile_id)
         existing = self._tasks.get(request.idempotency_key)
         if existing:
+            # Idempotency covers the complete logical target, not merely the key text.
             if self._logical[request.idempotency_key] != logical:
                 return self._response(request, response_type=response_type, outcome=OutcomeCode.IDEMPOTENCY_CONFLICT,
                     message="idempotency key was used for a different logical request")
@@ -86,6 +89,7 @@ class MockGateway(GatewayAdapterBase):
         return self._response(request, response_type=response_type, operation=task)
 
     def complete(self, task_id, *, failed=False):
+        """Deterministically simulate asynchronous execution without worker I/O."""
         key, task = self._find(task_id)
         if task is None: raise KeyError(task_id)
         if task.state is CacheOperationState.PENDING: task = task.transition("running")
@@ -129,9 +133,11 @@ class MockGateway(GatewayAdapterBase):
     def get_tier_adapter_summary(self, request):
         if (guard := self._gate(request, self.capabilities.tier_capacity_usage)): return GetTierAndAdapterSummaryResponse.model_validate(guard.model_dump())
         if self.adapter_summary is None or self.tier_summary is None:
+            # Absence is a stale discovery fact, not a malformed success response.
             return self._response(request, response_type=GetTierAndAdapterSummaryResponse,
                 outcome=OutcomeCode.STALE, message="tier or adapter summary fixture is absent")
         if not self._summary_matches(request, self.adapter_summary) or not self._summary_matches(request, self.tier_summary):
+            # A valid fixture for another endpoint is still incompatible here.
             return self._response(request, response_type=GetTierAndAdapterSummaryResponse,
                 outcome=OutcomeCode.INCOMPATIBLE, message="tier or adapter summary provenance mismatch")
         return self._response(request, response_type=GetTierAndAdapterSummaryResponse, adapter_summary=self.adapter_summary, tier_summary=self.tier_summary)

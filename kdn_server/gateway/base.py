@@ -12,6 +12,7 @@ class GatewayAdapterBase:
 
     def _response(self, request, *, response_type=CacheServiceResponse, outcome=OutcomeCode.SUCCESS, message=None,
                   retryable=False, fallback_eligible=False, **values):
+        """Build a safe dedicated response while preserving caller correlation."""
         metadata = dict(runtime_profile=request.runtime_profile, request_id=request.request_id,
                         correlation_id=request.correlation_id)
         for field in ("compatibility_profile_id", "endpoint_id", "endpoint_generation"):
@@ -23,6 +24,7 @@ class GatewayAdapterBase:
         return response_type(**metadata, outcome=outcome, error=error, **values)
 
     def _negotiate(self, request):
+        """Map target disagreement to INCOMPATIBLE and old generation to STALE."""
         cap = self.capabilities
         if (request.runtime_profile is not cap.runtime_profile or
                 request.compatibility_profile_id != cap.compatibility_profile.compatibility_profile_id or
@@ -35,6 +37,7 @@ class GatewayAdapterBase:
         return None
 
     def _gate(self, request, capability):
+        """Negotiate first, then map unknown/unsupported capability to UNSUPPORTED."""
         mismatch = self._negotiate(request)
         if mismatch is not None: return mismatch
         if capability is not SupportState.SUPPORTED:
@@ -43,6 +46,7 @@ class GatewayAdapterBase:
         return None
 
     def _discovery_negotiate(self, request, response_type):
+        """Keep untargeted discovery inside its requested Runtime Profile."""
         if request.runtime_profile is not self.capabilities.runtime_profile:
             return self._response(request, response_type=response_type,
                                   outcome=OutcomeCode.INCOMPATIBLE,

@@ -5,6 +5,11 @@ from .profiles import GatewayTransportKind
 
 
 def create_gateway(transport_kind, capabilities, **fixtures):
+    """Construct available adapters only after validating binding membership.
+
+    Production transports remain representable in contracts but intentionally
+    have no construction or I/O implementation in this package.
+    """
     kind = GatewayTransportKind(transport_kind)
     if not capabilities.supports_adapter(kind):
         raise ValueError("requested transport is not present in capability adapter bindings")

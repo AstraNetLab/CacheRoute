@@ -8,6 +8,7 @@ from .profiles import GatewayAdapterBinding, GatewayTransportKind, LMCacheCompat
 
 
 class CapabilitySnapshot(ContractModel):
+    """Immutable discovery result for one composed, runtime-isolated endpoint."""
     contract_version: str = GATEWAY_CONTRACT_VERSION
     runtime_profile: RuntimeProfile
     adapter_bindings: tuple[GatewayAdapterBinding, ...]
@@ -65,6 +66,7 @@ class CapabilitySnapshot(ContractModel):
 
     @model_validator(mode="after")
     def coherent_profile(self):
+        # Composition is ordered, but a transport cannot be bound twice.
         kinds = tuple(binding.transport_kind for binding in self.adapter_bindings)
         if not kinds or len(set(kinds)) != len(kinds):
             raise ValueError("adapter_bindings must be non-empty and unique by transport kind")
@@ -75,6 +77,7 @@ class CapabilitySnapshot(ContractModel):
                    set(kinds) == {GatewayTransportKind.LEGACY_REDIS} if self.runtime_profile is RuntimeProfile.LEGACY else
                    set(kinds) == {GatewayTransportKind.MOCK})
         if not allowed:
+            # Runtime isolation prevents Mock or Legacy behavior leaking into v1.
             raise ValueError("adapter bindings are incompatible with runtime profile")
         if self.runtime_profile is not RuntimeProfile.LEGACY and self.endpoint_generation == 0:
             raise ValueError("endpoint_generation=0 is only valid for Legacy capabilities")

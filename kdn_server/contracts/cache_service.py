@@ -35,6 +35,7 @@ class GetMaintenanceStatusRequest(GatewayTargetedRequest): pass
 
 
 class TokenCoverage(ContractModel):
+    """Separates whole-request hit state from capability-gated range detail."""
     whole_request_hit: bool
     covered_ranges: tuple[tuple[int, int], ...] = ()
     total_tokens: int = Field(ge=0)
@@ -52,6 +53,7 @@ class TokenCoverage(ContractModel):
 
 
 class SummaryBase(ContractModel):
+    """Common provenance that binds summaries to an endpoint generation."""
     source: str = Field(min_length=1)
     observed_at: AwareDatetime = Field(default_factory=utc_now)
     runtime_profile: RuntimeProfile
@@ -152,6 +154,7 @@ class MaintenanceSummary(SummaryBase):
 
 
 class CacheServiceResponse(VersionedMessage):
+    """Internal response base enforcing outcome and nested provenance consistency."""
     compatibility_profile_id: str | None = None
     endpoint_id: str | None = None
     endpoint_generation: int | None = Field(default=None, ge=0)
@@ -168,6 +171,7 @@ class CacheServiceResponse(VersionedMessage):
 
     @model_validator(mode="after")
     def consistent_outcome(self):
+        # Generic construction must not bypass the targeted response envelope.
         targeted_payload = any(value is not None for value in (
             self.artifact, self.observation, self.operation, self.token_coverage,
             self.adapter_summary, self.tier_summary, self.maintenance_summary))
@@ -221,6 +225,7 @@ class GatewayTargetedResponse(CacheServiceResponse):
 
 
 class GetCacheObservationResponse(GatewayTargetedResponse):
+    """Observation result whose successful payload is fresh at response time."""
     @model_validator(mode="after")
     def success_payload(self):
         if self.outcome is OutcomeCode.SUCCESS and (
@@ -247,6 +252,7 @@ class OperationResponse(GatewayTargetedResponse):
         return self
 
 class _TypedOperationResponse(OperationResponse):
+    """Prevents a successful intent response from carrying another operation kind."""
     expected_operation: ClassVar[CacheOperationType]
 
     @model_validator(mode="after")
@@ -262,6 +268,7 @@ class CreateClearIntentResponse(_TypedOperationResponse): expected_operation = C
 class CreateRebuildIntentResponse(_TypedOperationResponse): expected_operation = CacheOperationType.REBUILD
 class GetOperationStatusResponse(OperationResponse): pass
 class CancelOperationResponse(OperationResponse):
+    """Allows success only when cancellation is already a terminal no-op."""
     @model_validator(mode="after")
     def cancellation_state(self):
         if self.outcome is OutcomeCode.SUCCESS and not self.operation.terminal:
