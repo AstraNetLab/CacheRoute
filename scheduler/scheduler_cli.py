@@ -2,10 +2,23 @@
 import argparse
 import os
 import shlex
+import sys
 import time
 import requests
+from pathlib import Path
 
 from urllib.parse import urlparse, urlunparse
+
+def _bootstrap_source_checkout() -> None:
+    """Expose repository packages only for direct source-file execution."""
+    repo_root = Path(__file__).resolve().parents[1]
+    for source_root in (repo_root, repo_root / "src"):
+        if str(source_root) not in sys.path:
+            sys.path.insert(0, str(source_root))
+
+
+if __package__ in (None, ""):
+    _bootstrap_source_checkout()
 
 from core import config
 

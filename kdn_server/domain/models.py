@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from cacheroute_compat.runtime import normalize_runtime_profile
+from cacheroute.compat.runtime import normalize_runtime_profile
 
 
 def utc_now() -> datetime:

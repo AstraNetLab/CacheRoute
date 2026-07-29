@@ -15,8 +15,9 @@ import uvicorn
 # Allow direct execution from test/ while importing project packages from the
 # repository root, consistent with the other demo entrypoints.
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+for source_root in (ROOT_DIR, ROOT_DIR / "src"):
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
 
 from scheduler import scheduler
 from core import config

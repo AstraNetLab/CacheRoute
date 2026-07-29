@@ -15,7 +15,7 @@
 python prefill_prediction_server.py
 ```
 
-入口位于 `[prefill_prediction_server.py](/d:/研/代码/PD分离推理调度代码/BurstGPT/example/scheduler/TTFT_predictor/prefill_prediction_server.py)`。
+入口位于 [`prefill_prediction_server.py`](prefill_prediction_server.py)。
 
 启动后主流程如下：
 
@@ -31,7 +31,7 @@ await predict_ttft(batch_size=1, prompt_length=1)
 
 ## 2. 首次初始化会触发哪些函数
 
-`predict_ttft(...)` 定义在 `[prefill_predictor.py](/d:/研/代码/PD分离推理调度代码/BurstGPT/example/scheduler/TTFT_predictor/prefill_predictor.py)`。
+`predict_ttft(...)` 定义在 [`prefill_predictor.py`](prefill_predictor.py)。
 
 调用链如下：
 
@@ -80,7 +80,7 @@ asyncio.create_task(run_warmup_in_background())
 
 ## 4. 真实 warmup 会触发哪些函数
 
-`perform_detailed_warmup(...)` 位于 `[prefill_predictor.py](/d:/研/代码/PD分离推理调度代码/BurstGPT/example/scheduler/TTFT_predictor/prefill_predictor.py)`。
+`perform_detailed_warmup(...)` 位于 [`prefill_predictor.py`](prefill_predictor.py)。
 
 它的主要流程如下：
 

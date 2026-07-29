@@ -18,8 +18,9 @@ import importlib.util
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
+for source_root in (ROOT_DIR, ROOT_DIR / "src"):
+    if str(source_root) not in sys.path:
+        sys.path.append(str(source_root))
 
 _CONFIG_SPEC = importlib.util.spec_from_file_location("cacheroute_core_config", ROOT_DIR / "core" / "config.py")
 if _CONFIG_SPEC is None or _CONFIG_SPEC.loader is None:

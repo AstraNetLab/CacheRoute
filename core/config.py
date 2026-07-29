@@ -5,12 +5,9 @@ Configuration module: defines default parameters and constants
 - Centralizes all default values
 - Provides a clear configuration reference for deployment
 """
-import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.append(str(ROOT_DIR))
 
 # Default model settings
 DEFAULT_MODEL = "/workspace/llm-stack/models/LLM-Research/Meta-Llama-3-70B-Instruct"  # Default main model path, used when Scheduler/Client does not specify one

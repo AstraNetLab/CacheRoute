@@ -3,7 +3,7 @@ name = "cacheroute"
 version = "0.1.9"
 description = "Compute-network-aware LLM scheduling for flexible KV cache reuse across vLLM and LMCache systems."
 authors = [
-  { name = "xxx", email = "xxx" }
+  { name = "xxx" }
 ]
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,7 +37,41 @@ dev = [
 ]
 
 [tool.setuptools]
+# Transitional Phase A package map. Root packages remain installed until their
+# later reviewed migrations; the final migration phase replaces this explicit
+# list with src-only discovery.
+package-dir = {cacheroute = "src/cacheroute", cacheroute_compat = "src/cacheroute_compat"}
+packages = [
+  "cacheroute", "cacheroute.compat", "cacheroute.observability",
+  "cacheroute_compat",
+  "UI", "UI.client_ui", "UI.client_ui.static", "UI.client_ui.templates",
+  "UI.kdn_ui", "UI.proxy_ui", "UI.proxy_ui.static",
+  "client", "client.taskset", "core", "data", "data.CacheRoute_dataset",
+  "data.CacheRoute_dataset.knowledge_document", "doc", "doc.blog",
+  "doc.integrations", "env", "env.config", "env.docker", "env.docker.cu130",
+  "env.docker.cu130.scripts", "instance", "instance.TPOT_predictor",
+  "instance.TTFT_predictor", "instance.TTFT_predictor.data", "instance.pclient",
+  "instance.resource_agent", "instance.resource_agent.src",
+  "instance.resource_dashboard", "instance.resource_dashboard.static",
+  "kdn_server", "kdn_server.KV_database", "kdn_server.contracts",
+  "kdn_server.domain", "kdn_server.gateway", "kdn_server.sclient",
+  "kdn_server.text_database", "kdn_server.text_database.blocks",
+  "kdn_server.util", "log", "log.scheduler", "model", "proxy",
+  "proxy.metrics", "proxy.metrics.data", "proxy.queue", "proxy.resource",
+  "proxy.sclient", "proxy.strategy", "scheduler", "scheduler.knowledge",
+  "scheduler.resource", "scheduler.strategy", "scripts", "store", "test",
+  "test.kdn", "util",
+]
 
-[tool.setuptools.packages.find]
-where = ["."]
-exclude = ["tests*", "docs*", "examples*"]
+[tool.setuptools.package-data]
+"UI.client_ui" = ["static/*", "templates/*"]
+"UI.proxy_ui" = ["static/*"]
+"instance.resource_dashboard" = ["static/*"]
+"instance.TTFT_predictor" = ["data/*.md", "data/*.txt"]
+"proxy.metrics" = ["*.json", "data/*.json", "data/*.txt"]
+model = ["*.yaml"]
+
+[tool.pytest.ini_options]
+markers = [
+  "network: requires external package indexes or a complete local wheelhouse",
+]

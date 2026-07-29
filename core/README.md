@@ -28,9 +28,9 @@ Main responsibilities:
 
 ## Runtime compatibility boundary
 
-`core/runtime_compat.py` is the compatibility-facing import path used by existing CacheRoute modules. The dependency-light implementation lives in `cacheroute_compat/runtime.py`, which keeps Runtime Profile normalization available without importing the full application graph.
+`core/runtime_compat.py` is the compatibility-facing import path used by existing CacheRoute modules. The dependency-light implementation lives in `src/cacheroute/compat/runtime.py`, which keeps Runtime Profile normalization available without importing the full application graph. The deprecated `cacheroute_compat` import path is a forwarding shim scheduled for removal in CacheRoute 0.3.0.
 
-Persisted and wire-level objects must use a resolved Runtime Profile (`legacy`, `v1`, or `test/mock`). The `auto` value is limited to startup resolution and must not become an operation-time fallback. The storage-neutral KDN representation of these profiles is documented in the [KDN domain vocabulary](../kdn_server/domain/README.md); serving-stack migration and startup details remain in [runtime compatibility documentation](../docs/runtime_compatibility_v1.md).
+Persisted and wire-level objects must use a resolved Runtime Profile (`legacy`, `v1`, or `test/mock`). The `auto` value is limited to startup resolution and must not become an operation-time fallback. The storage-neutral KDN representation of these profiles is documented in the [KDN domain vocabulary](../kdn_server/domain/README.md); serving-stack migration and startup details remain in [runtime compatibility documentation](../doc/runtime_compatibility_v1.md).
 
 ## Configuration
 

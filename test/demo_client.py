@@ -23,8 +23,9 @@ def _ensure_project_root_on_syspath() -> None:
     while still importing packages such as client/ and UI/ from the project root.
     """
     root = Path(__file__).resolve().parents[1]  # test/ -> project root
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
+    for source_root in (root, root / "src"):
+        if str(source_root) not in sys.path:
+            sys.path.insert(0, str(source_root))
 
 
 def run_cli() -> None:
