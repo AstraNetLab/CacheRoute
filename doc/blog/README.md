@@ -11,6 +11,36 @@ This document records major engineering milestones for the CacheRoute prototype.
 
 ---
 
+## 260730: v1 Runtime Migration, KDN Contracts, and Package Architecture
+
+### Changes
+
+- Added a typed Instance capability contract with deterministic fingerprints, structured compatibility results, and registration/heartbeat propagation for future KVCache reuse decisions.
+- Established `legacy`, `v1`, and `auto` runtime profiles and an isolated CUDA 13 / PyTorch 2.11 / vLLM 0.25.1 / LMCache 0.5.2 serving environment without breaking the legacy deployment path.
+- Completed the modern KDN round-trip validation: 96 Redis keys and 1,006,632,960 payload bytes were restored without mismatches, LMCache loaded 96/96 chunks, and vLLM reused 3,072 externally cached tokens with a 100% token hit rate.
+- Added immutable KDN v1 domain snapshots plus versioned Cache Service and LMCache Gateway contracts, including capability negotiation, deterministic CPU-only mocks, Legacy isolation, and contract-focused tests.
+- Established the canonical `src/cacheroute` namespace and an architecture RFC defining package responsibilities, integration boundaries, dependency direction, migration rules, and public API policy.
+
+### Files
+
+- `core/instance_capability.py`
+- `instance/capability_builder.py`
+- `core/runtime_compat.py`
+- `env/docker/cu130/`
+- `scripts/validate_v1_kdn_roundtrip.py`
+- `docs/quickstart_v1.md`
+- `docs/v1_migration_closeout.md`
+- `kdn_server/domain/`
+- `kdn_server/contracts/`
+- `kdn_server/gateway/`
+- `src/cacheroute/`
+- `doc/architecture/`
+- `AGENTS.md`
+
+Owner: yao
+
+---
+
 ## 260724: Reproducible Setup, Client Command Parsing, and Integrated Instance Dashboard
 
 ### Changes
