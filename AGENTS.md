@@ -372,3 +372,295 @@ The most helpful contributions are:
 
 When in doubt, choose:
 **minimal change + clear validation + preserved compatibility**.
+
+---
+
+## 18. Target Package Architecture and Placement Rules
+
+This section is normative for new architecture and directory decisions. It takes precedence over older current-layout examples in this file. Existing root packages such as `scheduler/`, `proxy/`, `instance/`, and `kdn_server/` are transitional locations until their reviewed migration phases are complete.
+
+The governing architecture is:
+
+- Issue #159: package architecture RFC;
+- Issue #157: migration Epic;
+- `doc/architecture/package-architecture-rfc.md`: maintained repository architecture document.
+
+Do not begin a broad package move unless the relevant phase of #157 has an approved, focused Issue and a complete reference audit.
+
+### 18.1 Canonical Python namespace
+
+All long-term Python implementation belongs under `src/cacheroute/`.
+
+The approved top-level package responsibilities are:
+
+```text
+cacheroute.contracts
+cacheroute.runtime
+cacheroute.topology
+cacheroute.knowledge
+cacheroute.cache
+cacheroute.routing
+cacheroute.observability
+cacheroute.integrations
+cacheroute.services
+cacheroute.plugins
+cacheroute.entrypoints
+cacheroute.compat
+```
+
+Do not create a generic `cacheroute.core` package. A module that cannot be assigned to one of the approved responsibilities needs an architecture decision before implementation.
+
+Do not create new root packages such as `cacheroute_<feature>`.
+
+### 18.2 Package ownership
+
+#### `contracts`
+
+Owns versioned, JSON-serializable, cross-process schemas and wire enums.
+
+It must not import FastAPI, Redis, Torch, vLLM, LMCache, or service implementations.
+
+#### `runtime`
+
+Owns Runtime Profile, model/tokenizer/KV-layout identity, capability fingerprints, and shared lifecycle concepts.
+
+#### `topology`
+
+Owns registration, health, endpoint generation, resource snapshots, and cluster topology.
+
+#### `knowledge`
+
+Owns knowledge descriptors, semantic resolution, indexing abstractions, and repository ports.
+
+#### `cache`
+
+Owns cache artifact models, compatibility evaluation, CachePlan/FusionPlan, cache operations, and Cache Runtime ports.
+
+It must not directly implement LMCache, Redis, or vLLM operations.
+
+#### `routing`
+
+Owns admission, queueing, endpoint selection, load models, and reusable routing policies.
+
+Reusable routing code must not depend on FastAPI applications or process-global Proxy/Scheduler state.
+
+#### `observability`
+
+Owns dependency-light trace contracts, clocks, collectors, events, exporters, and Legacy projections.
+
+#### `integrations`
+
+Owns external-system-specific adapters. Initial approved subpackages are:
+
+```text
+cacheroute.integrations.vllm
+cacheroute.integrations.lmcache
+cacheroute.integrations.redis
+cacheroute.integrations.embeddings
+```
+
+Domain packages must not import `integrations`.
+
+#### `services`
+
+Owns deployable process implementations:
+
+```text
+cacheroute.services.scheduler
+cacheroute.services.proxy
+cacheroute.services.instance
+cacheroute.services.kdn
+```
+
+A service may use contracts and domain packages. It must not import another service's internal modules.
+
+#### `entrypoints`
+
+Owns CLI commands, Uvicorn application factories, development orchestration, settings composition, dependency injection, and process lifecycle.
+
+The long-term command surface is:
+
+```text
+cacheroute scheduler
+cacheroute proxy
+cacheroute instance
+cacheroute kdn
+cacheroute dev
+```
+
+Direct scripts under tests are not production entrypoints. Existing demo scripts may remain only as temporary wrappers while replacement entrypoints are validated.
+
+#### `plugins`
+
+Owns stable extension protocols and discovery for Cache Runtime Gateways, runtime/engine connectors, and observability exporters.
+
+Use Python entry points or explicit module paths. Do not make every internal strategy a plugin without a separate design need.
+
+#### `compat`
+
+Owns temporary import and wire compatibility only. It must contain no permanent business implementation. Every shim needs tests and an explicit removal milestone.
+
+### 18.3 External integration boundaries
+
+#### vLLM
+
+All vLLM-specific behavior belongs in `cacheroute.integrations.vllm`.
+
+Keep these concerns separate:
+
+- scheduler-side external KV lookup and connector metadata;
+- worker-side KV materialization;
+- capability discovery;
+- hit-token and remote-read observations;
+- connector failure mapping and recomputation policy.
+
+Prefer public KVConnector interfaces over private model-runner details.
+
+#### LMCache
+
+All LMCache-specific behavior belongs in `cacheroute.integrations.lmcache` and implements CacheRoute-owned Cache Runtime ports.
+
+Keep these concerns separate:
+
+- capability and profile discovery;
+- lookup and operation submission;
+- asynchronous operation status;
+- pin, unpin, clear, prefetch, and rebuild requests;
+- events and metrics;
+- endpoint generation and freshness.
+
+Do not mirror or maintain an authoritative copy of LMCache's physical L1/L2 block index.
+
+#### Legacy Redis
+
+Legacy Redis scan, dump, restore, and injection behavior is an adapter implementation under `cacheroute.integrations.redis`, not the canonical cache domain.
+
+Legacy wire values and behavior must remain explicit and tested during migration.
+
+### 18.4 Dependency direction
+
+Allowed direction:
+
+```text
+contracts
+    ↓
+runtime / topology / knowledge / cache / routing / observability
+    ↓
+service application logic
+
+integrations implement domain ports
+entrypoints wire services, integrations, settings, and lifecycle
+```
+
+Forbidden dependencies include:
+
+- contracts importing services;
+- domain packages importing FastAPI or external runtime/storage SDKs;
+- service packages importing another service's internal modules;
+- KDN domain logic importing LMCache or Redis directly;
+- vLLM adapters importing Instance service internals;
+- reusable routing policy importing Proxy application state.
+
+When a required call appears to violate this direction, define or reuse a domain Port and inject an adapter from an entrypoint.
+
+### 18.5 Repository and wheel layout
+
+The long-term repository categories are:
+
+```text
+src/cacheroute/
+tests/
+examples/
+doc/
+scripts/
+env/
+crates/
+```
+
+`crates/` is reserved for independently built native components such as the Resource Agent and requires a focused migration review.
+
+The final Python wheel must contain only the `cacheroute` namespace and explicitly approved temporary compatibility shims.
+
+The following categories must not be installed as Python packages:
+
+- tests;
+- documentation;
+- scripts;
+- deployment configuration;
+- logs;
+- generated data.
+
+Runtime package data must be stored with and declared by the package that consumes it.
+
+The root README remains a high-level project overview. Detailed package architecture belongs under `doc/architecture/`.
+
+### 18.6 Versioning
+
+Version compatibility boundaries rather than the entire implementation tree.
+
+Preferred examples:
+
+```text
+cacheroute.contracts.v1
+cacheroute.integrations.vllm.connector_v1
+cache artifact schema versions
+observability schema versions
+```
+
+Do not place the entire project under `cacheroute.v1`.
+
+### 18.7 Migration mapping
+
+Use the following ownership map when planning focused migration Issues:
+
+- `kdn_server/contracts` -> `cacheroute.contracts.v1`;
+- shared KDN domain concepts -> `runtime`, `knowledge`, and `cache`;
+- `kdn_server/gateway` -> `integrations.lmcache` and `integrations.redis`;
+- Scheduler strategies -> `routing`;
+- Scheduler and Proxy registries -> `topology`;
+- reusable Proxy queue policy -> `routing`, while process queue state remains in `services.proxy`;
+- Instance vLLM discovery -> `integrations.vllm`;
+- embedding implementation -> `integrations.embeddings`;
+- UI assets -> their owning service package;
+- demo launchers -> `entrypoints.dev` or `examples`;
+- generic `util` helpers -> their owning domain; do not preserve a utility dumping ground.
+
+### 18.8 Migration phases
+
+Follow the #157 phases. Do not combine them into a repository-wide move.
+
+1. Architecture guidance and automated boundaries.
+2. Packaging cleanup and unified entrypoints.
+3. Contracts and dependency-light domain extraction.
+4. External integrations.
+5. KDN, Scheduler, Proxy, and Instance service migrations in separate PRs.
+6. UI, development orchestration, package data, and native-component review.
+7. Removal of root runtime packages, direct-source bootstraps, transition package lists, and expired shims.
+
+Before any directory migration, audit and update:
+
+- normal and dynamic imports;
+- method, class, and module strings;
+- Uvicorn/FastAPI application targets;
+- subprocess and `python -m` commands;
+- Docker, Compose, CI, configuration, and mounted paths;
+- tests, fixtures, monkeypatch, and mock targets;
+- packaging, editable install, and wheel install;
+- every README and Markdown relative link.
+
+### 18.9 Architecture validation
+
+Architecture-related changes should add or preserve checks for:
+
+- forbidden dependency directions;
+- dependency-light fresh-process imports;
+- no service-to-service internal imports;
+- no external SDK imports from domain packages;
+- wheel top-level package allowlists;
+- console entrypoint and application-factory smoke tests;
+- dynamic plugin loading;
+- stale import and module-string references;
+- local Markdown links;
+- clean editable and wheel installation.
+
+A migration is not complete merely because imports work from the repository root. It must also work from an installed wheel outside the checkout.
