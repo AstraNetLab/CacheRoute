@@ -1,1 +1,0 @@
-This temporary file will be removed before the architecture guidance PR is opened.
