@@ -1,18 +1,9 @@
 # CacheRoute package architecture RFC
 
-> Status: Accepted architecture direction; implementation in progress.
->
-> **Governing RFC:** [Issue #159](https://github.com/AstraNetLab/CacheRoute/issues/159).
->
-> **Migration Epic:** [Issue #157](https://github.com/AstraNetLab/CacheRoute/issues/157).
->
-> **Phase A namespace foundation:** [PR #158](https://github.com/AstraNetLab/CacheRoute/pull/158).
->
-> **Development-guidance adoption:** [PR #160](https://github.com/AstraNetLab/CacheRoute/pull/160).
->
-> [Issue #141](https://github.com/AstraNetLab/CacheRoute/issues/141) observability remains coordinated but separate.
+> Status: Accepted; implementation in progress.
 
-This document records the target Python package architecture adopted through Issue #159 and sequenced by the Issue #157 migration Epic.
+This document records the accepted target Python package architecture and the
+focused migration sequence used to reach it.
 
 ## Decision
 
@@ -316,7 +307,7 @@ them.
 
 ### Phase 0 — architecture approval
 
-Approve the RFC and make Issue #157 reference it as the target architecture.
+Approve this RFC as the target architecture before implementation phases begin.
 
 ### Phase 1 — packaging and entrypoint boundary
 

@@ -387,13 +387,9 @@ When in doubt, choose:
 
 This section is authoritative for all new package placement and migration work. It takes precedence over older current-layout examples in Sections 1–17. Existing root packages such as `scheduler/`, `proxy/`, `instance/`, and `kdn_server/` are transitional compatibility locations until their separate reviewed migration phases are complete.
 
-The governing architecture is:
-
-- Issue #159: package architecture RFC;
-- Issue #157: migration Epic;
-- `doc/architecture/package-architecture-rfc.md`: maintained repository architecture document.
-
-Do not begin a broad package move unless the relevant phase of #157 has an approved, focused Issue and a complete reference audit.
+`doc/architecture/package-architecture-rfc.md` is the maintained architecture
+source. A focused architecture Issue and a complete reference audit are required
+before any directory or service migration.
 
 Use this decision rule:
 
@@ -649,7 +645,7 @@ Instance, and KDN implementations remain in the transitional `scheduler/`,
 
 ### 18.8 Migration phases
 
-Follow the #157 phases. Do not combine them into a repository-wide move.
+Follow these phases in focused, reviewable changes. Do not combine them into a repository-wide move.
 
 1. Architecture guidance and automated boundaries.
 2. Packaging cleanup and unified entrypoints.
