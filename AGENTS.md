@@ -630,6 +630,8 @@ Use the following ownership map when planning focused migration Issues:
 - `kdn_server/contracts` -> `cacheroute.contracts.v1`;
 - shared KDN domain concepts -> `runtime`, `knowledge`, and `cache`;
 - `kdn_server/gateway` -> `integrations.lmcache` and `integrations.redis`;
+- `data` -> runtime package data co-located with its canonical consumer after a focused consumer and package-data audit; proven reusable knowledge behavior may move to `knowledge`, while research datasets remain outside the final wheel; do not create `cacheroute.data`;
+- `doc`, `doc.blog`, `doc.integrations`, and any other documentation namespace -> repository-only `doc/`, removed from the installed package list during packaging cleanup; preserve Markdown links and do not add `__init__.py` or package documentation to resolve discovery mismatches;
 - Scheduler and Proxy reusable strategies -> `routing` once the focused migration phase is approved; existing root strategy modules remain available for compatibility-preserving fixes;
 - Scheduler and Proxy registries -> `topology`;
 - reusable Proxy queue policy -> `routing`, while process queue state remains in `services.proxy`;
