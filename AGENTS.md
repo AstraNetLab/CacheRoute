@@ -1,7 +1,7 @@
 # AGENTS.md
 
 author: heyao
-version-date: 26-03-15
+version-date: 26-07-30
 
 ## 1. Project Overview
 
@@ -46,13 +46,16 @@ Scheduler maintains resource pools for:
 
 ### 1.3 CacheRoute Strategy Development Area
 
-Scheduling strategies should be implemented under:
+The current compatibility implementations of scheduling strategies are under:
 
-scheduler/strategy/
-proxy/strategy/
+`scheduler/strategy/`
+`proxy/strategy/`
 
 Strategies must not modify core scheduler logic.
 They should operate through the existing selection interfaces.
+Compatibility-preserving fixes may continue in these root modules. New reusable
+strategy code belongs to `cacheroute.routing` once its focused migration phase
+is approved; do not create empty target packages in anticipation of that work.
 
 Example strategies include:
 - round_robin
@@ -307,7 +310,7 @@ The user typically prefers **incremental, directly actionable code guidance**.
 
 ## 13. If You Add New Code
 
-No new functional top-level directory may be added without a dedicated architecture Issue. New Python capabilities must first be placed under `src/cacheroute/<domain>/` or an existing component hierarchy. Cross-component shared code must use a dependency-light, side-effect-free package under the `cacheroute` namespace.
+No new functional top-level directory may be added without a dedicated architecture Issue. Fix existing behavior in its current owning component hierarchy. New cross-component contracts and domain capabilities must follow the approved `cacheroute.*` ownership list in Section 18 and remain dependency-light and side-effect-free. Do not create speculative or empty target packages before their focused implementation or migration work is approved.
 
 When introducing a new helper, field, or branch:
 - keep naming consistent with existing repository terms,
@@ -324,15 +327,20 @@ If adding config/arguments:
 
 ## 14. Key Files / Entry Points
 
-The exact filenames below are important. Prefer editing these files in place instead of introducing parallel logic elsewhere.
+The exact current paths below are important transitional compatibility locations. Prefer editing existing behavior in place instead of introducing parallel logic; they are not permanent package-placement guidance.
 
 - `scheduler/...`: request building, scheduling decisions, resource selection
 - `proxy/...`: request execution path, runtime load updates, queue behavior
-- `kdn/...`: knowledge registration, status fields, embedding / KVCache readiness
+- `kdn_server/...`: knowledge registration, status fields, embedding / KVCache readiness
 - `instance/...`: interact layer between proxy and vLLM engine.
-- `client.py`: single-request testing path
-- `perf_client.py`: workload generation and benchmark execution
-- `demo_kdn.py`,`demo_scheduler.py`,`demo_proxy.py`,`demo_instance.py`,`demo_client.py`: startup arguments only; do not place business logic here
+- `client/client.py`: single-request testing path
+- `client/perf_client.py`: workload generation and benchmark execution
+- `test/demo_kdn.py`, `test/demo_scheduler.py`, `test/demo_proxy.py`, `test/demo_instance.py`, `test/demo_client.py`: transitional test/demo launchers only; do not place business logic here
+
+Existing Scheduler, Proxy, Instance, and KDN service code remains in
+`scheduler/`, `proxy/`, `instance/`, and `kdn_server/` until separate, focused
+migration PRs are approved. Section 18 governs all new package placement and
+all migration decisions.
 
 ---
 
@@ -377,7 +385,7 @@ When in doubt, choose:
 
 ## 18. Target Package Architecture and Placement Rules
 
-This section is normative for new architecture and directory decisions. It takes precedence over older current-layout examples in this file. Existing root packages such as `scheduler/`, `proxy/`, `instance/`, and `kdn_server/` are transitional locations until their reviewed migration phases are complete.
+This section is authoritative for all new package placement and migration work. It takes precedence over older current-layout examples in Sections 1–17. Existing root packages such as `scheduler/`, `proxy/`, `instance/`, and `kdn_server/` are transitional compatibility locations until their separate reviewed migration phases are complete.
 
 The governing architecture is:
 
@@ -386,6 +394,16 @@ The governing architecture is:
 - `doc/architecture/package-architecture-rfc.md`: maintained repository architecture document.
 
 Do not begin a broad package move unless the relevant phase of #157 has an approved, focused Issue and a complete reference audit.
+
+Use this decision rule:
+
+- **Existing behavior fix**: edit the current owning module with the smallest compatible patch.
+- **New cross-component contract/domain capability**: place it according to the approved `cacheroute.*` ownership boundaries below.
+- **Directory or service migration**: require a focused Issue and complete reference audit before moving files.
+
+These rules do not authorize speculative target directories or placeholder
+packages. Create a canonical package only as part of its approved, substantive
+implementation or focused migration work.
 
 ### 18.1 Canonical Python namespace
 
@@ -616,14 +634,18 @@ Use the following ownership map when planning focused migration Issues:
 - `kdn_server/contracts` -> `cacheroute.contracts.v1`;
 - shared KDN domain concepts -> `runtime`, `knowledge`, and `cache`;
 - `kdn_server/gateway` -> `integrations.lmcache` and `integrations.redis`;
-- Scheduler strategies -> `routing`;
+- Scheduler and Proxy reusable strategies -> `routing` once the focused migration phase is approved; existing root strategy modules remain available for compatibility-preserving fixes;
 - Scheduler and Proxy registries -> `topology`;
 - reusable Proxy queue policy -> `routing`, while process queue state remains in `services.proxy`;
 - Instance vLLM discovery -> `integrations.vllm`;
 - embedding implementation -> `integrations.embeddings`;
 - UI assets -> their owning service package;
 - demo launchers -> `entrypoints.dev` or `examples`;
-- generic `util` helpers -> their owning domain; do not preserve a utility dumping ground.
+- generic `util` helpers -> their owning domain after a focused ownership audit; do not preserve a utility dumping ground.
+
+Until their separate service migrations are approved, Scheduler, Proxy,
+Instance, and KDN implementations remain in the transitional `scheduler/`,
+`proxy/`, `instance/`, and `kdn_server/` root packages.
 
 ### 18.8 Migration phases
 
