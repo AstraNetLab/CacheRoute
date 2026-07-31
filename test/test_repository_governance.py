@@ -70,6 +70,8 @@ GENERATED_PACKAGE_EXCLUDES = [
     "*.__pycache__", "*.__pycache__.*",
     ".mypy_cache", ".mypy_cache.*", ".ruff_cache", ".ruff_cache.*",
     "tests", "tests.*", "docs", "docs.*",
+    # Repository-only Markdown architecture documents are not wheel packages.
+    "doc.architecture", "doc.architecture.*",
 ]
 
 
@@ -84,6 +86,8 @@ def test_no_unreviewed_functional_root_directories():
 def test_transitional_explicit_packages_match_root_discovery():
     configuration = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     configured = set(configuration["tool"]["setuptools"]["packages"])
+    assert "doc.architecture" not in configured
+    assert not any(package.startswith("doc.architecture.") for package in configured)
     discovered_root = _discover_root_namespace_packages()
     assert CANONICAL_PACKAGES <= configured
     assert configured - CANONICAL_PACKAGES == discovered_root
