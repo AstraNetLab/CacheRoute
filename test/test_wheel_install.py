@@ -13,9 +13,9 @@ import pytest
 
 EXPECTED_TOP_LEVEL_PACKAGES = {
     "UI", "cacheroute", "cacheroute_compat", "client", "core", "data",
-    "env", "instance", "kdn_server", "model", "proxy", "scheduler",
-    "scripts", "store", "test", "util",
+    "instance", "kdn_server", "model", "proxy", "scheduler", "store", "util",
 }
+FORBIDDEN_TOP_LEVEL_PACKAGES = {"doc", "env", "log", "scripts", "test"}
 REQUIRED_PACKAGE_DATA = {
     "UI/client_ui/static/app.js",
     "UI/client_ui/static/style.css",
@@ -80,6 +80,12 @@ def test_wheel_preserves_packages_and_runtime_data(built_wheel):
             if "/" in name and not name.partition("/")[0].endswith(".dist-info")
         }
     assert packaged == EXPECTED_TOP_LEVEL_PACKAGES
+    assert packaged.isdisjoint(FORBIDDEN_TOP_LEVEL_PACKAGES)
+    for prefix in FORBIDDEN_TOP_LEVEL_PACKAGES:
+        assert not any(
+            member == prefix or member.startswith(f"{prefix}/")
+            for member in members
+        )
     assert REQUIRED_PACKAGE_DATA <= members
     assert "instance/TTFT_predictor/prompt_length_validation.log" not in members
 
@@ -109,6 +115,30 @@ for name in canonical_runtime.__all__:
 print("dependency-light clean-wheel imports: passed")
 """)
     assert "dependency-light clean-wheel imports: passed" in result.stdout
+    print(result.stdout, end="")
+
+
+def test_repository_only_namespaces_are_not_importable_from_clean_wheel(built_wheel, tmp_path):
+    python = _create_isolated_environment(tmp_path / "negative-venv")
+    subprocess.run([python, "-m", "pip", "install", "--no-deps", str(built_wheel)], check=True)
+    result = _run_outside_repo(python, tmp_path / "outside-negative", """
+import importlib.util
+from pathlib import Path
+import sys
+
+for name in ("doc", "env", "log", "scripts", "test"):
+    spec = importlib.util.find_spec(name)
+    if name == "test":
+        # CPython may supply its own stdlib test package. It must not resolve
+        # from this environment's wheel installation directory.
+        if spec is not None:
+            assert Path(spec.origin).resolve().is_relative_to(Path(sys.base_prefix).resolve())
+            assert "site-packages" not in Path(spec.origin).parts
+    else:
+        assert spec is None, name
+print("repository-only clean-wheel imports: absent")
+""")
+    assert "repository-only clean-wheel imports: absent" in result.stdout
     print(result.stdout, end="")
 
 

@@ -33,6 +33,9 @@ CANONICAL_PACKAGES = {
     "cacheroute", "cacheroute.compat", "cacheroute.observability",
     "cacheroute_compat",
 }
+REPOSITORY_ONLY_PACKAGE_PREFIXES = {
+    "doc", "env", "log", "scripts", "test",
+}
 SOURCE_BOOTSTRAP_ENTRYPOINTS = {
     Path("client/client.py"),
     Path("client/kv_timing_sender.py"),
@@ -70,9 +73,13 @@ GENERATED_PACKAGE_EXCLUDES = [
     "*.__pycache__", "*.__pycache__.*",
     ".mypy_cache", ".mypy_cache.*", ".ruff_cache", ".ruff_cache.*",
     "tests", "tests.*", "docs", "docs.*",
-    # Repository-only Markdown architecture documents are not wheel packages.
-    "doc.architecture", "doc.architecture.*",
+    *REPOSITORY_ONLY_PACKAGE_PREFIXES,
+    *(f"{prefix}.*" for prefix in REPOSITORY_ONLY_PACKAGE_PREFIXES),
 ]
+
+
+def _has_package_prefix(package, prefixes):
+    return any(package == prefix or package.startswith(f"{prefix}.") for prefix in prefixes)
 
 
 def test_no_unreviewed_functional_root_directories():
@@ -86,8 +93,10 @@ def test_no_unreviewed_functional_root_directories():
 def test_transitional_explicit_packages_match_root_discovery():
     configuration = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     configured = set(configuration["tool"]["setuptools"]["packages"])
-    assert "doc.architecture" not in configured
-    assert not any(package.startswith("doc.architecture.") for package in configured)
+    assert not any(
+        _has_package_prefix(package, REPOSITORY_ONLY_PACKAGE_PREFIXES)
+        for package in configured
+    )
     discovered_root = _discover_root_namespace_packages()
     assert CANONICAL_PACKAGES <= configured
     assert configured - CANONICAL_PACKAGES == discovered_root
