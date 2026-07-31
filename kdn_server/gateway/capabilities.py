@@ -2,8 +2,8 @@
 from datetime import datetime, timedelta
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from kdn_server.contracts.common import ContractModel, ENDPOINT_ID_PATTERN, GATEWAY_CONTRACT_VERSION, SupportState, utc_now
-from kdn_server.domain import RuntimeProfile
+from cacheroute.contracts.v1.common import ContractModel, ENDPOINT_ID_PATTERN, GATEWAY_CONTRACT_VERSION, SupportState, utc_now
+from cacheroute.runtime import RuntimeProfile
 from .profiles import GatewayAdapterBinding, GatewayTransportKind, LMCacheCompatibilityProfile
 
 

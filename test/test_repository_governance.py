@@ -31,6 +31,7 @@ OBSERVABILITY_REFERENCE_ALLOWLIST = {
 }
 CANONICAL_PACKAGES = {
     "cacheroute", "cacheroute.compat", "cacheroute.observability",
+    "cacheroute.runtime", "cacheroute.contracts", "cacheroute.contracts.v1",
     "cacheroute_compat",
 }
 REPOSITORY_ONLY_PACKAGE_PREFIXES = {
@@ -150,7 +151,10 @@ def _tracked_files():
 
 
 def test_legacy_shim_contains_imports_only():
-    for relative in ("src/cacheroute_compat/__init__.py", "src/cacheroute_compat/runtime.py"):
+    for relative in (
+        "src/cacheroute_compat/__init__.py", "src/cacheroute_compat/runtime.py",
+        "kdn_server/contracts/common.py", "kdn_server/contracts/errors.py",
+    ):
         module = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
         functional = [
             node for node in module.body
@@ -162,6 +166,14 @@ def test_legacy_shim_contains_imports_only():
             )
         ]
         assert functional == []
+
+
+def test_migrated_contract_implementations_are_canonical_only():
+    domain = (ROOT / "kdn_server/domain/models.py").read_text(encoding="utf-8")
+    assert "class RuntimeProfile" not in domain
+    for relative in ("kdn_server/contracts/common.py", "kdn_server/contracts/errors.py"):
+        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+        assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
 
 
 def test_source_bootstraps_stay_at_test_and_entrypoint_boundaries():

@@ -4,10 +4,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROHIBITED_MODULES = (
-    "core", "proxy", "instance", "scheduler", "kdn_server",
-    "fastapi", "redis", "numpy", "torch", "vllm", "lmcache",
+    "core", "proxy", "instance", "scheduler", "kdn_server", "client", "store", "model", "UI",
+    "fastapi", "redis", "numpy", "torch", "sentence_transformers", "vllm", "lmcache",
 )
 
 
@@ -39,6 +41,14 @@ def test_compat_import_is_dependency_light_and_functional():
 
 def test_observability_import_is_dependency_light():
     _run_isolated("import cacheroute.observability")
+
+
+@pytest.mark.parametrize("module", (
+    "cacheroute.runtime", "cacheroute.contracts", "cacheroute.contracts.v1",
+    "cacheroute.contracts.v1.common", "cacheroute.contracts.v1.errors",
+))
+def test_runtime_and_contract_imports_are_dependency_light(module):
+    _run_isolated(f"import {module}")
 
 
 def test_demo_client_bootstrap_resolves_source_namespace(tmp_path):

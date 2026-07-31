@@ -165,12 +165,21 @@ import proxy
 import instance
 import kdn_server
 import kdn_server.domain
+import kdn_server.contracts.common as legacy_common
+import kdn_server.contracts.errors as legacy_errors
+import cacheroute.runtime
+import cacheroute.contracts
+import cacheroute.contracts.v1
+import cacheroute.contracts.v1.common as canonical_common
+import cacheroute.contracts.v1.errors as canonical_errors
 import cacheroute.compat.runtime as canonical_runtime
 import cacheroute_compat.runtime as legacy_runtime
 from core.runtime_compat import normalize_runtime_profile
 from kdn_server.domain import RuntimeProfile
 
 modules = (core, core_runtime, proxy, instance, kdn_server, kdn_server.domain,
+           cacheroute.runtime, cacheroute.contracts, cacheroute.contracts.v1,
+           canonical_common, canonical_errors, legacy_common, legacy_errors,
            canonical_runtime, legacy_runtime)
 for module in modules:
     path = Path(module.__file__).resolve()
@@ -183,6 +192,11 @@ import store.knowledge_build
 assert tuple(sys.path) == before_imports
 assert normalize_runtime_profile("modern") == "v1"
 assert RuntimeProfile.normalize("old") is RuntimeProfile.LEGACY
+assert RuntimeProfile is cacheroute.runtime.RuntimeProfile
+assert legacy_common.VersionedMessage is canonical_common.VersionedMessage
+assert legacy_common.ContractModel is canonical_common.ContractModel
+assert legacy_errors.OutcomeCode is canonical_errors.OutcomeCode
+assert legacy_errors.ContractError is canonical_errors.ContractError
 assert canonical_runtime.__all__ == legacy_runtime.__all__ == core_runtime.__all__
 for name in canonical_runtime.__all__:
     canonical = getattr(canonical_runtime, name)

@@ -1,7 +1,7 @@
 """Stable public KDN versioned service contract API."""
-from .common import (ContractModel, GATEWAY_CONTRACT_VERSION, GatewayTargetedRequest,
+from cacheroute.contracts.v1.common import (ContractModel, GATEWAY_CONTRACT_VERSION, GatewayTargetedRequest,
     KDN_CONTRACT_VERSION, SupportState, TokenInput, TokenReference, VersionedMessage)
-from .errors import ContractError, ContractErrorDetail, OutcomeCode
+from cacheroute.contracts.v1.errors import ContractError, ContractErrorDetail, OutcomeCode
 from .knowledge import (KnowledgeDescriptor, KnowledgeResponse, ListCompatibleArtifactsRequest,
     ListCompatibleArtifactsResponse, QueryArtifactCompatibilityRequest,
     QueryArtifactCompatibilityResponse, RegisterKnowledgeRequest, RegisterKnowledgeResponse,

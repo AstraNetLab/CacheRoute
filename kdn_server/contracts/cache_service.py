@@ -7,9 +7,10 @@ from typing import ClassVar
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from kdn_server.domain import RuntimeProfile, CacheArtifact, CacheOperationState, CacheOperationTask, CacheReplicaObservation, LMCacheEndpoint, CacheOperationType
-from .common import ContractModel, GatewayTargetedRequest, SupportState, TokenInput, VersionedMessage, utc_now
-from .errors import ContractErrorDetail, OutcomeCode
+from cacheroute.runtime import RuntimeProfile
+from kdn_server.domain import CacheArtifact, CacheOperationState, CacheOperationTask, CacheReplicaObservation, LMCacheEndpoint, CacheOperationType
+from cacheroute.contracts.v1.common import ContractModel, GatewayTargetedRequest, SupportState, TokenInput, VersionedMessage, utc_now
+from cacheroute.contracts.v1.errors import ContractErrorDetail, OutcomeCode
 
 
 class ArtifactRequest(GatewayTargetedRequest):

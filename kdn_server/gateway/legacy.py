@@ -7,8 +7,8 @@ from kdn_server.contracts.cache_service import (
     GetLMCacheEndpointsResponse, GetMaintenanceStatusResponse, GetOperationStatusResponse,
     GetTierAndAdapterSummaryResponse, LookupArtifactResponse, LookupTokensResponse,
 )
-from kdn_server.contracts.common import utc_now
-from kdn_server.contracts.errors import OutcomeCode
+from cacheroute.contracts.v1.common import utc_now
+from cacheroute.contracts.v1.errors import OutcomeCode
 from .base import GatewayAdapterBase
 
 

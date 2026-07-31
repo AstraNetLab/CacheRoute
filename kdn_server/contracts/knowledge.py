@@ -4,8 +4,8 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from kdn_server.domain import CacheArtifact
-from .common import VersionedMessage
-from .errors import ContractError, OutcomeCode
+from cacheroute.contracts.v1.common import VersionedMessage
+from cacheroute.contracts.v1.errors import ContractError, OutcomeCode
 
 
 class KnowledgeDescriptor(VersionedMessage):
