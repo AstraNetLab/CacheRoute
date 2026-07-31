@@ -315,6 +315,13 @@ Approve this RFC as the target architecture before implementation phases begin.
 
 Clean packaging so only canonical packages and approved compatibility shims enter the wheel. Add the unified CLI and application factories.
 
+The first packaging-boundary step removes the repository-only `doc`, `env`,
+`log`, `scripts`, and `test` namespaces (including their descendants) from the
+wheel. Transitional root runtime packages remain explicitly installed until
+their focused migrations; `data` remains installed pending a separate consumer
+and package-data audit. This interim boundary does not authorize entrypoint or
+service migration.
+
 ### Phase 2 — contracts and dependency-light domains
 
 Move versioned contracts, Runtime Profile, lifecycle models, capability models, and topology/resource models.

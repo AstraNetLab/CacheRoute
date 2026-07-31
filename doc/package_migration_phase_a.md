@@ -220,6 +220,21 @@ dropping root packages. The final package-migration phase removes the explicit
 transition and enables src-only discovery after every listed root runtime
 package is migrated or intentionally deprecated through review.
 
+### Interim repository-only wheel boundary
+
+The first substantive packaging-boundary step removes `doc`, `doc.blog`,
+`doc.integrations`, `env`, `env.config`, `env.docker`, `env.docker.cu130`,
+`env.docker.cu130.scripts`, `log`, `log.scheduler`, `scripts`, `test`, and
+`test.kdn` from the explicit setuptools package list. These directories remain
+available in source checkouts but are not application packages supplied by the
+wheel.
+
+The exact interim wheel top-level package set is `UI`, `cacheroute`,
+`cacheroute_compat`, `client`, `core`, `data`, `instance`, `kdn_server`,
+`model`, `proxy`, `scheduler`, `store`, and `util`. These root runtime packages
+remain transitional. In particular, `data` and its existing descendants remain
+installed and unchanged until a separate consumer and package-data audit.
+
 ## Later phases and risks
 
 1. PR #156 performs the observability implementation migration described above.
