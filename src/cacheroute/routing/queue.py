@@ -6,8 +6,9 @@ from uuid import uuid4
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from cacheroute.runtime import Snapshot, StateTransitionError, StrEnum
-from cacheroute.runtime.state import nonempty, require_utc, utc_now
+from cacheroute.runtime.state import (
+    Snapshot, StateTransitionError, StrEnum, nonempty, require_utc, utc_now,
+)
 
 
 class QueueState(StrEnum):

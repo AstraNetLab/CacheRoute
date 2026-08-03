@@ -118,13 +118,6 @@ import cacheroute.compat.runtime as canonical_runtime
 import cacheroute.observability
 import cacheroute.runtime
 import cacheroute.runtime.profiles as runtime_profiles
-import cacheroute.runtime.state
-import cacheroute.topology
-import cacheroute.topology.lmcache
-import cacheroute.cache
-import cacheroute.cache.models
-import cacheroute.routing
-import cacheroute.routing.queue
 import cacheroute_compat.runtime as legacy_runtime
 
 modules = (cacheroute, cacheroute.compat, canonical_runtime,
@@ -145,7 +138,7 @@ for name in canonical_runtime.__all__:
     assert getattr(legacy_runtime, name) is getattr(canonical_runtime, name)
 for forbidden in (
     "kdn_server", "scheduler", "proxy", "instance", "client", "store",
-    "model", "UI", "fastapi", "redis", "numpy", "torch",
+    "model", "UI", "pydantic", "fastapi", "redis", "numpy", "torch",
     "sentence_transformers", "vllm", "lmcache",
 ):
     assert forbidden not in sys.modules, forbidden
@@ -202,9 +195,17 @@ import proxy
 import instance
 import kdn_server
 import kdn_server.domain
+import kdn_server.domain.models as legacy_domain_models
 import kdn_server.contracts.common as legacy_common
 import kdn_server.contracts.errors as legacy_errors
 import cacheroute.runtime
+import cacheroute.runtime.state as runtime_state
+import cacheroute.topology
+import cacheroute.topology.lmcache as topology_lmcache
+import cacheroute.cache
+import cacheroute.cache.models as cache_models
+import cacheroute.routing
+import cacheroute.routing.queue as routing_queue
 import cacheroute.contracts
 import cacheroute.contracts.v1
 import cacheroute.contracts.v1.common as canonical_common
@@ -215,6 +216,9 @@ from core.runtime_compat import normalize_runtime_profile
 from kdn_server.domain import RuntimeProfile
 
 modules = (core, core_runtime, proxy, instance, kdn_server, kdn_server.domain,
+           legacy_domain_models, runtime_state, cacheroute.topology,
+           topology_lmcache, cacheroute.cache, cache_models,
+           cacheroute.routing, routing_queue,
            cacheroute.runtime, cacheroute.contracts, cacheroute.contracts.v1,
            canonical_common, canonical_errors, legacy_common, legacy_errors,
            canonical_runtime, legacy_runtime)
@@ -230,6 +234,25 @@ assert tuple(sys.path) == before_imports
 assert normalize_runtime_profile("modern") == "v1"
 assert RuntimeProfile.normalize("old") is RuntimeProfile.LEGACY
 assert RuntimeProfile is cacheroute.runtime.RuntimeProfile
+identity_pairs = (
+    (runtime_state.StrEnum, legacy_domain_models.StrEnum),
+    (runtime_state.Snapshot, legacy_domain_models.Snapshot),
+    (runtime_state.StateTransitionError, legacy_domain_models.StateTransitionError),
+    (topology_lmcache.LMCacheGatewayProfile, legacy_domain_models.LMCacheGatewayProfile),
+    (topology_lmcache.LMCacheEndpoint, legacy_domain_models.LMCacheEndpoint),
+    (cache_models.ObservationSource, legacy_domain_models.ObservationSource),
+    (cache_models.ObservationConfidence, legacy_domain_models.ObservationConfidence),
+    (cache_models.ObservationState, legacy_domain_models.ObservationState),
+    (cache_models.CacheOperationType, legacy_domain_models.CacheOperationType),
+    (cache_models.CacheOperationState, legacy_domain_models.CacheOperationState),
+    (cache_models.CacheArtifact, legacy_domain_models.CacheArtifact),
+    (cache_models.CacheReplicaObservation, legacy_domain_models.CacheReplicaObservation),
+    (cache_models.CacheOperationTask, legacy_domain_models.CacheOperationTask),
+    (routing_queue.QueueState, legacy_domain_models.QueueState),
+    (routing_queue.QueueWork, legacy_domain_models.QueueWork),
+)
+assert all(canonical is legacy for canonical, legacy in identity_pairs)
+assert runtime_state.utc_now is legacy_domain_models.utc_now
 assert legacy_common.VersionedMessage is canonical_common.VersionedMessage
 assert legacy_common.ContractModel is canonical_common.ContractModel
 assert legacy_errors.OutcomeCode is canonical_errors.OutcomeCode

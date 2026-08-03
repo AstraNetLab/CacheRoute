@@ -179,6 +179,16 @@ def test_migrated_contract_implementations_are_canonical_only():
         assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
 
 
+def test_runtime_package_init_remains_dependency_free():
+    tree = ast.parse((ROOT / "src/cacheroute/runtime/__init__.py").read_text(encoding="utf-8"))
+    imports = {
+        node.module
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+    }
+    assert imports == {"profiles"}
+
+
 def test_source_bootstraps_stay_at_test_and_entrypoint_boundaries():
     config_tree = ast.parse((ROOT / "core/config.py").read_text(encoding="utf-8"))
     assert not any(isinstance(node, (ast.Import, ast.ImportFrom)) and any(

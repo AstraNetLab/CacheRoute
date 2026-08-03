@@ -9,14 +9,16 @@ import sys
 import cacheroute.cache as cache
 import cacheroute.routing as routing
 import cacheroute.runtime as runtime
+import cacheroute.runtime.state as runtime_state
 import cacheroute.topology as topology
 import kdn_server.domain as legacy
+import kdn_server.domain.models as legacy_models
 
 
 OWNERS = {
-    runtime.StrEnum: "cacheroute.runtime.state",
-    runtime.Snapshot: "cacheroute.runtime.state",
-    runtime.StateTransitionError: "cacheroute.runtime.state",
+    runtime_state.StrEnum: "cacheroute.runtime.state",
+    runtime_state.Snapshot: "cacheroute.runtime.state",
+    runtime_state.StateTransitionError: "cacheroute.runtime.state",
     topology.LMCacheGatewayProfile: "cacheroute.topology.lmcache",
     topology.LMCacheEndpoint: "cacheroute.topology.lmcache",
     cache.ObservationSource: "cacheroute.cache.models",
@@ -36,6 +38,7 @@ def test_canonical_ownership_and_legacy_object_identity():
     for canonical, module in OWNERS.items():
         assert canonical.__module__ == module
         assert getattr(legacy, canonical.__name__) is canonical
+    assert legacy_models.utc_now is runtime_state.utc_now
 
 
 def test_legacy_models_is_an_import_only_shim():

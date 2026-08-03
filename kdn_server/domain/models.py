@@ -11,12 +11,13 @@ from cacheroute.cache import (
     ObservationState,
 )
 from cacheroute.routing import QueueState, QueueWork
-from cacheroute.runtime import RuntimeProfile, Snapshot, StateTransitionError, StrEnum
+from cacheroute.runtime import RuntimeProfile
+from cacheroute.runtime.state import Snapshot, StateTransitionError, StrEnum, utc_now
 from cacheroute.topology import LMCacheEndpoint, LMCacheGatewayProfile
 
 __all__ = [
     "CacheArtifact", "CacheOperationState", "CacheOperationTask", "CacheOperationType",
     "CacheReplicaObservation", "LMCacheEndpoint", "LMCacheGatewayProfile",
     "ObservationConfidence", "ObservationSource", "ObservationState", "QueueState",
-    "QueueWork", "RuntimeProfile", "Snapshot", "StateTransitionError", "StrEnum",
+    "QueueWork", "RuntimeProfile", "Snapshot", "StateTransitionError", "StrEnum", "utc_now",
 ]

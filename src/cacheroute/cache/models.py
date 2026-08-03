@@ -7,8 +7,10 @@ from uuid import uuid4
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from cacheroute.runtime import RuntimeProfile, Snapshot, StateTransitionError, StrEnum
-from cacheroute.runtime.state import canonical_id, nonempty, require_utc, utc_now
+from cacheroute.runtime import RuntimeProfile
+from cacheroute.runtime.state import (
+    Snapshot, StateTransitionError, StrEnum, canonical_id, nonempty, require_utc, utc_now,
+)
 from cacheroute.topology import LMCacheEndpoint, LMCacheGatewayProfile
 
 

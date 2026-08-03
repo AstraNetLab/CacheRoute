@@ -5,8 +5,8 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
-from cacheroute.runtime import RuntimeProfile, Snapshot, StrEnum
-from cacheroute.runtime.state import canonical_id, nonempty
+from cacheroute.runtime import RuntimeProfile
+from cacheroute.runtime.state import Snapshot, StrEnum, canonical_id, nonempty
 
 
 class LMCacheGatewayProfile(StrEnum):
