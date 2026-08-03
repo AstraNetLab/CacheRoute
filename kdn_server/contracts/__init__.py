@@ -1,13 +1,13 @@
-"""Stable public KDN versioned service contract API."""
+"""Temporary identity-preserving compatibility API for CacheRoute v1 contracts."""
 from cacheroute.contracts.v1.common import (ContractModel, GATEWAY_CONTRACT_VERSION, GatewayTargetedRequest,
     KDN_CONTRACT_VERSION, SupportState, TokenInput, TokenReference, VersionedMessage)
 from cacheroute.contracts.v1.errors import ContractError, ContractErrorDetail, OutcomeCode
-from .knowledge import (KnowledgeDescriptor, KnowledgeResponse, ListCompatibleArtifactsRequest,
+from cacheroute.contracts.v1.knowledge import (KnowledgeDescriptor, KnowledgeResponse, ListCompatibleArtifactsRequest,
     ListCompatibleArtifactsResponse, QueryArtifactCompatibilityRequest,
     QueryArtifactCompatibilityResponse, RegisterKnowledgeRequest, RegisterKnowledgeResponse,
     ReportRequestOutcomeRequest, ReportRequestOutcomeResponse, ResolveKnowledgeRequest,
     ResolveKnowledgeResponse, UpdateKnowledgeRequest, UpdateKnowledgeResponse)
-from .cache_service import (AdapterSummary, ArtifactRequest,
+from cacheroute.contracts.v1.cache_service import (AdapterSummary, ArtifactRequest,
     CancelOperationRequest, CancelOperationResponse, CapacityUsageObservation,
     CreateClearIntentRequest, CreateClearIntentResponse, CreatePinIntentRequest,
     CreatePinIntentResponse, CreatePrefetchIntentRequest, CreatePrefetchIntentResponse,
@@ -17,7 +17,8 @@ from .cache_service import (AdapterSummary, ArtifactRequest,
     GetMaintenanceStatusResponse, GetOperationStatusRequest, GetOperationStatusResponse,
     GetTierAndAdapterSummaryRequest, GetTierAndAdapterSummaryResponse,
     LookupArtifactRequest, LookupArtifactResponse, LookupTokensRequest, LookupTokensResponse,
-    MaintenanceSummary, OperationIntentRequest, SummaryBase, TierLevel,
+    CacheServiceResponse, GatewayTargetedResponse, INTENT_OPERATION_TYPES,
+    MaintenanceSummary, OperationIntentRequest, OperationResponse, SummaryBase, TierLevel,
     TierSummary, TokenCoverage)
 
 __all__ = [
@@ -35,7 +36,8 @@ __all__ = [
     "GetOperationStatusRequest", "CancelOperationRequest", "GetLMCacheEndpointsRequest",
     "GetTierAndAdapterSummaryRequest", "GetMaintenanceStatusRequest", "TokenCoverage",
     "SummaryBase", "AdapterSummary", "TierLevel", "CapacityUsageObservation", "TierSummary",
-    "MaintenanceSummary", "GetCacheObservationResponse",
+    "MaintenanceSummary", "CacheServiceResponse", "GatewayTargetedResponse",
+    "OperationResponse", "INTENT_OPERATION_TYPES", "GetCacheObservationResponse",
     "LookupArtifactResponse", "LookupTokensResponse",
     "CreatePrefetchIntentResponse", "CreatePinIntentResponse", "CreateUnpinIntentResponse",
     "CreateClearIntentResponse", "CreateRebuildIntentResponse", "GetOperationStatusResponse",

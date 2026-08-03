@@ -1,7 +1,7 @@
 """Dependency-light interface implemented only by gateway adapters."""
 from typing import Protocol, runtime_checkable
 
-from kdn_server.contracts.cache_service import (
+from cacheroute.contracts.v1.cache_service import (
     ArtifactRequest, CancelOperationRequest, CancelOperationResponse,
     CreateClearIntentResponse, CreatePinIntentResponse, CreatePrefetchIntentResponse,
     CreateRebuildIntentResponse, CreateUnpinIntentResponse,

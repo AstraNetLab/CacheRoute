@@ -40,6 +40,10 @@ REQUIRED_CANONICAL_FOUNDATION = {
     "cacheroute/contracts/v1/__init__.py",
     "cacheroute/contracts/v1/common.py",
     "cacheroute/contracts/v1/errors.py",
+    "cacheroute/contracts/v1/knowledge.py",
+    "cacheroute/contracts/v1/cache_service.py",
+    "kdn_server/contracts/knowledge.py",
+    "kdn_server/contracts/cache_service.py",
     "cacheroute/runtime/state.py",
     "cacheroute/topology/__init__.py",
     "cacheroute/topology/lmcache.py",
@@ -198,6 +202,8 @@ import kdn_server.domain
 import kdn_server.domain.models as legacy_domain_models
 import kdn_server.contracts.common as legacy_common
 import kdn_server.contracts.errors as legacy_errors
+import kdn_server.contracts.knowledge as legacy_knowledge
+import kdn_server.contracts.cache_service as legacy_cache_service
 import cacheroute.runtime
 import cacheroute.runtime.state as runtime_state
 import cacheroute.topology
@@ -210,6 +216,8 @@ import cacheroute.contracts
 import cacheroute.contracts.v1
 import cacheroute.contracts.v1.common as canonical_common
 import cacheroute.contracts.v1.errors as canonical_errors
+import cacheroute.contracts.v1.knowledge as canonical_knowledge
+import cacheroute.contracts.v1.cache_service as canonical_cache_service
 import cacheroute.compat.runtime as canonical_runtime
 import cacheroute_compat.runtime as legacy_runtime
 from core.runtime_compat import normalize_runtime_profile
@@ -220,7 +228,9 @@ modules = (core, core_runtime, proxy, instance, kdn_server, kdn_server.domain,
            topology_lmcache, cacheroute.cache, cache_models,
            cacheroute.routing, routing_queue,
            cacheroute.runtime, cacheroute.contracts, cacheroute.contracts.v1,
-           canonical_common, canonical_errors, legacy_common, legacy_errors,
+           canonical_common, canonical_errors, canonical_knowledge,
+           canonical_cache_service, legacy_common, legacy_errors,
+           legacy_knowledge, legacy_cache_service,
            canonical_runtime, legacy_runtime)
 for module in modules:
     path = Path(module.__file__).resolve()
@@ -257,6 +267,16 @@ assert legacy_common.VersionedMessage is canonical_common.VersionedMessage
 assert legacy_common.ContractModel is canonical_common.ContractModel
 assert legacy_errors.OutcomeCode is canonical_errors.OutcomeCode
 assert legacy_errors.ContractError is canonical_errors.ContractError
+for canonical_module, legacy_module in (
+    (canonical_knowledge, legacy_knowledge),
+    (canonical_cache_service, legacy_cache_service),
+):
+    for name in canonical_module.__all__:
+        canonical = getattr(canonical_module, name)
+        assert getattr(legacy_module, name) is canonical
+        assert getattr(cacheroute.contracts.v1, name) is canonical
+        assert getattr(__import__("kdn_server.contracts", fromlist=[name]), name) is canonical
+assert legacy_cache_service.INTENT_OPERATION_TYPES is canonical_cache_service.INTENT_OPERATION_TYPES
 assert canonical_runtime.__all__ == legacy_runtime.__all__ == core_runtime.__all__
 for name in canonical_runtime.__all__:
     canonical = getattr(canonical_runtime, name)

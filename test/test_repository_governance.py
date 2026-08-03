@@ -155,6 +155,7 @@ def test_legacy_shim_contains_imports_only():
     for relative in (
         "src/cacheroute_compat/__init__.py", "src/cacheroute_compat/runtime.py",
         "kdn_server/contracts/common.py", "kdn_server/contracts/errors.py",
+        "kdn_server/contracts/knowledge.py", "kdn_server/contracts/cache_service.py",
     ):
         module = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
         functional = [
@@ -174,9 +175,30 @@ def test_migrated_contract_implementations_are_canonical_only():
     assert "class RuntimeProfile" not in domain
     tree = ast.parse(domain)
     assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
-    for relative in ("kdn_server/contracts/common.py", "kdn_server/contracts/errors.py"):
+    for relative in (
+        "kdn_server/contracts/common.py", "kdn_server/contracts/errors.py",
+        "kdn_server/contracts/knowledge.py", "kdn_server/contracts/cache_service.py",
+    ):
         tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
         assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
+
+
+def test_canonical_service_contract_dependencies_are_allowed():
+    allowed = {
+        "__future__", "datetime", "enum", "typing", "pydantic",
+        "cacheroute.runtime", "cacheroute.topology", "cacheroute.cache",
+        "cacheroute.contracts.v1.common", "cacheroute.contracts.v1.errors",
+    }
+    for relative in (
+        "src/cacheroute/contracts/v1/knowledge.py",
+        "src/cacheroute/contracts/v1/cache_service.py",
+    ):
+        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+        imports = {
+            node.module for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        assert imports <= allowed
 
 
 def test_runtime_package_init_remains_dependency_free():

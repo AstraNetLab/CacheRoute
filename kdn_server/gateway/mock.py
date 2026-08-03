@@ -1,7 +1,7 @@
 """Deterministic CPU-only gateway for contract tests and policy development."""
 from __future__ import annotations
 
-from kdn_server.contracts.cache_service import *
+from cacheroute.contracts.v1.cache_service import *
 from cacheroute.contracts.v1.common import utc_now
 from cacheroute.contracts.v1.errors import OutcomeCode
 from cacheroute.cache import CacheOperationState, CacheOperationTask, CacheOperationType
