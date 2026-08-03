@@ -17,7 +17,7 @@ These tests validate control-plane contracts and adapter behavior without a netw
 The authoritative executable workflow is [`test_cache_service_contracts.py`](test_cache_service_contracts.py). The following setup is a minimal interactive starting point using non-routable logical identities:
 
 ```python
-from kdn_server.contracts import GetLMCacheEndpointsRequest
+from cacheroute.contracts.v1 import GetLMCacheEndpointsRequest
 from kdn_server.gateway import (
     CapabilitySnapshot, GatewayAdapterBinding, LMCacheCompatibilityProfile,
     MockGateway,

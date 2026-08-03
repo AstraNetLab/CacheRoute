@@ -29,6 +29,16 @@ OBSERVABILITY_REFERENCE_ALLOWLIST = {
     Path("doc/package_migration_phase_a.md"),
     Path("test/test_repository_governance.py"),
 }
+KDN_CONTRACT_COMPATIBILITY_ALLOWLIST = {
+    Path("kdn_server/contracts/__init__.py"),
+    Path("kdn_server/contracts/knowledge.py"),
+    Path("kdn_server/contracts/cache_service.py"),
+    Path("test/test_contract_foundation.py"),
+    Path("test/test_contract_service_migration.py"),
+    Path("test/test_repository_governance.py"),
+    Path("test/test_wheel_install.py"),
+    Path("test/kdn/test_cache_service_contracts.py"),
+}
 CANONICAL_PACKAGES = {
     "cacheroute", "cacheroute.compat", "cacheroute.observability",
     "cacheroute.runtime", "cacheroute.topology", "cacheroute.cache",
@@ -129,6 +139,32 @@ def test_observability_legacy_references_are_narrowly_allowlisted():
     assert not (ROOT / "cacheroute_observability").exists()
     references = _files_containing("cacheroute_observability")
     assert references <= OBSERVABILITY_REFERENCE_ALLOWLIST
+
+
+def test_legacy_kdn_contract_ownership_references_are_narrowly_allowlisted():
+    legacy_modules = {
+        "kdn_server.contracts", "kdn_server.contracts.knowledge",
+        "kdn_server.contracts.cache_service",
+    }
+    references = set()
+    for path in _tracked_files():
+        relative = path.relative_to(ROOT)
+        if path.suffix != ".py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        stale = any(
+            isinstance(node, ast.ImportFrom)
+            and node.module in legacy_modules
+            or isinstance(node, ast.Import)
+            and any(alias.name in legacy_modules for alias in node.names)
+            or isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and any(module in node.value for module in legacy_modules)
+            for node in ast.walk(tree)
+        )
+        if stale:
+            references.add(relative)
+    assert references <= KDN_CONTRACT_COMPATIBILITY_ALLOWLIST
 
 
 def _files_containing(needle):
