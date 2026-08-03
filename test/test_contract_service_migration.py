@@ -224,11 +224,20 @@ def test_legacy_service_modules_are_import_only_shims():
 
 
 def test_canonical_imports_are_dependency_isolated_in_fresh_process():
-    script = r'''
+    source_root = (ROOT / "src").resolve()
+    script = f'''
 import sys
-import cacheroute.contracts.v1
-import cacheroute.contracts.v1.knowledge
-import cacheroute.contracts.v1.cache_service
+from pathlib import Path
+
+source_root = Path({str(source_root)!r})
+sys.path.insert(0, str(source_root))
+
+import cacheroute.contracts.v1 as contracts
+import cacheroute.contracts.v1.knowledge as knowledge
+import cacheroute.contracts.v1.cache_service as cache_service
+
+for module in (contracts, knowledge, cache_service):
+    assert Path(module.__file__).resolve().is_relative_to(source_root), module.__file__
 for forbidden in (
     "kdn_server", "scheduler", "proxy", "instance", "client", "store", "model",
     "UI", "fastapi", "redis", "numpy", "torch", "sentence_transformers",

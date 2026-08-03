@@ -72,6 +72,7 @@ GUARDED_SOURCE_BOOTSTRAP_MODULES = {
 }
 SYS_PATH_ALLOWLIST = SOURCE_BOOTSTRAP_ENTRYPOINTS | {
     Path("conftest.py"),
+    Path("test/test_contract_service_migration.py"),
     Path("test/test_demo_instance_ui.py"),
     Path("test/test_namespace_layout.py"),
     Path("test/test_repository_governance.py"),
