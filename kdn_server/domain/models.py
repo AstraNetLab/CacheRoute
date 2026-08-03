@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from cacheroute.compat.runtime import normalize_runtime_profile
+from cacheroute.runtime import RuntimeProfile
 
 
 def utc_now() -> datetime:
@@ -37,26 +37,6 @@ def _require_utc(value: datetime, field: str) -> datetime:
 
 class StrEnum(str, Enum):
     pass
-
-
-class RuntimeProfile(StrEnum):
-    V1 = "v1"
-    LEGACY = "legacy"
-    TEST_MOCK = "test/mock"
-    AUTO = "auto"  # accepted only by resolve_startup
-
-    @classmethod
-    def normalize(cls, value: "RuntimeProfile | str") -> "RuntimeProfile":
-        return cls(normalize_runtime_profile(value.value if isinstance(value, cls) else value))
-
-    @classmethod
-    def resolve_startup(cls, value: "RuntimeProfile | str | None" = None, *, v1_available: bool = True) -> "RuntimeProfile":
-        normalized = cls(normalize_runtime_profile(value))
-        if normalized is cls.AUTO:
-            return cls.V1 if v1_available else cls.LEGACY
-        return normalized
-
-    resolve_auto = resolve_startup
 
 
 class LMCacheGatewayProfile(StrEnum):

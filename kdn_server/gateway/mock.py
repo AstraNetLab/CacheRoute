@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from kdn_server.contracts.cache_service import *
-from kdn_server.contracts.common import utc_now
-from kdn_server.contracts.errors import OutcomeCode
+from cacheroute.contracts.v1.common import utc_now
+from cacheroute.contracts.v1.errors import OutcomeCode
 from kdn_server.domain import CacheOperationState, CacheOperationTask, CacheOperationType
 from .base import GatewayAdapterBase
 from .capabilities import SupportState

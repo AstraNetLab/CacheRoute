@@ -3,7 +3,7 @@ from enum import Enum
 
 from pydantic import Field
 
-from kdn_server.contracts.common import ContractModel
+from cacheroute.contracts.v1.common import ContractModel
 
 
 class GatewayTransportKind(str, Enum):

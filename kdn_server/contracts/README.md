@@ -2,7 +2,14 @@
 
 [Back to the KDN architecture](../README.md) · [Shared domain vocabulary](../domain/README.md) · [Gateway architecture](../gateway/README.md) · [Executable workflows](../../test/kdn/README.md)
 
-The contracts package is the storage-neutral public wire layer. Definitions live in [`common.py`](common.py), [`knowledge.py`](knowledge.py), [`cache_service.py`](cache_service.py), and [`errors.py`](errors.py); the stable import surface is [`__init__.py`](__init__.py).
+The contracts package is the storage-neutral public wire layer. Common and
+error definitions are canonically owned by `cacheroute.contracts.v1`;
+[`common.py`](common.py) and [`errors.py`](errors.py) are temporary forwarding
+modules and must not acquire new validators, enums, constants, or contract
+implementation logic. [`knowledge.py`](knowledge.py) and
+[`cache_service.py`](cache_service.py) remain transitional implementations.
+During migration, `kdn_server.contracts` remains a supported compatibility
+import surface through [`__init__.py`](__init__.py).
 
 ## Contract versions and evolution
 
