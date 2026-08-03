@@ -202,6 +202,12 @@ def test_mapping_and_complete_package_exports_preserve_identity():
     assert expected <= set(legacy_package.__all__)
 
 
+def test_legacy_package_public_api_excludes_submodule_helpers():
+    assert {
+        "datetime", "Field", "model_validator", "BaseModel",
+    }.isdisjoint(legacy_package.__all__)
+
+
 def test_legacy_service_modules_are_import_only_shims():
     for relative in (
         "kdn_server/contracts/knowledge.py",
