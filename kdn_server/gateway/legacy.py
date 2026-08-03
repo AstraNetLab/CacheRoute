@@ -1,5 +1,5 @@
 """Explicit read-only Legacy gateway boundary (no Redis or filesystem I/O)."""
-from kdn_server.contracts.cache_service import (
+from cacheroute.contracts.v1.cache_service import (
     CancelOperationResponse, CreateClearIntentRequest, CreateClearIntentResponse,
     CreatePinIntentRequest, CreatePinIntentResponse, CreatePrefetchIntentRequest,
     CreatePrefetchIntentResponse, CreateRebuildIntentRequest, CreateRebuildIntentResponse,

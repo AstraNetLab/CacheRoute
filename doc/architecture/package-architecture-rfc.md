@@ -326,13 +326,11 @@ service migration.
 
 Move versioned contracts, Runtime Profile, lifecycle models, capability models, and topology/resource models.
 
-The first Phase 2 extraction now gives `cacheroute.runtime` canonical ownership
-of `RuntimeProfile` and `cacheroute.contracts.v1` ownership of the shared KDN
-v1 common and error foundation. The former `kdn_server.domain.RuntimeProfile`,
-`kdn_server.contracts.common`, and `kdn_server.contracts.errors` surfaces remain
-temporary identity-preserving forwarding paths. Knowledge and cache-service
-contract implementations remain under `kdn_server.contracts` pending their own
-focused migration.
+The Phase 2 contract extraction gives `cacheroute.runtime` canonical ownership
+of `RuntimeProfile` and `cacheroute.contracts.v1` ownership of all KDN v1 wire
+contracts. The former `kdn_server.domain.RuntimeProfile` and
+`kdn_server.contracts` common, error, knowledge, and cache-service module
+surfaces remain temporary identity-preserving forwarding paths.
 
 The remaining dependency-light state models now live in
 `cacheroute.runtime.state`, `cacheroute.topology.lmcache`,

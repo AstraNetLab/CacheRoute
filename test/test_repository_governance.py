@@ -29,6 +29,15 @@ OBSERVABILITY_REFERENCE_ALLOWLIST = {
     Path("doc/package_migration_phase_a.md"),
     Path("test/test_repository_governance.py"),
 }
+KDN_CONTRACT_COMPATIBILITY_ALLOWLIST = {
+    Path("kdn_server/contracts/__init__.py"),
+    Path("kdn_server/contracts/knowledge.py"),
+    Path("kdn_server/contracts/cache_service.py"),
+    Path("test/test_contract_foundation.py"),
+    Path("test/test_contract_service_migration.py"),
+    Path("test/test_repository_governance.py"),
+    Path("test/test_wheel_install.py"),
+}
 CANONICAL_PACKAGES = {
     "cacheroute", "cacheroute.compat", "cacheroute.observability",
     "cacheroute.runtime", "cacheroute.topology", "cacheroute.cache",
@@ -63,6 +72,7 @@ GUARDED_SOURCE_BOOTSTRAP_MODULES = {
 }
 SYS_PATH_ALLOWLIST = SOURCE_BOOTSTRAP_ENTRYPOINTS | {
     Path("conftest.py"),
+    Path("test/test_contract_service_migration.py"),
     Path("test/test_demo_instance_ui.py"),
     Path("test/test_namespace_layout.py"),
     Path("test/test_repository_governance.py"),
@@ -131,6 +141,32 @@ def test_observability_legacy_references_are_narrowly_allowlisted():
     assert references <= OBSERVABILITY_REFERENCE_ALLOWLIST
 
 
+def test_legacy_kdn_contract_ownership_references_are_narrowly_allowlisted():
+    legacy_modules = {
+        "kdn_server.contracts", "kdn_server.contracts.knowledge",
+        "kdn_server.contracts.cache_service",
+    }
+    references = set()
+    for path in _tracked_files():
+        relative = path.relative_to(ROOT)
+        if path.suffix != ".py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        stale = any(
+            isinstance(node, ast.ImportFrom)
+            and node.module in legacy_modules
+            or isinstance(node, ast.Import)
+            and any(alias.name in legacy_modules for alias in node.names)
+            or isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and any(module in node.value for module in legacy_modules)
+            for node in ast.walk(tree)
+        )
+        if stale:
+            references.add(relative)
+    assert references <= KDN_CONTRACT_COMPATIBILITY_ALLOWLIST
+
+
 def _files_containing(needle):
     references = set()
     for path in _tracked_files():
@@ -155,11 +191,19 @@ def test_legacy_shim_contains_imports_only():
     for relative in (
         "src/cacheroute_compat/__init__.py", "src/cacheroute_compat/runtime.py",
         "kdn_server/contracts/common.py", "kdn_server/contracts/errors.py",
+        "kdn_server/contracts/knowledge.py", "kdn_server/contracts/cache_service.py",
     ):
         module = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
         functional = [
             node for node in module.body
             if not isinstance(node, ast.ImportFrom)
+            and not (
+                isinstance(node, ast.Assign)
+                and all(
+                    isinstance(target, ast.Name) and target.id == "__all__"
+                    for target in node.targets
+                )
+            )
             and not (
                 isinstance(node, ast.Expr)
                 and isinstance(node.value, ast.Constant)
@@ -174,9 +218,30 @@ def test_migrated_contract_implementations_are_canonical_only():
     assert "class RuntimeProfile" not in domain
     tree = ast.parse(domain)
     assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
-    for relative in ("kdn_server/contracts/common.py", "kdn_server/contracts/errors.py"):
+    for relative in (
+        "kdn_server/contracts/common.py", "kdn_server/contracts/errors.py",
+        "kdn_server/contracts/knowledge.py", "kdn_server/contracts/cache_service.py",
+    ):
         tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
         assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
+
+
+def test_canonical_service_contract_dependencies_are_allowed():
+    allowed = {
+        "__future__", "datetime", "enum", "typing", "pydantic",
+        "cacheroute.runtime", "cacheroute.topology", "cacheroute.cache",
+        "cacheroute.contracts.v1.common", "cacheroute.contracts.v1.errors",
+    }
+    for relative in (
+        "src/cacheroute/contracts/v1/knowledge.py",
+        "src/cacheroute/contracts/v1/cache_service.py",
+    ):
+        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+        imports = {
+            node.module for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        assert imports <= allowed
 
 
 def test_runtime_package_init_remains_dependency_free():

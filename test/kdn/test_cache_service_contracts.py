@@ -4,8 +4,8 @@ from typing import get_args
 import pytest
 from pydantic import ValidationError
 
-from kdn_server.contracts import *
-from kdn_server.contracts.cache_service import CacheServiceResponse, GatewayTargetedResponse
+from cacheroute.contracts.v1 import *
+from cacheroute.contracts.v1.cache_service import CacheServiceResponse, GatewayTargetedResponse
 from kdn_server.domain import CacheArtifact, CacheReplicaObservation, LMCacheEndpoint
 from kdn_server.gateway import *
 
@@ -264,9 +264,7 @@ def test_deterministic_stale_round_trip_and_error_version():
 
 
 def test_public_exports_are_explicit():
-    import kdn_server.contracts as contracts
     import kdn_server.gateway as gateway
-    assert "BaseModel" not in contracts.__all__ and "datetime" not in contracts.__all__
     assert "CapabilitySnapshot" in gateway.__all__ and "MockGateway" in gateway.__all__
 
 
@@ -392,4 +390,4 @@ def test_generic_response_cannot_bypass_target_metadata():
     coverage = TokenCoverage(whole_request_hit=True, total_tokens=1)
     for base in (CacheServiceResponse, GatewayTargetedResponse):
         with pytest.raises(ValidationError): base(runtime_profile="test/mock", token_coverage=coverage)
-    assert "CacheServiceResponse" not in __import__("kdn_server.contracts", fromlist=["__all__"]).__all__
+    assert "CacheServiceResponse" in __import__("cacheroute.contracts.v1", fromlist=["__all__"]).__all__

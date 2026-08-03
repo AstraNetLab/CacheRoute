@@ -1,5 +1,5 @@
 """Shared adapter negotiation and safe response construction."""
-from kdn_server.contracts.cache_service import CacheServiceResponse
+from cacheroute.contracts.v1.cache_service import CacheServiceResponse
 from cacheroute.contracts.v1.errors import ContractErrorDetail, OutcomeCode
 from .capabilities import SupportState
 

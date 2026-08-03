@@ -2,14 +2,14 @@
 
 [Back to the KDN architecture](../README.md) · [Shared domain vocabulary](../domain/README.md) · [Gateway architecture](../gateway/README.md) · [Executable workflows](../../test/kdn/README.md)
 
-The contracts package is the storage-neutral public wire layer. Common and
-error definitions are canonically owned by `cacheroute.contracts.v1`;
-[`common.py`](common.py) and [`errors.py`](errors.py) are temporary forwarding
-modules and must not acquire new validators, enums, constants, or contract
-implementation logic. [`knowledge.py`](knowledge.py) and
-[`cache_service.py`](cache_service.py) remain transitional implementations.
-During migration, `kdn_server.contracts` remains a supported compatibility
-import surface through [`__init__.py`](__init__.py).
+The contracts package is the storage-neutral public wire layer. All KDN v1 wire
+contracts are canonically owned by `cacheroute.contracts.v1`. The local
+[`common.py`](common.py), [`errors.py`](errors.py), [`knowledge.py`](knowledge.py),
+and [`cache_service.py`](cache_service.py) modules are temporary forwarding
+modules and must not acquire new validators, enums, constants, mappings, or
+contract implementation logic. During migration, `kdn_server.contracts`
+remains a supported identity-preserving compatibility import surface through
+[`__init__.py`](__init__.py).
 
 ## Contract versions and evolution
 
@@ -32,11 +32,11 @@ Legacy may use generation `0` for unknown; v1 and test/mock require a positive g
 
 ## Knowledge Service families
 
-[`knowledge.py`](knowledge.py) defines storage-neutral contracts to register, update, and resolve knowledge; list compatible artifacts; query artifact compatibility; and report request outcomes. These are contracts only—this package does not register HTTP routes or prescribe a database.
+`cacheroute.contracts.v1.knowledge` defines storage-neutral contracts to register, update, and resolve knowledge; list compatible artifacts; query artifact compatibility; and report request outcomes. These are contracts only—this package does not register HTTP routes or prescribe a database.
 
 ## Cache Service families
 
-[`cache_service.py`](cache_service.py) defines dedicated request and response families for artifact lookup, cache observation, token lookup, prefetch, pin/unpin, clear, rebuild, operation status and cancellation, endpoint discovery, tier/adapter summaries, and maintenance status.
+`cacheroute.contracts.v1.cache_service` defines dedicated request and response families for artifact lookup, cache observation, token lookup, prefetch, pin/unpin, clear, rebuild, operation status and cancellation, endpoint discovery, tier/adapter summaries, and maintenance status.
 
 Dedicated responses validate their expected success payload, target provenance, observation freshness, operation provenance, intent-specific operation type, and terminal cancellation no-op semantics. The outcome vocabulary is `success`, `unsupported`, `incompatible`, `stale`, `partial`, `failed`, `cancelled`, `text_fallback`, and `idempotency_conflict`. Every non-success response carries a matching safe `ContractErrorDetail`.
 
@@ -51,7 +51,7 @@ Contracts prohibit credentials, API keys, authorization headers, raw Redis keys,
 ## Minimal examples
 
 ```python
-from kdn_server.contracts import LookupArtifactRequest, LookupTokensRequest, TokenInput
+from cacheroute.contracts.v1 import LookupArtifactRequest, LookupTokensRequest, TokenInput
 
 TARGET = {
     "runtime_profile": "test/mock",
