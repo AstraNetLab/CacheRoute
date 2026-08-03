@@ -8,7 +8,14 @@ from typing import ClassVar
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from cacheroute.runtime import RuntimeProfile
-from kdn_server.domain import CacheArtifact, CacheOperationState, CacheOperationTask, CacheReplicaObservation, LMCacheEndpoint, CacheOperationType
+from cacheroute.cache import (
+    CacheArtifact,
+    CacheOperationState,
+    CacheOperationTask,
+    CacheOperationType,
+    CacheReplicaObservation,
+)
+from cacheroute.topology import LMCacheEndpoint
 from cacheroute.contracts.v1.common import ContractModel, GatewayTargetedRequest, SupportState, TokenInput, VersionedMessage, utc_now
 from cacheroute.contracts.v1.errors import ContractErrorDetail, OutcomeCode
 

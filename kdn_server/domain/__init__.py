@@ -1,4 +1,4 @@
-"""Storage-neutral KDN v1 domain models."""
+"""Temporary compatibility surface for canonical CacheRoute domain state."""
 
 from .models import (
     CacheArtifact,
@@ -14,7 +14,14 @@ from .models import (
     QueueState,
     QueueWork,
     RuntimeProfile,
+    Snapshot,
     StateTransitionError,
+    StrEnum,
 )
 
-__all__ = [name for name in globals() if not name.startswith("_")]
+__all__ = [
+    "CacheArtifact", "CacheOperationState", "CacheOperationTask", "CacheOperationType",
+    "CacheReplicaObservation", "LMCacheEndpoint", "LMCacheGatewayProfile",
+    "ObservationConfidence", "ObservationSource", "ObservationState", "QueueState",
+    "QueueWork", "RuntimeProfile", "Snapshot", "StateTransitionError", "StrEnum",
+]

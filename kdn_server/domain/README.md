@@ -1,6 +1,6 @@
 # KDN shared domain vocabulary
 
-[Back to the KDN architecture](../README.md) · [Source: `models.py`](models.py) · [Wire contracts](../contracts/README.md)
+[Back to the KDN architecture](../README.md) · [Compatibility module: `models.py`](models.py) · [Wire contracts](../contracts/README.md)
 
 The domain package defines immutable logical identities and lifecycle state reused by the Cache Service contracts and Gateway responses. These objects describe control-plane truth; they never contain physical KV payloads.
 
@@ -8,10 +8,17 @@ The domain package defines immutable logical identities and lifecycle state reus
 
 `v1`, `legacy`, and `test/mock` are resolved execution profiles. `auto` exists only for startup selection and must be resolved before any model is serialized or persisted. This prevents an ambiguous runtime choice from crossing a process boundary.
 
-`RuntimeProfile` is canonically implemented by `cacheroute.runtime`;
-`kdn_server.domain` re-exports that same object for compatibility. The remaining
-cache artifact, endpoint, observation, operation, and queue models continue to
-live in [`models.py`](models.py).
+`RuntimeProfile` and the shared state foundation are canonically implemented in
+[`cacheroute.runtime`](../../src/cacheroute/runtime/). LMCache endpoint and
+profile state lives in
+[`cacheroute.topology.lmcache`](../../src/cacheroute/topology/lmcache.py),
+artifact, observation, and operation state lives in
+[`cacheroute.cache.models`](../../src/cacheroute/cache/models.py), and queue
+state lives in
+[`cacheroute.routing.queue`](../../src/cacheroute/routing/queue.py).
+`kdn_server.domain` and `kdn_server.domain.models` are temporary,
+identity-preserving compatibility surfaces that re-export those canonical
+objects.
 
 ## CacheArtifact
 

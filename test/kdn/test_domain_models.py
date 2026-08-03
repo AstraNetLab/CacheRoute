@@ -3,7 +3,20 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from kdn_server.domain import *
+from cacheroute.cache import (
+    CacheArtifact,
+    CacheOperationState,
+    CacheOperationTask,
+    CacheOperationType,
+    CacheReplicaObservation,
+    ObservationConfidence,
+    ObservationSource,
+    ObservationState,
+)
+from cacheroute.routing import QueueState, QueueWork
+from cacheroute.runtime import RuntimeProfile
+from cacheroute.runtime.state import StateTransitionError
+from cacheroute.topology import LMCacheEndpoint, LMCacheGatewayProfile
 from kdn_server.text_db import KBItem
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -61,6 +74,15 @@ def test_artifact_canonical_identity_and_spoof_rejection():
         assert artifact(**change).artifact_id != base.artifact_id
     with pytest.raises(ValidationError, match="canonical"): artifact(artifact_id="artifact_" + "0" * 32)
     with pytest.raises(ValidationError): artifact(knowledge_id=" ")
+
+
+def test_endpoint_canonical_identity_and_generation():
+    assert endpoint().endpoint_id == endpoint().endpoint_id
+    assert endpoint(name="other").endpoint_id != endpoint().endpoint_id
+    current = endpoint()
+    advanced = current.next_generation()
+    assert advanced.endpoint_id == current.endpoint_id
+    assert advanced.generation == current.generation + 1
 
 
 def test_observation_state_id_expiry_and_endpoint_matching():

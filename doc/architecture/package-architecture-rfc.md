@@ -334,6 +334,13 @@ temporary identity-preserving forwarding paths. Knowledge and cache-service
 contract implementations remain under `kdn_server.contracts` pending their own
 focused migration.
 
+The remaining dependency-light state models now live in
+`cacheroute.runtime.state`, `cacheroute.topology.lmcache`,
+`cacheroute.cache.models`, and `cacheroute.routing.queue` according to their
+domain ownership. `kdn_server.domain` remains an identity-preserving temporary
+forwarding surface; KDN service and Gateway I/O implementations remain in their
+transitional packages.
+
 ### Phase 3 — external integrations
 
 Introduce vLLM, LMCache, Redis, and embedding integration boundaries.
