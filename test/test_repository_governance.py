@@ -37,7 +37,6 @@ KDN_CONTRACT_COMPATIBILITY_ALLOWLIST = {
     Path("test/test_contract_service_migration.py"),
     Path("test/test_repository_governance.py"),
     Path("test/test_wheel_install.py"),
-    Path("test/kdn/test_cache_service_contracts.py"),
 }
 CANONICAL_PACKAGES = {
     "cacheroute", "cacheroute.compat", "cacheroute.observability",
@@ -197,6 +196,13 @@ def test_legacy_shim_contains_imports_only():
         functional = [
             node for node in module.body
             if not isinstance(node, ast.ImportFrom)
+            and not (
+                isinstance(node, ast.Assign)
+                and all(
+                    isinstance(target, ast.Name) and target.id == "__all__"
+                    for target in node.targets
+                )
+            )
             and not (
                 isinstance(node, ast.Expr)
                 and isinstance(node.value, ast.Constant)

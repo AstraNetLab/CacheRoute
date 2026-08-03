@@ -15,6 +15,18 @@ import cacheroute.contracts.v1.knowledge as canonical_knowledge
 import kdn_server.contracts as legacy_package
 import kdn_server.contracts.cache_service as legacy_cache
 import kdn_server.contracts.knowledge as legacy_knowledge
+from kdn_server.contracts.cache_service import (
+    CacheArtifact as LegacyCacheArtifact,
+    CacheOperationType as LegacyCacheOperationType,
+    OutcomeCode as LegacyCacheOutcomeCode,
+    TokenInput as LegacyTokenInput,
+)
+from kdn_server.contracts.knowledge import (
+    CacheArtifact as LegacyKnowledgeCacheArtifact,
+    ContractError as LegacyKnowledgeContractError,
+    OutcomeCode as LegacyKnowledgeOutcomeCode,
+    VersionedMessage as LegacyKnowledgeVersionedMessage,
+)
 from cacheroute.contracts.v1.errors import ContractErrorDetail, OutcomeCode
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,7 +41,6 @@ def test_canonical_and_legacy_module_identity_and_ownership():
         (canonical_knowledge, legacy_knowledge),
         (canonical_cache, legacy_cache),
     ):
-        assert canonical.__all__ == legacy.__all__
         for name, value in _public(canonical).items():
             assert getattr(legacy, name) is value
             assert getattr(canonical_package, name) is value
@@ -37,6 +48,42 @@ def test_canonical_and_legacy_module_identity_and_ownership():
             if isinstance(value, type):
                 assert value.__module__ == canonical.__name__
     assert canonical_cache.TierLevel.__module__ == canonical_cache.__name__
+
+
+def test_legacy_auxiliary_direct_imports_preserve_identity():
+    assert LegacyCacheArtifact is CacheArtifact
+    assert LegacyCacheOperationType is canonical_cache.CacheOperationType
+    assert LegacyTokenInput is canonical_package.TokenInput
+    assert LegacyCacheOutcomeCode is OutcomeCode
+    assert LegacyKnowledgeCacheArtifact is CacheArtifact
+    assert LegacyKnowledgeVersionedMessage is canonical_package.VersionedMessage
+    assert LegacyKnowledgeContractError is canonical_package.ContractError
+    assert LegacyKnowledgeOutcomeCode is OutcomeCode
+
+
+def test_legacy_star_imports_preserve_the_historical_surface():
+    knowledge_namespace = {}
+    cache_namespace = {}
+    exec("from kdn_server.contracts.knowledge import *", knowledge_namespace)
+    exec("from kdn_server.contracts.cache_service import *", cache_namespace)
+    historical_knowledge = {
+        "Literal", "Field", "model_validator", "CacheArtifact", "VersionedMessage",
+        "ContractError", "OutcomeCode",
+    }
+    historical_cache = {
+        "datetime", "timedelta", "Enum", "ClassVar", "AwareDatetime", "Field",
+        "field_validator", "model_validator", "RuntimeProfile", "CacheArtifact",
+        "CacheOperationState", "CacheOperationTask", "CacheOperationType",
+        "CacheReplicaObservation", "LMCacheEndpoint", "ContractModel",
+        "GatewayTargetedRequest", "SupportState", "TokenInput", "VersionedMessage",
+        "utc_now", "ContractErrorDetail", "OutcomeCode",
+    }
+    assert historical_knowledge <= knowledge_namespace.keys()
+    assert historical_cache <= cache_namespace.keys()
+    assert knowledge_namespace["CacheArtifact"] is CacheArtifact
+    assert knowledge_namespace["OutcomeCode"] is OutcomeCode
+    assert cache_namespace["CacheOperationType"] is canonical_cache.CacheOperationType
+    assert cache_namespace["TokenInput"] is canonical_package.TokenInput
 
 
 def test_response_aliases_remain_identical_objects():
@@ -156,13 +203,17 @@ def test_mapping_and_complete_package_exports_preserve_identity():
 
 
 def test_legacy_service_modules_are_import_only_shims():
-    allowed = (ast.Expr, ast.ImportFrom)
     for relative in (
         "kdn_server/contracts/knowledge.py",
         "kdn_server/contracts/cache_service.py",
     ):
         tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
-        assert all(isinstance(node, allowed) for node in tree.body)
+        assert all(
+            isinstance(node, (ast.Expr, ast.ImportFrom))
+            or isinstance(node, ast.Assign)
+            and all(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+            for node in tree.body
+        )
         assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
 
 

@@ -264,9 +264,7 @@ def test_deterministic_stale_round_trip_and_error_version():
 
 
 def test_public_exports_are_explicit():
-    import kdn_server.contracts as contracts
     import kdn_server.gateway as gateway
-    assert "BaseModel" not in contracts.__all__ and "datetime" not in contracts.__all__
     assert "CapabilitySnapshot" in gateway.__all__ and "MockGateway" in gateway.__all__
 
 
