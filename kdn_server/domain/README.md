@@ -8,6 +8,11 @@ The domain package defines immutable logical identities and lifecycle state reus
 
 `v1`, `legacy`, and `test/mock` are resolved execution profiles. `auto` exists only for startup selection and must be resolved before any model is serialized or persisted. This prevents an ambiguous runtime choice from crossing a process boundary.
 
+`RuntimeProfile` is canonically implemented by `cacheroute.runtime`;
+`kdn_server.domain` re-exports that same object for compatibility. The remaining
+cache artifact, endpoint, observation, operation, and queue models continue to
+live in [`models.py`](models.py).
+
 ## CacheArtifact
 
 A `CacheArtifact` identifies a logical cache materialization. Its canonical `artifact_id` is deterministically derived from knowledge version, model, tokenizer, ordered adapters, cache-data profile, compatibility profile, runtime profile, and schema version. It is an identity for compatibility and lookup—not a physical chunk, block, key, or storage location.

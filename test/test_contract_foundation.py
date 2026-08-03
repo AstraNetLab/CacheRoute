@@ -7,8 +7,9 @@ import pytest
 from pydantic import ValidationError
 
 from cacheroute.contracts.v1.common import (
-    ContractModel, GatewayTargetedRequest, SupportState, TokenInput,
-    TokenReference, VersionedMessage,
+    ContractModel, ENDPOINT_ID_PATTERN, GATEWAY_CONTRACT_VERSION,
+    GatewayTargetedRequest, KDN_CONTRACT_VERSION, SupportState, TokenInput,
+    TokenReference, VersionedMessage, utc_now,
 )
 from cacheroute.contracts.v1.errors import ContractError, ContractErrorDetail, OutcomeCode
 from cacheroute.runtime import RuntimeProfile
@@ -19,6 +20,7 @@ from kdn_server.domain import RuntimeProfile as LegacyRuntimeProfile
 
 def test_runtime_profile_identity_values_and_resolution():
     assert LegacyRuntimeProfile is RuntimeProfile
+    assert RuntimeProfile.__module__ == "cacheroute.runtime.profiles"
     assert [profile.value for profile in RuntimeProfile] == ["v1", "legacy", "test/mock", "auto"]
     assert RuntimeProfile.normalize("modern") is RuntimeProfile.V1
     assert RuntimeProfile.normalize("old") is RuntimeProfile.LEGACY
@@ -32,12 +34,17 @@ def test_runtime_profile_identity_values_and_resolution():
 def test_legacy_common_and_error_symbols_preserve_identity():
     for symbol in (
         ContractModel, VersionedMessage, GatewayTargetedRequest, SupportState,
-        TokenReference, TokenInput,
+        TokenReference, TokenInput, utc_now,
     ):
         assert getattr(legacy_common, symbol.__name__) is symbol
     assert legacy_errors.OutcomeCode is OutcomeCode
     assert legacy_errors.ContractErrorDetail is ContractErrorDetail
     assert legacy_errors.ContractError is ContractError is ContractErrorDetail
+    assert legacy_common.KDN_CONTRACT_VERSION == KDN_CONTRACT_VERSION
+    assert legacy_common.GATEWAY_CONTRACT_VERSION == GATEWAY_CONTRACT_VERSION
+    assert legacy_common.ENDPOINT_ID_PATTERN == ENDPOINT_ID_PATTERN
+    assert VersionedMessage.__module__ == "cacheroute.contracts.v1.common"
+    assert OutcomeCode.__module__ == "cacheroute.contracts.v1.errors"
 
 
 def test_common_contract_behavior_is_preserved():

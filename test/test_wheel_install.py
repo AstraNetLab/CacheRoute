@@ -33,6 +33,14 @@ REQUIRED_PACKAGE_DATA = {
     "proxy/metrics/ttft_benchmark_table.json",
     "proxy/metrics/data/redis_pull_table_from_image.json",
 }
+REQUIRED_CANONICAL_FOUNDATION = {
+    "cacheroute/runtime/__init__.py",
+    "cacheroute/runtime/profiles.py",
+    "cacheroute/contracts/__init__.py",
+    "cacheroute/contracts/v1/__init__.py",
+    "cacheroute/contracts/v1/common.py",
+    "cacheroute/contracts/v1/errors.py",
+}
 
 
 @pytest.fixture(scope="module")
@@ -87,6 +95,7 @@ def test_wheel_preserves_packages_and_runtime_data(built_wheel):
             for member in members
         )
     assert REQUIRED_PACKAGE_DATA <= members
+    assert REQUIRED_CANONICAL_FOUNDATION <= members
     assert "instance/TTFT_predictor/prompt_length_validation.log" not in members
 
 
@@ -100,18 +109,32 @@ import cacheroute
 import cacheroute.compat
 import cacheroute.compat.runtime as canonical_runtime
 import cacheroute.observability
+import cacheroute.runtime
+import cacheroute.runtime.profiles as runtime_profiles
 import cacheroute_compat.runtime as legacy_runtime
 
 modules = (cacheroute, cacheroute.compat, canonical_runtime,
-           cacheroute.observability, legacy_runtime)
+           cacheroute.observability, cacheroute.runtime, runtime_profiles,
+           legacy_runtime)
 for module in modules:
     path = Path(module.__file__).resolve()
     print(f"{module.__name__}={path}")
     assert path.is_relative_to(Path(sys.prefix).resolve())
 assert canonical_runtime.normalize_runtime_profile("modern") == "v1"
+assert cacheroute.runtime.RuntimeProfile is runtime_profiles.RuntimeProfile
+assert runtime_profiles.RuntimeProfile.normalize("modern") is runtime_profiles.RuntimeProfile.V1
+assert runtime_profiles.RuntimeProfile.resolve_startup(
+    "auto", v1_available=False
+) is runtime_profiles.RuntimeProfile.LEGACY
 assert canonical_runtime.__all__ == legacy_runtime.__all__
 for name in canonical_runtime.__all__:
     assert getattr(legacy_runtime, name) is getattr(canonical_runtime, name)
+for forbidden in (
+    "kdn_server", "scheduler", "proxy", "instance", "client", "store",
+    "model", "UI", "fastapi", "redis", "numpy", "torch",
+    "sentence_transformers", "vllm", "lmcache",
+):
+    assert forbidden not in sys.modules, forbidden
 print("dependency-light clean-wheel imports: passed")
 """)
     assert "dependency-light clean-wheel imports: passed" in result.stdout
