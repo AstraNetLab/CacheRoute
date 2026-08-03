@@ -42,7 +42,8 @@ dev = [
 package-dir = {cacheroute = "src/cacheroute", cacheroute_compat = "src/cacheroute_compat"}
 packages = [
   "cacheroute", "cacheroute.compat", "cacheroute.observability",
-  "cacheroute.runtime", "cacheroute.contracts", "cacheroute.contracts.v1",
+  "cacheroute.runtime", "cacheroute.topology", "cacheroute.cache", "cacheroute.routing",
+  "cacheroute.contracts", "cacheroute.contracts.v1",
   "cacheroute_compat",
   "UI", "UI.client_ui", "UI.client_ui.static", "UI.client_ui.templates",
   "UI.kdn_ui", "UI.proxy_ui", "UI.proxy_ui.static",

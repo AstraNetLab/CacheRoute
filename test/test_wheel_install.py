@@ -40,6 +40,13 @@ REQUIRED_CANONICAL_FOUNDATION = {
     "cacheroute/contracts/v1/__init__.py",
     "cacheroute/contracts/v1/common.py",
     "cacheroute/contracts/v1/errors.py",
+    "cacheroute/runtime/state.py",
+    "cacheroute/topology/__init__.py",
+    "cacheroute/topology/lmcache.py",
+    "cacheroute/cache/__init__.py",
+    "cacheroute/cache/models.py",
+    "cacheroute/routing/__init__.py",
+    "cacheroute/routing/queue.py",
 }
 
 
@@ -111,6 +118,13 @@ import cacheroute.compat.runtime as canonical_runtime
 import cacheroute.observability
 import cacheroute.runtime
 import cacheroute.runtime.profiles as runtime_profiles
+import cacheroute.runtime.state
+import cacheroute.topology
+import cacheroute.topology.lmcache
+import cacheroute.cache
+import cacheroute.cache.models
+import cacheroute.routing
+import cacheroute.routing.queue
 import cacheroute_compat.runtime as legacy_runtime
 
 modules = (cacheroute, cacheroute.compat, canonical_runtime,

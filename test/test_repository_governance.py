@@ -31,7 +31,8 @@ OBSERVABILITY_REFERENCE_ALLOWLIST = {
 }
 CANONICAL_PACKAGES = {
     "cacheroute", "cacheroute.compat", "cacheroute.observability",
-    "cacheroute.runtime", "cacheroute.contracts", "cacheroute.contracts.v1",
+    "cacheroute.runtime", "cacheroute.topology", "cacheroute.cache",
+    "cacheroute.routing", "cacheroute.contracts", "cacheroute.contracts.v1",
     "cacheroute_compat",
 }
 REPOSITORY_ONLY_PACKAGE_PREFIXES = {
@@ -171,6 +172,8 @@ def test_legacy_shim_contains_imports_only():
 def test_migrated_contract_implementations_are_canonical_only():
     domain = (ROOT / "kdn_server/domain/models.py").read_text(encoding="utf-8")
     assert "class RuntimeProfile" not in domain
+    tree = ast.parse(domain)
+    assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
     for relative in ("kdn_server/contracts/common.py", "kdn_server/contracts/errors.py"):
         tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
         assert not any(isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) for node in tree.body)
