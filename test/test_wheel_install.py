@@ -51,6 +51,13 @@ REQUIRED_CANONICAL_FOUNDATION = {
     "cacheroute/cache/models.py",
     "cacheroute/routing/__init__.py",
     "cacheroute/routing/queue.py",
+    "cacheroute/observability/__init__.py",
+    "cacheroute/observability/clock.py",
+    "cacheroute/observability/collector.py",
+    "cacheroute/observability/legacy_proxy.py",
+    "cacheroute/observability/v1/__init__.py",
+    "cacheroute/observability/v1/enums.py",
+    "cacheroute/observability/v1/models.py",
 }
 
 
@@ -119,13 +126,12 @@ import sys
 import cacheroute
 import cacheroute.compat
 import cacheroute.compat.runtime as canonical_runtime
-import cacheroute.observability
 import cacheroute.runtime
 import cacheroute.runtime.profiles as runtime_profiles
 import cacheroute_compat.runtime as legacy_runtime
 
 modules = (cacheroute, cacheroute.compat, canonical_runtime,
-           cacheroute.observability, cacheroute.runtime, runtime_profiles,
+           cacheroute.runtime, runtime_profiles,
            legacy_runtime)
 for module in modules:
     path = Path(module.__file__).resolve()
@@ -212,6 +218,8 @@ import cacheroute.cache
 import cacheroute.cache.models as cache_models
 import cacheroute.routing
 import cacheroute.routing.queue as routing_queue
+import cacheroute.observability
+import cacheroute.observability.v1
 import cacheroute.contracts
 import cacheroute.contracts.v1
 import cacheroute.contracts.v1.common as canonical_common
@@ -227,6 +235,7 @@ modules = (core, core_runtime, proxy, instance, kdn_server, kdn_server.domain,
            legacy_domain_models, runtime_state, cacheroute.topology,
            topology_lmcache, cacheroute.cache, cache_models,
            cacheroute.routing, routing_queue,
+           cacheroute.observability, cacheroute.observability.v1,
            cacheroute.runtime, cacheroute.contracts, cacheroute.contracts.v1,
            canonical_common, canonical_errors, canonical_knowledge,
            canonical_cache_service, legacy_common, legacy_errors,
