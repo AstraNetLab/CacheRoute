@@ -13,10 +13,13 @@ history. Link to detailed authority instead of copying it. An Issue remains the
 authority for accepted but unimplemented work until maintained documentation is
 updated; an unmerged PR is never Current.
 
-A PR must update the affected handbook chapter in the same PR when it changes a
-public API; fields/defaults/validation/wire values; configuration/environment/
-CLI/endpoints; ownership/dependencies; compatibility/migration status; runtime
-flows; or installation/validation commands. Internal-only changes may omit an
+A PR must update the affected handbook chapter in the same PR when it changes
+public import paths, classes, functions, protocols, enums, or constants;
+Pydantic/dataclass fields, types, defaults, validators, serialization behavior,
+ID formats, or wire values; request, response, or SSE fields; configuration,
+environment variables, CLI flags, or endpoints; ownership/dependencies;
+compatibility/migration status; runtime flows; or installation/validation
+commands. Internal-only changes may omit an
 update only with an explicit PR explanation. Avoid unrelated rewrites and keep
 root README discovery changes minimal.
 

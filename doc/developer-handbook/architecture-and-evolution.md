@@ -59,3 +59,20 @@ their stated milestone and tests permit removal. Relevant tracking context:
 [#157](https://github.com/AstraNetLab/CacheRoute/issues/157),
 [#159](https://github.com/AstraNetLab/CacheRoute/issues/159), and
 [#178](https://github.com/AstraNetLab/CacheRoute/issues/178).
+
+## Phase summary on this baseline
+
+| Phase view | Status | Baseline result / next boundary |
+|---|---|---|
+| Architecture guidance and boundaries | Current / completed foundation | Accepted RFC, AGENTS placement rules, governance and dependency checks. |
+| Explicit packaging cleanup | Current / completed step | Repository-only docs/tests/env/scripts/log excluded; canonical and Transitional root runtime packages remain explicitly listed. Unified entrypoints are not yet implemented. |
+| Contracts and dependency-light domain extraction | Current / completed foundation | Runtime Profile/state, topology endpoint, cache/queue models, canonical contracts v1 and identity-preserving KDN shims are present. This is model ownership, not full service wiring. |
+| Observability Phase 4A / PR #179 | In review | Proposed v1 contracts, clocks, process-local collector and Legacy projection; no production instrumentation or cross-process propagation. |
+| External integrations | Target / Accepted | Separate vLLM, LMCache, Redis and embeddings adapters follow domain ports; packages are absent today. |
+| Service migrations | Target / Accepted future sequence | Migrate KDN, Scheduler, Proxy and Instance in separate focused PRs after prerequisite domains/integrations and full reference audits. |
+| UI/orchestration/data/native review | Target / Accepted future | Co-locate owned assets, replace demo lifecycle where validated, audit package data and native Resource Agent independently. `crates/` placement remains Proposed until focused approval. |
+| Transitional cleanup | Target / Accepted final | Remove root runtime packages, direct-source bootstraps, explicit transition list and expired shims only after installed-wheel and compatibility proof. |
+
+The sequence is deliberately incremental: complete the domain/integration
+prerequisites, migrate one service at a time, then remove compatibility paths.
+An Issue or open PR changes status to In review/Proposed, not Current.

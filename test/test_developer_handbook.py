@@ -7,52 +7,65 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 HANDBOOK = ROOT / "doc" / "developer-handbook"
 CHAPTERS = {
-    "README.md",
-    "architecture-and-evolution.md",
-    "package-and-module-map.md",
-    "public-api-and-data-models.md",
-    "runtime-flows.md",
-    "configuration-and-interfaces.md",
-    "compatibility-and-migrations.md",
-    "development-and-validation.md",
-    "documentation-governance.md",
-    "glossary.md",
+    "README.md", "architecture-and-evolution.md", "package-and-module-map.md",
+    "public-api-and-data-models.md", "runtime-flows.md",
+    "configuration-and-interfaces.md", "compatibility-and-migrations.md",
+    "development-and-validation.md", "documentation-governance.md", "glossary.md",
 }
-STATUSES = {
-    "Historical", "Current", "Transitional", "Target / Accepted",
-    "In review", "Proposed", "Deprecated",
-}
+STATUSES = {"Historical", "Current", "Transitional", "Target / Accepted", "In review", "Proposed", "Deprecated"}
 LINK_RE = re.compile(r"(?<!!)\[[^]]*\]\(([^)]+)\)")
+API_HEADING_RE = re.compile(r"^## API: `([^`]+)`$", re.MULTILINE)
 ABSENT_TARGETS = {"knowledge", "integrations", "services", "plugins", "entrypoints"}
+REQUIRED_CONFIG_SECTIONS = {
+    "Runtime profiles and injection modes", "Environment variables",
+    "Service hosts and ports", "CLI flags", "HTTP and debug endpoints",
+    "Request fields", "SSE metadata", "Feature switches and packaging/runtime options",
+}
+REQUIRED_API_ENTRIES = {
+    "cacheroute.runtime", "cacheroute.runtime.state", "cacheroute.topology",
+    "cacheroute.cache", "cacheroute.routing", "cacheroute.contracts",
+    "cacheroute.contracts.v1", "cacheroute.contracts.v1.common",
+    "cacheroute.contracts.v1.errors", "cacheroute.contracts.v1.knowledge",
+    "cacheroute.contracts.v1.cache_service", "cacheroute.compat",
+    "cacheroute.compat.runtime", "cacheroute_compat", "cacheroute_compat.runtime",
+    "KDN contract forwarding modules", "cacheroute.observability",
+    "cacheroute.observability.v1",
+}
 
 
 def _markdown_files():
-    return [ROOT / "README.md", ROOT / "AGENTS.md", *HANDBOOK.glob("*.md")]
+    return [ROOT / "README.md", ROOT / "AGENTS.md", *sorted(HANDBOOK.glob("*.md"))]
 
 
 def _explicit_nonempty_all(path: Path) -> bool:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in tree.body:
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets):
-                value = node.value
-                if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
-                    return bool(value.elts)
-                # Computed explicit exports (for example compat and v1 aggregation) are non-empty.
-                return value is not None
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets):
+            continue
+        if isinstance(node.value, (ast.List, ast.Tuple, ast.Set)):
+            return bool(node.value.elts)
+        return node.value is not None  # computed explicit export list
     return False
+
+
+def _api_sections(text: str) -> dict[str, str]:
+    matches = list(API_HEADING_RE.finditer(text))
+    return {
+        match.group(1): text[match.end(): matches[index + 1].start() if index + 1 < len(matches) else len(text)]
+        for index, match in enumerate(matches)
+    }
 
 
 def test_required_handbook_chapters_exist_and_are_linked():
     assert {path.name for path in HANDBOOK.glob("*.md")} == CHAPTERS
     landing = (HANDBOOK / "README.md").read_text(encoding="utf-8")
-    for chapter in CHAPTERS - {"README.md"}:
-        assert f"]({chapter})" in landing
+    assert all(f"]({chapter})" in landing for chapter in CHAPTERS - {"README.md"})
     assert not (HANDBOOK / "__init__.py").exists()
 
 
@@ -74,42 +87,63 @@ def test_local_markdown_links_resolve(markdown):
         assert (markdown.parent / target).resolve().exists(), f"{markdown}: {raw}"
 
 
-def test_explicit_canonical_packages_are_in_package_map():
-    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    packages = config["tool"]["setuptools"]["packages"]
+def test_each_explicit_canonical_package_has_a_package_map_row():
+    packages = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"]["packages"]
     canonical = {name for name in packages if name == "cacheroute" or name.startswith("cacheroute.")}
-    package_map = (HANDBOOK / "package-and-module-map.md").read_text(encoding="utf-8")
+    rows = [line for line in (HANDBOOK / "package-and-module-map.md").read_text(encoding="utf-8").splitlines() if line.startswith("|")]
     for package in canonical:
-        assert f"`{package}" in package_map or f"`{package}`" in package_map
+        assert any(f"`{package}`" in row for row in rows), package
 
 
-def test_public_modules_with_explicit_all_are_catalogued():
-    catalog = (HANDBOOK / "public-api-and-data-models.md").read_text(encoding="utf-8")
-    source_root = ROOT / "src" / "cacheroute"
-    for path in source_root.rglob("*.py"):
+def test_each_public_module_with_explicit_all_has_an_api_entry():
+    sections = _api_sections((HANDBOOK / "public-api-and-data-models.md").read_text(encoding="utf-8"))
+    for path in (ROOT / "src" / "cacheroute").rglob("*.py"):
         if not _explicit_nonempty_all(path):
             continue
         relative = path.relative_to(ROOT / "src").with_suffix("")
-        parts = relative.parts[:-1] if relative.name == "__init__" else relative.parts
-        module = ".".join(parts)
-        assert f"`{module}`" in catalog, module
+        module = ".".join(relative.parts[:-1] if relative.name == "__init__" else relative.parts)
+        assert module in sections, module
 
 
-def test_status_vocabulary_and_absent_targets_are_accurate():
+def test_required_api_entries_have_structured_status_evidence_and_reference():
+    sections = _api_sections((HANDBOOK / "public-api-and-data-models.md").read_text(encoding="utf-8"))
+    assert REQUIRED_API_ENTRIES <= sections.keys()
+    for module in REQUIRED_API_ENTRIES:
+        section = sections[module]
+        assert "**Status:**" in section, module
+        assert "**Exports" in section, module
+        assert "**Evidence:**" in section, module
+        assert "**Example" in section, module
+
+
+def test_status_vocabulary_is_defined_and_absent_targets_are_never_current():
     landing = (HANDBOOK / "README.md").read_text(encoding="utf-8")
     glossary = (HANDBOOK / "glossary.md").read_text(encoding="utf-8")
-    for status in STATUSES:
-        assert status in landing
-        assert status in glossary
-    package_map = (HANDBOOK / "package-and-module-map.md").read_text(encoding="utf-8")
+    assert all(status in landing and status in glossary for status in STATUSES)
     for package in ABSENT_TARGETS:
         assert not (ROOT / "src" / "cacheroute" / package).exists()
-        rows = [line for line in package_map.splitlines() if f"`cacheroute.{package}" in line]
-        assert rows and all("Target / Accepted" in row for row in rows)
+        marker = f"`cacheroute.{package}"
+        for markdown in HANDBOOK.glob("*.md"):
+            for row in markdown.read_text(encoding="utf-8").splitlines():
+                if row.startswith("|") and marker in row:
+                    cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+                    # Package-map status is its fourth column; other target rows must use an explicit non-Current label.
+                    status_cells = cells[3:4] if markdown.name == "package-and-module-map.md" else cells
+                    assert all(cell != "Current" and cell != "**Current**" for cell in status_cells), (markdown, row)
+
+
+def test_configuration_catalog_has_stable_sections_and_tables():
+    text = (HANDBOOK / "configuration-and-interfaces.md").read_text(encoding="utf-8")
+    headings = set(re.findall(r"^## (.+)$", text, re.MULTILINE))
+    assert REQUIRED_CONFIG_SECTIONS <= headings
+    for heading in REQUIRED_CONFIG_SECTIONS:
+        section = text.split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
+        assert "|---" in section, heading
+    for required in ("SCHEDULER_MODEL_PATH", "PROXY_CP_URL", "INSTANCE_RESOURCE_MONITOR_ENABLE", "KDN_NETWORK_ENABLE", "cacheroute_meta", "max_tokens"):
+        assert f"`{required}`" in text
 
 
 def test_documentation_is_excluded_from_explicit_wheel_packages():
-    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    setuptools = config["tool"]["setuptools"]
+    setuptools = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"]
     assert "find" not in setuptools
     assert all(not (name == "doc" or name.startswith("doc.")) for name in setuptools["packages"])

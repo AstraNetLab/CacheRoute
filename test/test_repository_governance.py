@@ -17,11 +17,15 @@ ALLOWED_TOP_LEVEL_DIRECTORIES = {
 }
 LEGACY_REFERENCE_ALLOWLIST = {
     Path("core/README.md"),
+    Path("doc/developer-handbook/architecture-and-evolution.md"),
+    Path("doc/developer-handbook/compatibility-and-migrations.md"),
+    Path("doc/developer-handbook/public-api-and-data-models.md"),
     Path("doc/package_migration_phase_a.md"),
     Path("pyproject.toml"),
     Path("src/cacheroute_compat/__init__.py"),
     Path("src/cacheroute_compat/runtime.py"),
     Path("test/test_repository_governance.py"),
+    Path("test/test_developer_handbook.py"),
     Path("test/test_runtime_compat.py"),
     Path("test/test_wheel_install.py"),
 }
