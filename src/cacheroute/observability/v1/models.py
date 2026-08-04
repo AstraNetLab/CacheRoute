@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import math
 import re
-from typing import Any
 
 from pydantic import AwareDatetime, Field, StrictFloat, StrictInt, StrictStr, model_validator
 
@@ -16,15 +15,55 @@ from cacheroute.topology import LMCacheEndpoint, LMCacheGatewayProfile
 from .enums import OperationWaiterState, TraceComponent, TraceStageName, TraceStageState, TraceValueKind
 
 OBSERVABILITY_SCHEMA_VERSION = "observability.v1"
+_CACHE_OPERATION_ID_PATTERN = r"^cacheop_[0-9a-f]{32}$"
+_MAX_SAFE_SCALAR = 2**53 - 1
 _SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@+ -]*$")
-_FORBIDDEN = re.compile(r"(?i)(secret|password|credential|authorization|bearer|redis(?:://|[_ -]?key)|request[_ -]?body|http[_ -]?header|prompt|generated[_ -]?text|kv[_ -]?bytes|tensor|device[_ -]?pointer|lmcache.*object|chunk[_ -]?index)")
+_SENSITIVE = re.compile(
+    r"(?i)(physical[_ -]?path|file[_ -]?path|filesystem[_ -]?path|raw[_ -]?exception|"
+    r"exception|traceback|stack[_ -]?trace|api[_ -]?key|access[_ -]?token|authorization|"
+    r"bearer|cookie|password|credential|secret|request[_ -]?body|http[_ -]?header|"
+    r"redis[_ -]?key|kv[_ -]?bytes|tensor|device[_ -]?pointer|private.*lmcache|chunk[_ -]?index|"
+    r"prompt|generated[_ -]?text)"
+)
+_WINDOWS_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+_FILE_SUFFIX = re.compile(r"(?i)\.(?:bin|cache|ckpt|json|log|npy|pt|pth|safetensors|tmp|yaml|yml)$")
 
 
-def _safe_text(value: str, field: str, limit: int = 256) -> str:
+def _safe_label(value: str, field: str, limit: int = 256) -> str:
     if not value or len(value) > limit or "\n" in value or "\r" in value:
         raise ValueError(f"{field} must be a bounded single-line value")
-    if not _SAFE.fullmatch(value) or _FORBIDDEN.search(value):
+    if not _SAFE.fullmatch(value) or _SENSITIVE.search(value):
         raise ValueError(f"{field} contains unsafe data")
+    return value
+
+
+def _safe_scalar(value: str) -> str:
+    _safe_label(value, "scalar")
+    if (
+        value.startswith(("/", "\\", "~"))
+        or _WINDOWS_PATH.match(value)
+        or "/" in value
+        or "\\" in value
+        or any(part == ".." for part in re.split(r"[\\/]", value))
+        or _FILE_SUFFIX.search(value)
+    ):
+        raise ValueError("scalar must not contain a physical path")
+    return value
+
+
+def _safe_message(value: str) -> str:
+    if not value or len(value) > 512 or "\n" in value or "\r" in value or _SENSITIVE.search(value):
+        raise ValueError("error message must be bounded, single-line, and sanitized")
+    return value
+
+
+def _legacy_label(value: str | None) -> bool:
+    return value is not None and bool(re.search(r"(?i)(?:^|[_ ./-])(legacy|redis)(?:$|[_ ./-])", value))
+
+
+def _cache_operation_id(value: str) -> str:
+    if re.fullmatch(_CACHE_OPERATION_ID_PATTERN, value) is None:
+        raise ValueError("cache operation ID must use canonical CacheOperationTask format")
     return value
 
 
@@ -61,7 +100,7 @@ class TraceContext(TraceModel):
                 raise ValueError("expires_at must follow created_at")
         for name in ("trace_id", "request_id", "correlation_id"):
             value = getattr(self, name)
-            if value is not None: _safe_text(value, name, 128)
+            if value is not None: _safe_label(value, name, 128)
         return self
 
 
@@ -92,21 +131,29 @@ class TraceProvenance(TraceModel):
             raise ValueError("endpoint generation zero is Legacy-only")
         if self.legacy_projected and self.runtime_profile is not RuntimeProfile.LEGACY:
             raise ValueError("Legacy projection requires Legacy runtime")
-        if self.runtime_profile is RuntimeProfile.V1 and self.gateway_profile is LMCacheGatewayProfile.LEGACY_GATEWAY:
-            raise ValueError("v1 provenance cannot claim a Legacy write source")
+        if self.legacy_projected and self.source_component is not TraceComponent.LEGACY_ADAPTER:
+            raise ValueError("Legacy projection requires the Legacy adapter component")
+        if self.runtime_profile is not RuntimeProfile.LEGACY and self.source_component is TraceComponent.LEGACY_ADAPTER:
+            raise ValueError("non-Legacy provenance cannot use the Legacy adapter component")
+        if self.runtime_profile is not RuntimeProfile.LEGACY and self.gateway_profile is LMCacheGatewayProfile.LEGACY_GATEWAY:
+            raise ValueError("non-Legacy provenance cannot use the Legacy Gateway profile")
+        if self.runtime_profile is not RuntimeProfile.LEGACY and any(
+            _legacy_label(value) for value in (self.gateway_adapter, self.storage_adapter)
+        ):
+            raise ValueError("non-Legacy provenance cannot claim a Legacy adapter label")
         if self.fresh_until is not None:
             _utc(self.fresh_until, "fresh_until")
             if self.fresh_until <= self.captured_at: raise ValueError("fresh_until must follow captured_at")
         for name in ("source_endpoint", "compatibility_profile_id", "gateway_adapter", "storage_adapter", "tier", "source_version"):
             value = getattr(self, name)
-            if value is not None: _safe_text(value, name)
+            if value is not None: _safe_label(value, name)
         return self
 
 
 class TraceMeasurement(TraceModel):
     code: str = Field(min_length=1, max_length=128)
     value_kind: TraceValueKind
-    duration_ns: int | None = Field(default=None, ge=0)
+    duration_ns: int | None = Field(default=None, ge=0, le=2**63 - 1)
     count: int | None = Field(default=None, ge=0)
     bytes: int | None = Field(default=None, ge=0)
     tokens: int | None = Field(default=None, ge=0)
@@ -120,14 +167,16 @@ class TraceMeasurement(TraceModel):
         names = ("duration_ns", "count", "bytes", "tokens", "ratio", "boolean", "timestamp", "scalar")
         if sum(getattr(self, name) is not None for name in names) != 1:
             raise ValueError("provide exactly one measurement value")
-        _safe_text(self.code, "code", 128)
+        _safe_label(self.code, "code", 128)
         if self.ratio is not None and (not math.isfinite(self.ratio) or not 0 <= self.ratio <= 1):
             raise ValueError("ratio must be finite and between zero and one")
         if self.timestamp is not None: _utc(self.timestamp, "timestamp")
-        if isinstance(self.scalar, float) and not math.isfinite(self.scalar):
-            raise ValueError("scalar must be finite")
-        if isinstance(self.scalar, str): _safe_text(self.scalar, "scalar")
-        if isinstance(self.scalar, bool) or (isinstance(self.scalar, str) and len(self.scalar) > 256):
+        if isinstance(self.scalar, (int, float)) and (
+            not math.isfinite(self.scalar) or not -_MAX_SAFE_SCALAR <= self.scalar <= _MAX_SAFE_SCALAR
+        ):
+            raise ValueError("numeric scalar must be finite and within safe bounds")
+        if isinstance(self.scalar, str): _safe_scalar(self.scalar)
+        if isinstance(self.scalar, bool):
             raise ValueError("invalid safe scalar")
         return self
 
@@ -160,14 +209,15 @@ class TraceStage(TraceModel):
         elif self.state is TraceStageState.SKIPPED:
             if self.skip_reason is None or self.outcome is not None or self.elapsed_ns is not None:
                 raise ValueError("skipped stage requires only a safe skip reason")
-            _safe_text(self.skip_reason, "skip_reason")
+            _safe_label(self.skip_reason, "skip_reason")
         elif self.finished_at is not None or self.elapsed_ns is not None or self.outcome is not None or self.error is not None or self.skip_reason is not None:
             raise ValueError("unfinished stage cannot contain completion state")
         if self.error is not None and self.outcome is not self.error.code:
             raise ValueError("error detail must match stage outcome")
+        if self.error is not None: _safe_message(self.error.message)
         for name in ("stage_id", "parent_stage_id", "fallback_stage_id", "logical_operation_id", "artifact_id"):
             value = getattr(self, name)
-            if value is not None: _safe_text(value, name, 128)
+            if value is not None: _safe_label(value, name, 128)
         return self
 
 
@@ -180,6 +230,17 @@ def _ordered(stages: tuple[TraceStage, ...]) -> tuple[TraceStage, ...]:
     for stage in stages:
         if stage.parent_stage_id is not None and stage.parent_stage_id not in ids: raise ValueError("unknown parent stage")
         if stage.fallback_stage_id is not None and stage.fallback_stage_id not in ids: raise ValueError("unknown fallback stage")
+        if stage.parent_stage_id == stage.stage_id: raise ValueError("stage cannot be its own parent")
+        if stage.fallback_stage_id == stage.stage_id: raise ValueError("stage cannot be its own fallback")
+    for attribute in ("parent_stage_id", "fallback_stage_id"):
+        references = {stage.stage_id: getattr(stage, attribute) for stage in stages}
+        for identifier in references:
+            seen: set[str] = set()
+            current: str | None = identifier
+            while current is not None:
+                if current in seen: raise ValueError(f"{attribute} cycle")
+                seen.add(current)
+                current = references[current]
     return stages
 
 
@@ -192,7 +253,7 @@ class OperationWaiterLink(TraceModel):
 
     @model_validator(mode="after")
     def valid(self):
-        _safe_text(self.request_trace_id, "request_trace_id", 128); _safe_text(self.request_id, "request_id", 128)
+        _safe_label(self.request_trace_id, "request_trace_id", 128); _safe_label(self.request_id, "request_id", 128)
         _utc(self.linked_at, "linked_at")
         if self.updated_at is not None:
             _utc(self.updated_at, "updated_at")
@@ -211,13 +272,15 @@ class RequestTrace(TraceModel):
     def valid(self):
         _ordered(self.stages)
         if len(set(self.cache_operation_ids)) != len(self.cache_operation_ids): raise ValueError("cache operation IDs must be unique")
-        for value in self.cache_operation_ids: _safe_text(value, "cache_operation_id", 128)
-        if self.error is not None and self.outcome is not self.error.code: raise ValueError("error must match outcome")
+        for value in self.cache_operation_ids: _cache_operation_id(value)
+        if self.error is not None:
+            if self.outcome is not self.error.code: raise ValueError("error must match outcome")
+            _safe_message(self.error.message)
         return self
 
 
 class CacheOperationTrace(TraceModel):
-    operation_id: str = Field(min_length=1, max_length=128)
+    operation_id: str = Field(pattern=_CACHE_OPERATION_ID_PATTERN)
     operation_type: CacheOperationType
     operation_state: CacheOperationState | None = None
     stages: tuple[TraceStage, ...] = ()
@@ -225,7 +288,7 @@ class CacheOperationTrace(TraceModel):
 
     @model_validator(mode="after")
     def valid(self):
-        _safe_text(self.operation_id, "operation_id", 128); _ordered(self.stages)
+        _cache_operation_id(self.operation_id); _ordered(self.stages)
         pairs = {(item.request_trace_id, item.request_id) for item in self.waiters}
         if len(pairs) != len(self.waiters): raise ValueError("waiter links must be unique")
         return self

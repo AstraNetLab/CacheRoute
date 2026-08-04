@@ -24,7 +24,7 @@ def test_deterministic_repeated_stages_and_monotonic_duration():
         collector.append_measurement(stage_id, TraceMeasurement(code="attempt", value_kind="measured", count=1))
         clock.advance(nanoseconds=elapsed, wall_time=timedelta(seconds=20))
         collector.finish_stage(stage_id, outcome="success")
-    trace = collector.export(cache_operation_ids=("op1",))
+    trace = collector.export(cache_operation_ids=("cacheop_" + "1" * 32,))
     assert [stage.sequence for stage in trace.stages] == [0, 1]
     assert [stage.elapsed_ns for stage in trace.stages] == [5, 8]
     assert trace.stages[0].finished_at - trace.stages[0].started_at == timedelta(seconds=20)
@@ -69,3 +69,35 @@ def test_collector_rejects_a_backwards_monotonic_source():
     clock.value = 9
     with pytest.raises(ValueError, match="backwards"):
         collector.finish_stage(stage, outcome="success")
+
+
+def test_finish_validation_failure_is_transactional_and_retryable():
+    clock, provenance, collector = setup()
+    stage = collector.start_stage("decode", provenance, stage_id="retry_stage")
+    clock.advance(nanoseconds=1)
+    from cacheroute.contracts.v1.errors import ContractErrorDetail
+    # A canonical error whose code mismatches the requested outcome must not
+    # consume the open stage.
+    error = ContractErrorDetail(code="failed", message="safe_failure")
+    with pytest.raises(ValueError, match="match"):
+        collector.finish_stage(stage, outcome="success", error=error)
+    collector.finish_stage(stage, outcome="success")
+    assert [(item.stage_id, item.sequence) for item in collector.export().stages] == [("retry_stage", 0)]
+
+
+def test_failed_skip_does_not_reserve_id_or_sequence():
+    _, provenance, collector = setup()
+    with pytest.raises(ValueError):
+        collector.skip_stage("fallback", provenance, reason="invalid\nreason", stage_id="reusable")
+    collector.skip_stage("fallback", provenance, reason="not_required", stage_id="reusable")
+    collector.skip_stage("fallback", provenance, reason="not_required", stage_id="next")
+    assert [(item.stage_id, item.sequence) for item in collector.export().stages] == [
+        ("reusable", 0), ("next", 1),
+    ]
+
+
+def test_collector_rejects_invalid_and_self_referencing_ids_transactionally():
+    _, provenance, collector = setup()
+    with pytest.raises(ValueError): collector.start_stage("decode", provenance, stage_id="bad\nid")
+    with pytest.raises(ValueError): collector.start_stage("decode", provenance, stage_id="self", parent_stage_id="self")
+    assert collector.start_stage("decode", provenance, stage_id="good") == "good"

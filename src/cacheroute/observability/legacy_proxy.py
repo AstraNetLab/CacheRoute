@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Any, Mapping
 
 from cacheroute.runtime import RuntimeProfile
@@ -28,6 +29,12 @@ _DURATIONS = {
 _SCALARS = {"injection_mode": TraceStageName.RUNTIME_PROFILE_RESOLUTION, "kvcache_actual_path": TraceStageName.FALLBACK, "text_actual_path": TraceStageName.FALLBACK}
 
 
+def _nonnegative_finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return value >= 0 and (isinstance(value, int) or math.isfinite(value))
+
+
 def project_legacy_proxy_trace(source: Mapping[str, Any], *, captured_at: datetime | None = None) -> tuple[TraceStage, ...]:
     """Project known safe scalars only; never retain or mutate ``source``."""
     stamp = captured_at or datetime.now(timezone.utc)
@@ -36,19 +43,26 @@ def project_legacy_proxy_trace(source: Mapping[str, Any], *, captured_at: dateti
     grouped: dict[TraceStageName, list[TraceMeasurement]] = {}
     for key, stage in _TIMESTAMPS.items():
         value = source.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        if _nonnegative_finite_number(value):
             try: timestamp = datetime.fromtimestamp(value / 1000, timezone.utc)
             except (ValueError, OverflowError, OSError): continue
             grouped.setdefault(stage, []).append(TraceMeasurement(code=key, value_kind=TraceValueKind.LEGACY_PROJECTED, timestamp=timestamp))
     for key, stage in _DURATIONS.items():
         value = source.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-            grouped.setdefault(stage, []).append(TraceMeasurement(code=key, value_kind=TraceValueKind.LEGACY_PROJECTED, duration_ns=int(value * 1_000_000)))
+        if _nonnegative_finite_number(value):
+            try:
+                measurement = TraceMeasurement(
+                    code=key, value_kind=TraceValueKind.LEGACY_PROJECTED,
+                    duration_ns=int(value * 1_000_000),
+                )
+            except (ValueError, TypeError, OverflowError):
+                continue
+            grouped.setdefault(stage, []).append(measurement)
     for key, stage in _SCALARS.items():
         value = source.get(key)
         if isinstance(value, (str, int, float)) and not isinstance(value, bool):
             try: measurement = TraceMeasurement(code=key, value_kind=TraceValueKind.LEGACY_PROJECTED, scalar=value)
-            except ValueError: continue
+            except (ValueError, TypeError, OverflowError): continue
             grouped.setdefault(stage, []).append(measurement)
     return tuple(TraceStage(stage_id=f"legacy_{index}", sequence=index, name=name,
         state=TraceStageState.SKIPPED, provenance=provenance,

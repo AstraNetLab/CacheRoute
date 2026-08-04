@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timezone
+import math
 
 from cacheroute.observability import project_legacy_proxy_trace
 
@@ -24,3 +25,17 @@ def test_current_cacheroute_meta_inventory_has_no_request_id():
     assert '"request_id"' not in body
     for name in ("trace", "kv_ack", "kv_ready_kids", "text_only_kids", "miss_kids", "error"):
         assert f'"{name}"' in body
+
+
+def test_projection_omits_nonfinite_overflow_and_malformed_allowlisted_values():
+    source = {
+        "proxy_enqueue_ms": math.nan,
+        "first_token_ms": math.inf,
+        "forward_end_ms": 10**1000,
+        "actual_total_ms": 10**1000,
+        "predict_total_ms": math.inf,
+        "injection_mode": math.nan,
+    }
+    original = dict(source)
+    assert project_legacy_proxy_trace(source, captured_at=datetime(2026, 1, 1, tzinfo=timezone.utc)) == ()
+    assert source == original

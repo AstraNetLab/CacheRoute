@@ -30,6 +30,7 @@ OBSERVABILITY_REFERENCE_ALLOWLIST = {
     Path("doc/research/issue-141-unified-observability.md"),
     Path("test/observability/test_imports.py"),
     Path("test/test_repository_governance.py"),
+    Path("test/test_wheel_install.py"),
 }
 KDN_CONTRACT_COMPATIBILITY_ALLOWLIST = {
     Path("kdn_server/contracts/__init__.py"),
@@ -266,6 +267,22 @@ def test_canonical_observability_dependencies_are_allowed():
         }
         assert imports <= allowed, (path.relative_to(ROOT), imports - allowed)
         assert "sys.path" not in path.read_text(encoding="utf-8")
+
+
+def test_observability_does_not_duplicate_canonical_model_classes():
+    prohibited = {
+        "RuntimeProfile", "ContractModel", "OutcomeCode", "ContractErrorDetail",
+        "CacheOperationTask", "CacheOperationType", "CacheOperationState",
+        "LMCacheEndpoint", "LMCacheGatewayProfile",
+    }
+    definitions = set()
+    for path in (ROOT / "src/cacheroute/observability").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        definitions.update(
+            node.name for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name in prohibited
+        )
+    assert definitions == set()
 
 
 def test_runtime_package_init_remains_dependency_free():

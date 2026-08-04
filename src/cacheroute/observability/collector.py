@@ -54,10 +54,21 @@ class TraceCollector:
         known = self._all_ids
         if parent_stage_id is not None and parent_stage_id not in known: raise ValueError("unknown parent stage")
         if fallback_stage_id is not None and fallback_stage_id not in known: raise ValueError("unknown fallback stage")
+        started_at = self._clock.utc_now()
+        started_ns = self._clock.monotonic_ns()
+        # Validate caller-controlled identities and references before reserving
+        # the ID or sequence number.
+        TraceStage(
+            stage_id=identifier, sequence=len(self._all_ids), name=name,
+            state=TraceStageState.RUNNING, provenance=provenance,
+            started_at=started_at, parent_stage_id=parent_stage_id,
+            fallback_stage_id=fallback_stage_id,
+            logical_operation_id=logical_operation_id, artifact_id=artifact_id,
+        )
         self._all_ids.add(identifier)
         self._open[identifier] = _OpenStage(
             identifier, len(self._all_ids) - 1, TraceStageName(name), provenance,
-            self._clock.utc_now(), self._clock.monotonic_ns(), parent_stage_id,
+            started_at, started_ns, parent_stage_id,
             fallback_stage_id, logical_operation_id, artifact_id,
         )
         return identifier
@@ -75,15 +86,16 @@ class TraceCollector:
         finished_ns = self._clock.monotonic_ns()
         elapsed = finished_ns - item.started_ns
         if elapsed < 0: raise ValueError("monotonic clock moved backwards")
-        del self._open[stage_id]
-        self._stages.append(TraceStage(
+        candidate = TraceStage(
             stage_id=item.stage_id, sequence=item.sequence, name=item.name,
             state=TraceStageState.COMPLETED, provenance=item.provenance,
             started_at=item.started_at, finished_at=self._clock.utc_now(), elapsed_ns=elapsed,
             outcome=outcome, error=error, parent_stage_id=item.parent_stage_id,
             fallback_stage_id=item.fallback_stage_id, logical_operation_id=item.logical_operation_id,
             artifact_id=item.artifact_id, measurements=tuple(item.measurements),
-        ))
+        )
+        del self._open[stage_id]
+        self._stages.append(candidate)
 
     def skip_stage(self, name: TraceStageName, provenance: TraceProvenance, *, reason: str,
                    stage_id: str | None = None, parent_stage_id: str | None = None) -> str | None:
@@ -91,12 +103,13 @@ class TraceCollector:
         identifier = stage_id or self._id_factory()
         if identifier in self._all_ids: raise ValueError("duplicate stage ID")
         if parent_stage_id is not None and parent_stage_id not in self._all_ids: raise ValueError("unknown parent stage")
-        self._all_ids.add(identifier)
-        self._stages.append(TraceStage(
-            stage_id=identifier, sequence=len(self._all_ids) - 1, name=name,
+        candidate = TraceStage(
+            stage_id=identifier, sequence=len(self._all_ids), name=name,
             state=TraceStageState.SKIPPED, provenance=provenance,
             skip_reason=reason, parent_stage_id=parent_stage_id,
-        ))
+        )
+        self._all_ids.add(identifier)
+        self._stages.append(candidate)
         return identifier
 
     def export(self, *, cache_operation_ids: tuple[str, ...] = (), outcome: OutcomeCode | None = None,

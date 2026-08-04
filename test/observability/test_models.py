@@ -82,7 +82,7 @@ def test_recursive_immutability_and_ordered_correlation():
     measurement = api.TraceMeasurement(code="tokens", value_kind="actual", tokens=2)
     stage = api.TraceStage(stage_id="s1", sequence=0, name="completion", state="skipped",
         provenance=provenance(), skip_reason="not_needed", measurements=(measurement,))
-    trace = api.RequestTrace(context=context(), stages=(stage,), cache_operation_ids=("op1", "op2"))
+    trace = api.RequestTrace(context=context(), stages=(stage,), cache_operation_ids=("cacheop_" + "1" * 32, "cacheop_" + "2" * 32))
     assert isinstance(trace.stages, tuple) and isinstance(trace.stages[0].measurements, tuple)
     with pytest.raises(ValidationError): trace.stages[0].measurements = ()
     with pytest.raises(ValidationError): trace.model_copy(update={"stages": (stage, stage.model_copy(update={"stage_id": "s2", "sequence": 0}))})
@@ -93,3 +93,76 @@ def test_operation_links_multiple_waiters():
     links = tuple(api.OperationWaiterLink(request_trace_id=f"t{i}", request_id=f"r{i}", linked_at=NOW) for i in range(2))
     operation = api.CacheOperationTrace(operation_id="cacheop_" + "a" * 32, operation_type="prefetch", waiters=links)
     assert len(operation.waiters) == 2
+
+
+@pytest.mark.parametrize("value", ["op1", "cacheop_A" + "a" * 31, "cacheop_" + "g" * 32])
+def test_cache_operation_ids_require_canonical_task_format(value):
+    with pytest.raises(ValidationError): api.CacheOperationTrace(operation_id=value, operation_type="lookup")
+    with pytest.raises(ValidationError): api.RequestTrace(context=context(), cache_operation_ids=(value,))
+
+
+@pytest.mark.parametrize("code_or_scalar", [
+    "physical_path", "file_path", "filesystem_path", "raw_exception", "exception",
+    "traceback", "stack_trace", "api_key", "access_token", "authorization", "bearer",
+    "cookie", "password", "credential", "secret", "request_body", "http_header",
+    "redis_key", "kv_bytes", "tensor", "device_pointer", "private_lmcache_object",
+    "chunk_index",
+])
+def test_sensitive_measurement_names_and_values_are_rejected(code_or_scalar):
+    with pytest.raises(ValidationError): api.TraceMeasurement(code=code_or_scalar, value_kind="actual", count=1)
+    with pytest.raises(ValidationError): api.TraceMeasurement(code="safe_code", value_kind="actual", scalar=code_or_scalar)
+
+
+@pytest.mark.parametrize("value", [
+    "/var/cache/kv.bin", r"C:\\cache\\kv.bin", "../cache/kv.bin", "cache/kv.bin",
+    r"cache\\kv.bin", "weights.safetensors",
+])
+def test_measurement_scalar_rejects_physical_paths(value):
+    with pytest.raises(ValidationError): api.TraceMeasurement(code="safe_code", value_kind="actual", scalar=value)
+
+
+@pytest.mark.parametrize("value", [2**53, -(2**53), 1e300, math.inf, math.nan])
+def test_measurement_scalar_numeric_bounds(value):
+    with pytest.raises(ValidationError): api.TraceMeasurement(code="safe_code", value_kind="actual", scalar=value)
+
+
+def test_source_endpoint_may_be_a_uri_but_remains_sanitized():
+    assert provenance(source_endpoint="https://gateway.example/v1").source_endpoint.startswith("https://")
+
+
+@pytest.mark.parametrize("updates", [
+    {"runtime_profile": "v1", "source_component": "legacy_adapter"},
+    {"runtime_profile": "test/mock", "source_component": "legacy_adapter"},
+    {"runtime_profile": "v1", "gateway_profile": "legacy_gateway"},
+    {"runtime_profile": "test/mock", "gateway_profile": "legacy_gateway"},
+    {"runtime_profile": "legacy", "legacy_projected": True, "source_component": "proxy"},
+    {"runtime_profile": "v1", "gateway_adapter": "legacy_adapter"},
+    {"runtime_profile": "test/mock", "storage_adapter": "redis_legacy"},
+])
+def test_provenance_rejects_legacy_claims_from_nonlegacy_sources(updates):
+    with pytest.raises(ValidationError): provenance(**updates)
+
+
+def test_valid_legacy_and_nonlegacy_provenance_combinations():
+    assert provenance(runtime_profile="legacy", source_component="legacy_adapter", legacy_projected=True,
+                      gateway_profile="legacy_gateway").legacy_projected
+    assert provenance(runtime_profile="v1", source_component="gateway", gateway_profile="mp_http_api").runtime_profile is RuntimeProfile.V1
+    assert provenance(runtime_profile="test/mock", source_component="test", gateway_profile="mock").runtime_profile is RuntimeProfile.TEST_MOCK
+
+
+def test_stage_reference_self_and_cycles_are_rejected():
+    base = dict(name="fallback", state="skipped", provenance=provenance(), skip_reason="not_required")
+    with pytest.raises(ValidationError):
+        api.RequestTrace(context=context(), stages=(api.TraceStage(stage_id="s", sequence=0, parent_stage_id="s", **base),))
+    with pytest.raises(ValidationError):
+        api.RequestTrace(context=context(), stages=(api.TraceStage(stage_id="s", sequence=0, fallback_stage_id="s", **base),))
+    parent_cycle = (
+        api.TraceStage(stage_id="a", sequence=0, parent_stage_id="b", **base),
+        api.TraceStage(stage_id="b", sequence=1, parent_stage_id="a", **base),
+    )
+    fallback_cycle = (
+        api.TraceStage(stage_id="a", sequence=0, fallback_stage_id="b", **base),
+        api.TraceStage(stage_id="b", sequence=1, fallback_stage_id="a", **base),
+    )
+    with pytest.raises(ValidationError, match="cycle"): api.RequestTrace(context=context(), stages=parent_cycle)
+    with pytest.raises(ValidationError, match="cycle"): api.RequestTrace(context=context(), stages=fallback_cycle)
