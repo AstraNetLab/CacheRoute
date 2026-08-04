@@ -124,12 +124,41 @@ def test_status_vocabulary_is_defined_and_absent_targets_are_never_current():
         assert not (ROOT / "src" / "cacheroute" / package).exists()
         marker = f"`cacheroute.{package}"
         for markdown in HANDBOOK.glob("*.md"):
-            for row in markdown.read_text(encoding="utf-8").splitlines():
+            text = markdown.read_text(encoding="utf-8")
+            # Catch common prose/status variants without forbidding a sentence
+            # that contrasts Current root code with its absent target owner.
+            prohibited = (
+                rf"(?:\*\*)?Current(?:\*\*)?\s+{re.escape(marker)}",
+                rf"{re.escape(marker)}(?:`)?\s+(?:is|—|:)\s+(?:\*\*)?Current(?:\*\*)?",
+                rf"status\s*[:=]\s*(?:\*\*)?Current(?:\*\*)?.{{0,80}}{re.escape(marker)}",
+            )
+            assert not any(re.search(pattern, text, re.IGNORECASE) for pattern in prohibited), (markdown, package)
+            for row in text.splitlines():
                 if row.startswith("|") and marker in row:
                     cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
                     # Package-map status is its fourth column; other target rows must use an explicit non-Current label.
                     status_cells = cells[3:4] if markdown.name == "package-and-module-map.md" else cells
                     assert all(cell != "Current" and cell != "**Current**" for cell in status_cells), (markdown, row)
+
+
+def test_current_cacheroute_meta_and_kdn_runtime_corrections_are_marked():
+    text = (HANDBOOK / "configuration-and-interfaces.md").read_text(encoding="utf-8")
+    meta_row = next(line for line in text.splitlines() if "cacheroute-meta-no-request-id" in line)
+    assert "ProxyTask.request_id" in meta_row
+    assert "does not currently emit `request_id`" in meta_row
+    assert "`request_id`, `injection_mode`" not in meta_row
+
+    error_row = next(line for line in text.splitlines() if "cacheroute-meta-error" in line)
+    assert "unversioned operational string" in error_row
+    assert "not `ContractErrorDetail`" in error_row
+
+    advertise_row = next(line for line in text.splitlines() if "kdn-advertise-registration" in line)
+    assert "missing Scheduler URL or either advertise host/port skips registration" in advertise_row
+    assert "demo_kdn.py" in advertise_row
+
+    efficiency_row = next(line for line in text.splitlines() if "kdn-network-efficiency" in line)
+    assert "accepts a float without range rejection" in efficiency_row
+    assert "clamps runtime efficiency to `[0.01, 1.0]`" in efficiency_row
 
 
 def test_configuration_catalog_has_stable_sections_and_tables():
