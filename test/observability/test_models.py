@@ -109,7 +109,6 @@ def test_cache_operation_ids_require_canonical_task_format(value):
     "chunk_index",
 ])
 def test_sensitive_measurement_names_and_values_are_rejected(code_or_scalar):
-    with pytest.raises(ValidationError): api.TraceMeasurement(code=code_or_scalar, value_kind="actual", count=1)
     with pytest.raises(ValidationError): api.TraceMeasurement(code="safe_code", value_kind="actual", scalar=code_or_scalar)
 
 
@@ -121,13 +120,115 @@ def test_measurement_scalar_rejects_physical_paths(value):
     with pytest.raises(ValidationError): api.TraceMeasurement(code="safe_code", value_kind="actual", scalar=value)
 
 
-@pytest.mark.parametrize("value", [2**53, -(2**53), 1e300, math.inf, math.nan])
+@pytest.mark.parametrize("value", [2**63, -(2**63), 1e300, math.inf, math.nan])
 def test_measurement_scalar_numeric_bounds(value):
     with pytest.raises(ValidationError): api.TraceMeasurement(code="safe_code", value_kind="actual", scalar=value)
 
 
 def test_source_endpoint_may_be_a_uri_but_remains_sanitized():
     assert provenance(source_endpoint="https://gateway.example/v1").source_endpoint.startswith("https://")
+
+
+def test_metric_codes_are_machine_identifiers_not_confidentiality_guesses():
+    metric = api.TraceMeasurement(code="prompt_tokens_cached_total", value_kind="actual", tokens=12)
+    assert metric.tokens == 12
+    for code in ("UpperCase", "has-dash", "has space", "_leading", "a" * 129):
+        with pytest.raises(ValidationError): api.TraceMeasurement(code=code, value_kind="actual", count=1)
+
+
+@pytest.mark.parametrize("value", [
+    "Tell me a joke", "ordinary generated request content", "hello world",
+])
+def test_arbitrary_string_scalar_content_is_rejected(value):
+    with pytest.raises(ValidationError):
+        api.TraceMeasurement(code="input", value_kind="actual", scalar=value)
+
+
+@pytest.mark.parametrize(("code", "value"), [
+    ("injection_mode", "text"), ("injection_mode", "kvcache"),
+    ("kvcache_actual_path", "kv_inject"),
+    ("kvcache_actual_path", "kv_inject_failed_fallback_text"),
+    ("kvcache_actual_path", "no_kv_ready_fallback_text"),
+    ("text_actual_path", "text_inject"),
+    ("text_actual_path", "no_rag_or_empty_knowledge"),
+])
+def test_current_legacy_logical_scalar_vocabulary(code, value):
+    assert api.TraceMeasurement(code=code, value_kind="legacy_projected", scalar=value).scalar == value
+
+
+MAX_MEASUREMENT_INTEGER = 2**63 - 1
+
+
+@pytest.mark.parametrize("field", ["duration_ns", "count", "bytes", "tokens", "scalar"])
+def test_measurement_integer_boundaries(field):
+    accepted = api.TraceMeasurement(code="bounded_metric", value_kind="actual", **{field: MAX_MEASUREMENT_INTEGER})
+    assert getattr(accepted, field) == MAX_MEASUREMENT_INTEGER
+    with pytest.raises(ValidationError):
+        api.TraceMeasurement(code="bounded_metric", value_kind="actual", **{field: MAX_MEASUREMENT_INTEGER + 1})
+
+
+def _stage(**updates):
+    values = dict(stage_id="lifecycle", sequence=0, name="completion", state="pending", provenance=provenance())
+    values.update(updates)
+    return api.TraceStage(**values)
+
+
+def test_every_valid_stage_lifecycle_and_revalidated_copy():
+    pending = _stage()
+    running = pending.model_copy(update={"state": "running", "started_at": NOW})
+    completed = running.model_copy(update={
+        "state": "completed", "finished_at": NOW + timedelta(seconds=5),
+        "elapsed_ns": 7, "outcome": "success",
+    })
+    skipped = pending.model_copy(update={"state": "skipped", "skip_reason": "not_required"})
+    assert (pending.state.value, running.state.value, completed.state.value, skipped.state.value) == (
+        "pending", "running", "completed", "skipped",
+    )
+
+
+@pytest.mark.parametrize(("state", "updates"), [
+    ("pending", {"started_at": NOW}), ("pending", {"finished_at": NOW}),
+    ("pending", {"elapsed_ns": 0}), ("pending", {"outcome": "success"}),
+    ("pending", {"skip_reason": "not_required"}),
+    ("running", {}), ("running", {"started_at": NOW, "finished_at": NOW}),
+    ("running", {"started_at": NOW, "elapsed_ns": 0}),
+    ("running", {"started_at": NOW, "outcome": "success"}),
+    ("running", {"started_at": NOW, "skip_reason": "not_required"}),
+    ("completed", {}), ("completed", {"started_at": NOW}),
+    ("completed", {"started_at": NOW, "finished_at": NOW}),
+    ("completed", {"started_at": NOW, "finished_at": NOW, "elapsed_ns": 0}),
+    ("completed", {"started_at": NOW, "finished_at": NOW, "elapsed_ns": 0, "outcome": "success", "skip_reason": "bad"}),
+    ("skipped", {}), ("skipped", {"skip_reason": "not_required", "started_at": NOW}),
+    ("skipped", {"skip_reason": "not_required", "finished_at": NOW}),
+    ("skipped", {"skip_reason": "not_required", "elapsed_ns": 0}),
+    ("skipped", {"skip_reason": "not_required", "outcome": "success"}),
+])
+def test_invalid_direct_stage_lifecycle_combinations(state, updates):
+    with pytest.raises(ValidationError): _stage(state=state, **updates)
+
+
+@pytest.mark.parametrize("update", [
+    {"state": "running"}, {"state": "completed"},
+    {"state": "skipped"}, {"started_at": NOW}, {"outcome": "success"},
+])
+def test_model_copy_revalidates_invalid_lifecycle_updates(update):
+    with pytest.raises(ValidationError): _stage().model_copy(update=update)
+
+
+@pytest.mark.parametrize("state,extra", [
+    ("pending", {}), ("running", {"started_at": NOW}),
+    ("skipped", {"skip_reason": "not_required"}),
+])
+def test_unfinished_and_skipped_stages_reject_errors(state, extra):
+    error = ContractErrorDetail(code="failed", message="safe_failure")
+    with pytest.raises(ValidationError): _stage(state=state, error=error, **extra)
+
+
+def test_completed_error_must_match_outcome():
+    error = ContractErrorDetail(code="failed", message="safe_failure")
+    with pytest.raises(ValidationError, match="match"):
+        _stage(state="completed", started_at=NOW, finished_at=NOW, elapsed_ns=1,
+               outcome="success", error=error)
 
 
 @pytest.mark.parametrize("updates", [

@@ -39,3 +39,14 @@ def test_projection_omits_nonfinite_overflow_and_malformed_allowlisted_values():
     original = dict(source)
     assert project_legacy_proxy_trace(source, captured_at=datetime(2026, 1, 1, tzinfo=timezone.utc)) == ()
     assert source == original
+
+
+def test_projection_accepts_only_current_logical_scalar_vocabulary():
+    accepted = {
+        "injection_mode": "text", "kvcache_actual_path": "kv_inject",
+        "text_actual_path": "text_inject",
+    }
+    projected = project_legacy_proxy_trace(accepted, captured_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert {(m.code, m.scalar) for stage in projected for m in stage.measurements} == set(accepted.items())
+    unknown = {"injection_mode": "hybrid", "kvcache_actual_path": "unknown_path", "text_actual_path": "Tell me a joke"}
+    assert project_legacy_proxy_trace(unknown, captured_at=datetime(2026, 1, 1, tzinfo=timezone.utc)) == ()

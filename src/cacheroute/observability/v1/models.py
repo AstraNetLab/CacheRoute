@@ -16,8 +16,9 @@ from .enums import OperationWaiterState, TraceComponent, TraceStageName, TraceSt
 
 OBSERVABILITY_SCHEMA_VERSION = "observability.v1"
 _CACHE_OPERATION_ID_PATTERN = r"^cacheop_[0-9a-f]{32}$"
-_MAX_SAFE_SCALAR = 2**53 - 1
+_MAX_MEASUREMENT_INTEGER = 2**63 - 1
 _SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@+ -]*$")
+_METRIC_CODE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _SENSITIVE = re.compile(
     r"(?i)(physical[_ -]?path|file[_ -]?path|filesystem[_ -]?path|raw[_ -]?exception|"
     r"exception|traceback|stack[_ -]?trace|api[_ -]?key|access[_ -]?token|authorization|"
@@ -27,6 +28,13 @@ _SENSITIVE = re.compile(
 )
 _WINDOWS_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 _FILE_SUFFIX = re.compile(r"(?i)\.(?:bin|cache|ckpt|json|log|npy|pt|pth|safetensors|tmp|yaml|yml)$")
+_LOGICAL_SCALARS = {
+    "injection_mode": frozenset({"text", "kvcache"}),
+    "kvcache_actual_path": frozenset({
+        "kv_inject", "kv_inject_failed_fallback_text", "no_kv_ready_fallback_text",
+    }),
+    "text_actual_path": frozenset({"text_inject", "no_rag_or_empty_knowledge"}),
+}
 
 
 def _safe_label(value: str, field: str, limit: int = 256) -> str:
@@ -37,8 +45,18 @@ def _safe_label(value: str, field: str, limit: int = 256) -> str:
     return value
 
 
-def _safe_scalar(value: str) -> str:
-    _safe_label(value, "scalar")
+def _metric_code(value: str) -> str:
+    if _METRIC_CODE.fullmatch(value) is None:
+        raise ValueError("measurement code must be a bounded machine identifier")
+    return value
+
+
+def _logical_scalar(code: str, value: str) -> str:
+    allowed = _LOGICAL_SCALARS.get(code)
+    if allowed is None or value not in allowed:
+        raise ValueError("string scalar is not an allowed logical code value")
+    # Retain the physical-path defense independently of the allowlist so future
+    # additions cannot accidentally turn this field into a payload channel.
     if (
         value.startswith(("/", "\\", "~"))
         or _WINDOWS_PATH.match(value)
@@ -153,10 +171,10 @@ class TraceProvenance(TraceModel):
 class TraceMeasurement(TraceModel):
     code: str = Field(min_length=1, max_length=128)
     value_kind: TraceValueKind
-    duration_ns: int | None = Field(default=None, ge=0, le=2**63 - 1)
-    count: int | None = Field(default=None, ge=0)
-    bytes: int | None = Field(default=None, ge=0)
-    tokens: int | None = Field(default=None, ge=0)
+    duration_ns: int | None = Field(default=None, ge=0, le=_MAX_MEASUREMENT_INTEGER)
+    count: int | None = Field(default=None, ge=0, le=_MAX_MEASUREMENT_INTEGER)
+    bytes: int | None = Field(default=None, ge=0, le=_MAX_MEASUREMENT_INTEGER)
+    tokens: int | None = Field(default=None, ge=0, le=_MAX_MEASUREMENT_INTEGER)
     ratio: float | None = None
     boolean: bool | None = None
     timestamp: AwareDatetime | None = None
@@ -167,15 +185,16 @@ class TraceMeasurement(TraceModel):
         names = ("duration_ns", "count", "bytes", "tokens", "ratio", "boolean", "timestamp", "scalar")
         if sum(getattr(self, name) is not None for name in names) != 1:
             raise ValueError("provide exactly one measurement value")
-        _safe_label(self.code, "code", 128)
+        _metric_code(self.code)
         if self.ratio is not None and (not math.isfinite(self.ratio) or not 0 <= self.ratio <= 1):
             raise ValueError("ratio must be finite and between zero and one")
         if self.timestamp is not None: _utc(self.timestamp, "timestamp")
         if isinstance(self.scalar, (int, float)) and (
-            not math.isfinite(self.scalar) or not -_MAX_SAFE_SCALAR <= self.scalar <= _MAX_SAFE_SCALAR
+            not math.isfinite(self.scalar)
+            or not -_MAX_MEASUREMENT_INTEGER <= self.scalar <= _MAX_MEASUREMENT_INTEGER
         ):
             raise ValueError("numeric scalar must be finite and within safe bounds")
-        if isinstance(self.scalar, str): _safe_scalar(self.scalar)
+        if isinstance(self.scalar, str): _logical_scalar(self.code, self.scalar)
         if isinstance(self.scalar, bool):
             raise ValueError("invalid safe scalar")
         return self
@@ -203,15 +222,28 @@ class TraceStage(TraceModel):
     def lifecycle(self):
         for stamp, name in ((self.started_at, "started_at"), (self.finished_at, "finished_at")):
             if stamp is not None: _utc(stamp, name)
-        if self.state is TraceStageState.COMPLETED:
+        if self.state is TraceStageState.PENDING:
+            if any(value is not None for value in (
+                self.started_at, self.finished_at, self.elapsed_ns, self.outcome,
+                self.error, self.skip_reason,
+            )):
+                raise ValueError("pending stage cannot contain lifecycle timestamps or completion state")
+        elif self.state is TraceStageState.RUNNING:
+            if self.started_at is None:
+                raise ValueError("running stage requires started_at")
+            if any(value is not None for value in (
+                self.finished_at, self.elapsed_ns, self.outcome, self.error, self.skip_reason,
+            )):
+                raise ValueError("running stage cannot contain completion state")
+        elif self.state is TraceStageState.COMPLETED:
             if self.started_at is None or self.finished_at is None or self.elapsed_ns is None or self.outcome is None or self.skip_reason is not None:
                 raise ValueError("completed stage requires timing and canonical outcome")
         elif self.state is TraceStageState.SKIPPED:
-            if self.skip_reason is None or self.outcome is not None or self.elapsed_ns is not None:
+            if self.skip_reason is None or any(value is not None for value in (
+                self.started_at, self.finished_at, self.elapsed_ns, self.outcome, self.error,
+            )):
                 raise ValueError("skipped stage requires only a safe skip reason")
             _safe_label(self.skip_reason, "skip_reason")
-        elif self.finished_at is not None or self.elapsed_ns is not None or self.outcome is not None or self.error is not None or self.skip_reason is not None:
-            raise ValueError("unfinished stage cannot contain completion state")
         if self.error is not None and self.outcome is not self.error.code:
             raise ValueError("error detail must match stage outcome")
         if self.error is not None: _safe_message(self.error.message)
