@@ -51,6 +51,13 @@ REQUIRED_CANONICAL_FOUNDATION = {
     "cacheroute/cache/models.py",
     "cacheroute/routing/__init__.py",
     "cacheroute/routing/queue.py",
+    "cacheroute/observability/__init__.py",
+    "cacheroute/observability/clock.py",
+    "cacheroute/observability/collector.py",
+    "cacheroute/observability/legacy_proxy.py",
+    "cacheroute/observability/v1/__init__.py",
+    "cacheroute/observability/v1/enums.py",
+    "cacheroute/observability/v1/models.py",
 }
 
 
@@ -119,13 +126,12 @@ import sys
 import cacheroute
 import cacheroute.compat
 import cacheroute.compat.runtime as canonical_runtime
-import cacheroute.observability
 import cacheroute.runtime
 import cacheroute.runtime.profiles as runtime_profiles
 import cacheroute_compat.runtime as legacy_runtime
 
 modules = (cacheroute, cacheroute.compat, canonical_runtime,
-           cacheroute.observability, cacheroute.runtime, runtime_profiles,
+           cacheroute.runtime, runtime_profiles,
            legacy_runtime)
 for module in modules:
     path = Path(module.__file__).resolve()
@@ -192,6 +198,7 @@ def test_full_public_imports_from_clean_wheel(built_wheel, tmp_path):
     subprocess.run([*install, str(built_wheel)], check=True)
     result = _run_outside_repo(python, tmp_path / "outside-full", """
 from pathlib import Path
+import importlib.util
 import sys
 import core
 import core.runtime_compat as core_runtime
@@ -212,6 +219,9 @@ import cacheroute.cache
 import cacheroute.cache.models as cache_models
 import cacheroute.routing
 import cacheroute.routing.queue as routing_queue
+import cacheroute.observability
+import cacheroute.observability.v1
+import cacheroute.observability.v1.models as observability_models
 import cacheroute.contracts
 import cacheroute.contracts.v1
 import cacheroute.contracts.v1.common as canonical_common
@@ -227,6 +237,7 @@ modules = (core, core_runtime, proxy, instance, kdn_server, kdn_server.domain,
            legacy_domain_models, runtime_state, cacheroute.topology,
            topology_lmcache, cacheroute.cache, cache_models,
            cacheroute.routing, routing_queue,
+           cacheroute.observability, cacheroute.observability.v1, observability_models,
            cacheroute.runtime, cacheroute.contracts, cacheroute.contracts.v1,
            canonical_common, canonical_errors, canonical_knowledge,
            canonical_cache_service, legacy_common, legacy_errors,
@@ -262,6 +273,18 @@ identity_pairs = (
     (routing_queue.QueueWork, legacy_domain_models.QueueWork),
 )
 assert all(canonical is legacy for canonical, legacy in identity_pairs)
+observability_identity_pairs = (
+    (observability_models.RuntimeProfile, cacheroute.runtime.RuntimeProfile),
+    (observability_models.OutcomeCode, canonical_errors.OutcomeCode),
+    (observability_models.ContractErrorDetail, canonical_errors.ContractErrorDetail),
+    (observability_models.CacheOperationTask, cache_models.CacheOperationTask),
+    (observability_models.CacheOperationType, cache_models.CacheOperationType),
+    (observability_models.CacheOperationState, cache_models.CacheOperationState),
+    (observability_models.LMCacheEndpoint, topology_lmcache.LMCacheEndpoint),
+    (observability_models.LMCacheGatewayProfile, topology_lmcache.LMCacheGatewayProfile),
+)
+assert all(observability is canonical for observability, canonical in observability_identity_pairs)
+assert importlib.util.find_spec("cacheroute_observability") is None
 assert runtime_state.utc_now is legacy_domain_models.utc_now
 assert legacy_common.VersionedMessage is canonical_common.VersionedMessage
 assert legacy_common.ContractModel is canonical_common.ContractModel

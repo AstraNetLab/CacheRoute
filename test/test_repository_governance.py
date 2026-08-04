@@ -27,7 +27,10 @@ LEGACY_REFERENCE_ALLOWLIST = {
 }
 OBSERVABILITY_REFERENCE_ALLOWLIST = {
     Path("doc/package_migration_phase_a.md"),
+    Path("doc/research/issue-141-unified-observability.md"),
+    Path("test/observability/test_imports.py"),
     Path("test/test_repository_governance.py"),
+    Path("test/test_wheel_install.py"),
 }
 KDN_CONTRACT_COMPATIBILITY_ALLOWLIST = {
     Path("kdn_server/contracts/__init__.py"),
@@ -39,7 +42,7 @@ KDN_CONTRACT_COMPATIBILITY_ALLOWLIST = {
     Path("test/test_wheel_install.py"),
 }
 CANONICAL_PACKAGES = {
-    "cacheroute", "cacheroute.compat", "cacheroute.observability",
+    "cacheroute", "cacheroute.compat", "cacheroute.observability", "cacheroute.observability.v1",
     "cacheroute.runtime", "cacheroute.topology", "cacheroute.cache",
     "cacheroute.routing", "cacheroute.contracts", "cacheroute.contracts.v1",
     "cacheroute_compat",
@@ -72,6 +75,7 @@ GUARDED_SOURCE_BOOTSTRAP_MODULES = {
 }
 SYS_PATH_ALLOWLIST = SOURCE_BOOTSTRAP_ENTRYPOINTS | {
     Path("conftest.py"),
+    Path("test/observability/test_imports.py"),
     Path("test/test_contract_service_migration.py"),
     Path("test/test_demo_instance_ui.py"),
     Path("test/test_namespace_layout.py"),
@@ -242,6 +246,43 @@ def test_canonical_service_contract_dependencies_are_allowed():
             if isinstance(node, ast.ImportFrom) and node.module is not None
         }
         assert imports <= allowed
+
+
+def test_canonical_observability_dependencies_are_allowed():
+    allowed = {
+        "__future__", "dataclasses", "datetime", "enum", "math", "re", "time",
+        "typing", "uuid", "pydantic", "cacheroute.runtime", "cacheroute.topology",
+        "cacheroute.cache", "cacheroute.contracts.v1.common",
+        "cacheroute.contracts.v1.errors", "clock", "collector", "legacy_proxy",
+        "enums", "models", "v1",
+    }
+    for path in (ROOT / "src/cacheroute/observability").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports = {
+            node.module for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        } | {
+            alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        assert imports <= allowed, (path.relative_to(ROOT), imports - allowed)
+        assert "sys.path" not in path.read_text(encoding="utf-8")
+
+
+def test_observability_does_not_duplicate_canonical_model_classes():
+    prohibited = {
+        "RuntimeProfile", "ContractModel", "OutcomeCode", "ContractErrorDetail",
+        "CacheOperationTask", "CacheOperationType", "CacheOperationState",
+        "LMCacheEndpoint", "LMCacheGatewayProfile",
+    }
+    definitions = set()
+    for path in (ROOT / "src/cacheroute/observability").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        definitions.update(
+            node.name for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name in prohibited
+        )
+    assert definitions == set()
 
 
 def test_runtime_package_init_remains_dependency_free():

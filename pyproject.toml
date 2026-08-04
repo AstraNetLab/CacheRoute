@@ -41,7 +41,7 @@ dev = [
 # root runtime packages remain explicitly installed pending focused migrations.
 package-dir = {cacheroute = "src/cacheroute", cacheroute_compat = "src/cacheroute_compat"}
 packages = [
-  "cacheroute", "cacheroute.compat", "cacheroute.observability",
+  "cacheroute", "cacheroute.compat", "cacheroute.observability", "cacheroute.observability.v1",
   "cacheroute.runtime", "cacheroute.topology", "cacheroute.cache", "cacheroute.routing",
   "cacheroute.contracts", "cacheroute.contracts.v1",
   "cacheroute_compat",
