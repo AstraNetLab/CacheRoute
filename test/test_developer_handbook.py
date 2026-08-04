@@ -172,6 +172,31 @@ def test_configuration_catalog_has_stable_sections_and_tables():
         assert f"`{required}`" in text
 
 
+def test_endpoint_catalog_uses_complete_kdn_and_proxy_ui_paths():
+    text = (HANDBOOK / "configuration-and-interfaces.md").read_text(encoding="utf-8")
+    kdn_paths = {
+        "/knowledge/snapshot", "/knowledge/register_text", "/knowledge/build_kv",
+        "/knowledge/search/text", "/knowledge/delete", "/knowledge/purge_all",
+        "/knowledge/inject_ready_kv", "/knowledge/pool_status",
+    }
+    proxy_ui_paths = {
+        "/", "/api/config", "/api/proxy/healthz", "/api/proxy/status",
+        "/api/proxy/instances", "/api/proxy/resources", "/api/proxy/topology",
+        "/api/proxy/loads", "/api/scheduler/proxy",
+    }
+    endpoint_rows = {
+        cells[0]: cells[1]
+        for line in text.splitlines()
+        if line.startswith("|")
+        for cells in ([cell.strip() for cell in line.strip().strip("|").split("|")],)
+        if len(cells) >= 2
+    }
+    assert all(f"`{path}`" in endpoint_rows["KDN"] for path in kdn_paths)
+    assert all(f"`{path}`" in endpoint_rows["Proxy UI"] for path in proxy_ui_paths)
+    assert "`/register_text`" not in endpoint_rows["KDN"]
+    assert "`/status`" not in endpoint_rows["Proxy UI"]
+
+
 def test_documentation_is_excluded_from_explicit_wheel_packages():
     setuptools = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["setuptools"]
     assert "find" not in setuptools
