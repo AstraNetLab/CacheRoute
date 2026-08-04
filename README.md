@@ -32,6 +32,7 @@
   <a href="#why-cacheroute">Why CacheRoute?</a> •
   <a href="#key-features">Features</a> •
   <a href="#architecture">Architecture</a> •
+  <a href="doc/developer-handbook/README.md">Developer Handbook</a> •
   <a href="#frontend-urls">Frontend URLs</a> •
   <a href="doc/quickstart_v1.md">v1 Setup</a> •
   <a href="#quick-start">Quick Start</a> •
@@ -651,6 +652,7 @@ curl -s http://127.0.0.1:7001/debug/strategy
 
 | Document | Description |
 |---|---|
+| [`doc/developer-handbook/README.md`](doc/developer-handbook/README.md) | Developer navigation, maintained public API reference, runtime flows, compatibility, and validation guidance. |
 | [`core/README.md`](core/README.md) | Shared configuration, request model, and multi-machine deployment settings. |
 | [`scheduler/README.md`](scheduler/README.md) | Global routing, KDN / Proxy pool management, and Scheduler control plane. |
 | [`proxy/README.md`](proxy/README.md) | Local Instance pool, capability-aware registration, heartbeat recovery, prepare / ready queues, injection strategy, and Proxy resource APIs. |

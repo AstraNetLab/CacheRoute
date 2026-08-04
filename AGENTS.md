@@ -684,3 +684,38 @@ Architecture-related changes should add or preserve checks for:
 - clean editable and wheel installation.
 
 A migration is not complete merely because imports work from the repository root. It must also work from an installed wheel outside the checkout.
+
+---
+
+## 19. Developer Handbook Governance
+
+The maintained developer and maintenance entry point is the
+[Developer Handbook](doc/developer-handbook/README.md). Before non-trivial work,
+every Agent must read its landing page and the chapter relevant to the change.
+
+For every change, an Agent must:
+
+1. determine whether the proposed change affects a documented surface;
+2. update the relevant handbook chapter in the same PR when it does;
+3. avoid rewriting unrelated handbook chapters;
+4. preserve one authoritative detailed source and link to it rather than duplicate it;
+5. mark structures with the handbook's approved status vocabulary;
+6. never document an unmerged feature as Current;
+7. include handbook impact in the PR summary;
+8. explicitly explain why no handbook update is needed when one is omitted; and
+9. keep root README changes minimal.
+
+Before opening a PR, answer this mandatory handbook-impact checklist:
+
+- [ ] Does this change a public API?
+- [ ] Does this change fields, defaults, validation, or wire values?
+- [ ] Does this change configuration, environment variables, CLI flags, or endpoints?
+- [ ] Does this change package ownership or dependency direction?
+- [ ] Does this change compatibility or migration status?
+- [ ] Does this change a documented runtime flow?
+- [ ] Does this change installation or validation commands?
+
+Any **yes** requires a same-PR handbook update. An internal implementation-only
+change with no documented-surface impact may omit that update only when the PR
+explains why. This section supplements, and does not replace, the architecture
+and placement rules above.
