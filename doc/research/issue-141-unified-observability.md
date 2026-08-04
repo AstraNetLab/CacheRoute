@@ -30,3 +30,10 @@ allow-list. Prediction fields that were overwritten or whose semantics are
 ambiguous remain `legacy_projected`; they cannot be relabeled as actual. Raw
 exceptions, payloads, cache bytes, adapter internals, and unknown trace keys are
 not observability contract data.
+
+Issue #182 adds the first narrow production path: authoritative internal
+Scheduler headers are validated at the Proxy, where sampled prepare-queue,
+ready-queue, and downstream transport stages become a process-local immutable
+trace. The canonical trace still is not client metadata, Instance input, or an
+authoritative account of vLLM or LMCache execution. This increment therefore
+does not close the broader Issue #141 research program.

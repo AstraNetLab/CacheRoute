@@ -40,6 +40,12 @@ from proxy.resource import p_control_plane
 from proxy.resource.hb_log import HeartbeatReporter, hb_report_loop
 from proxy.strategy.factory import build_instance_strategy
 from proxy.queue import QueueManager, ProxyTask
+from cacheroute.observability import (
+    SystemTraceClock, TraceCollector, TracePropagationError,
+    create_trace_context, decode_trace_headers, parse_sample_rate,
+)
+from cacheroute.observability.v1 import TraceComponent, TraceProvenance
+from cacheroute.runtime import RuntimeProfile
 
 SCHEDULER_CP_URL = os.environ.get("SCHEDULER_CP_URL", config.SCHEDULER_CP_URL).rstrip("/")
 # KDN_BASE_URL = os.environ.get("KDN_BASE_URL", config.KDN_BASE_URL).rstrip("/")
@@ -70,6 +76,9 @@ INSTANCE_PORT = int(os.environ.get("INSTANCE_PORT", "9001"))
 
 logger = logging.getLogger("proxy")
 logging.basicConfig(level=logging.INFO)
+
+_PROXY_RUNTIME_PROFILE = RuntimeProfile.resolve_startup(os.environ.get("CACHEROUTE_RUNTIME_PROFILE", "legacy"))
+_PROXY_TRACE_SAMPLE_RATE = parse_sample_rate(os.environ.get("CACHEROUTE_TRACE_SAMPLE_RATE"))
 
 
 def _load_static_kdn_links() -> Dict[str, Any]:
@@ -127,6 +136,9 @@ async def lifespan(app: FastAPI):
       - shutdown: unregister gracefully (not required; TTL handles kill -9 cases)
     """
     _squelch_noisy_loggers()
+    app.state.runtime_profile = _PROXY_RUNTIME_PROFILE
+    app.state.trace_sample_rate = _PROXY_TRACE_SAMPLE_RATE
+    app.state.trace_clock = SystemTraceClock()
     app.state.injection_strategy_name = PROXY_INJECTION_STRATEGY  # type: ignore
     logger.info("[Proxy] injection strategy=%s", app.state.injection_strategy_name)
     # --- Initialize the instance pool and inject it into the proxy control plane ---
@@ -330,6 +342,28 @@ def recover_request_from_payload(payload: Dict[str, Any]) -> SchedulerRequest:
     return req_obj
 
 
+def build_proxy_trace(request: FastAPIRequest, request_id: str | int):
+    """Accept Scheduler context or create a bounded Proxy-local fallback."""
+    profile = getattr(request.app.state, "runtime_profile", _PROXY_RUNTIME_PROFILE)
+    rate = getattr(request.app.state, "trace_sample_rate", _PROXY_TRACE_SAMPLE_RATE)
+    clock = getattr(request.app.state, "trace_clock", None) or SystemTraceClock()
+    try:
+        context = decode_trace_headers(request.headers, clock=clock)
+        if context.request_id != str(request_id):
+            raise TracePropagationError("request_id_mismatch")
+        if context.runtime_profile is not profile:
+            raise TracePropagationError("profile_mismatch")
+    except TracePropagationError:
+        context = create_trace_context(request_id, profile, sample_rate=rate, clock=clock)
+    collector = TraceCollector(context, clock=clock)
+    provenance = TraceProvenance(
+        source_component=TraceComponent.PROXY,
+        runtime_profile=context.runtime_profile,
+        captured_at=clock.utc_now(),
+    )
+    return context, collector, provenance
+
+
 def build_body_for_instance(req_obj: SchedulerRequest, mode: str) -> Dict[str, Any]:
     """
         Build the OpenAI-style body sent to the Instance from the Request:
@@ -498,6 +532,8 @@ async def proxy_chat_completions(request: FastAPIRequest):
             content={"error": "invalid_request_payload", "detail": str(e)},
         )
 
+    trace_context, trace_collector, trace_provenance = build_proxy_trace(request, req_obj.Request_ID)
+
     # Build the Instance request body
     instance_body = build_body_for_instance(req_obj, mode="chat")
 
@@ -628,6 +664,9 @@ async def proxy_chat_completions(request: FastAPIRequest):
             instance_port=int(chosen.port),
             kdn_addr=getattr(req_obj.Task, "KDN_server_addr", None),
             url_path=url_path,
+            trace_context=trace_context,
+            trace_collector=trace_collector,
+            trace_provenance=trace_provenance,
         )
         task.trace["proxy_recv_ms"] = proxy_recv_ms
         task.trace["route_select_start_ms"] = route_select_start_ms
@@ -674,6 +713,8 @@ async def proxy_completions(request: FastAPIRequest):
             status_code=400,
             content={"error": "invalid_request_payload", "detail": str(e)},
         )
+
+    trace_context, trace_collector, trace_provenance = build_proxy_trace(request, req_obj.Request_ID)
 
     # Build the Instance request body
     instance_body = build_body_for_instance(req_obj, mode="completions")
@@ -805,6 +846,9 @@ async def proxy_completions(request: FastAPIRequest):
             instance_port=int(chosen.port),
             kdn_addr=getattr(req_obj.Task, "KDN_server_addr", None),
             url_path=url_path,
+            trace_context=trace_context,
+            trace_collector=trace_collector,
+            trace_provenance=trace_provenance,
         )
         task.trace["proxy_recv_ms"] = proxy_recv_ms
         task.trace["route_select_start_ms"] = route_select_start_ms

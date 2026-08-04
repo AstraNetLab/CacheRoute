@@ -12,6 +12,8 @@ from typing import Dict, Optional, AsyncGenerator, Any, List, Set
 from core import forward_request,config
 from proxy.metrics.queue_predictor import queue_predictor, decode_tpot_predictor, predict_redis_pull_ms
 from proxy.resource import p_control_plane
+from cacheroute.contracts.v1 import ContractErrorDetail, OutcomeCode
+from cacheroute.observability.v1 import TraceStageName
 
 from .task import ProxyTask
 from .instance_queues import PerInstanceQueueMap
@@ -24,6 +26,9 @@ from .knowledge import (
 )
 
 logger = logging.getLogger("proxy.queue")
+_DOWNSTREAM_FAILED = ContractErrorDetail(code=OutcomeCode.FAILED, message="proxy downstream request failed")
+_EMPTY_STREAM = ContractErrorDetail(code=OutcomeCode.FAILED, message="proxy stream ended before first response")
+_REQUEST_CANCELLED = ContractErrorDetail(code=OutcomeCode.CANCELLED, message="proxy request cancelled")
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -96,6 +101,35 @@ class QueueManager:
             self._ready_release_policy,
             self._text_bypass_max_per_flush,
         )
+
+    @staticmethod
+    def _start_stage(task: ProxyTask, name: TraceStageName, *, parent: str | None = None) -> str | None:
+        if task.trace_collector is None or task.trace_provenance is None:
+            return None
+        try:
+            return task.trace_collector.start_stage(name, task.trace_provenance, parent_stage_id=parent)
+        except (ValueError, TypeError):
+            logger.warning("[Trace] stage start failed reason=collector_state_invalid")
+            return None
+
+    @staticmethod
+    def _finish_stage(task: ProxyTask, stage_id: str | None, outcome: OutcomeCode,
+                      error: ContractErrorDetail | None = None) -> None:
+        if task.trace_collector is not None:
+            try:
+                task.trace_collector.finish_stage(stage_id, outcome=outcome, error=error)
+            except (ValueError, TypeError):
+                logger.warning("[Trace] stage finalization failed reason=collector_state_invalid")
+
+    @staticmethod
+    def _finalize_trace(task: ProxyTask, outcome: OutcomeCode,
+                        error: ContractErrorDetail | None = None) -> None:
+        if task.trace_collector is None or task.request_trace is not None:
+            return
+        try:
+            task.request_trace = task.trace_collector.export(outcome=outcome, error=error)
+        except Exception:
+            logger.warning("[Trace] finalization failed reason=collector_state_invalid")
 
 
     def queue_depth_snapshot(self) -> Dict[str, Any]:
@@ -352,6 +386,7 @@ class QueueManager:
         task.trace["prepared_buffer_size"] = int(len(buf))
         ready_enqueue_ms = _now_ms()
         task.trace["ready_enqueue_ms"] = ready_enqueue_ms
+        task.ready_queue_stage_id = self._start_stage(task, TraceStageName.PROXY_READY_QUEUE)
         proxy_enqueue_ms = int(task.trace.get("proxy_enqueue_ms", ready_enqueue_ms) or ready_enqueue_ms)
         full_prepare_ms = max(0, ready_enqueue_ms - proxy_enqueue_ms)
         task.trace["predict_know_prepare_ms"] = int(full_prepare_ms)
@@ -878,7 +913,7 @@ class QueueManager:
         enqueue_ms = _now_ms()
         task.trace["proxy_enqueue_ms"] = enqueue_ms
         task.trace["prepare_queue_enqueue_ms"] = enqueue_ms
-
+        task.prepare_queue_stage_id = self._start_stage(task, TraceStageName.PROXY_PREPARE_QUEUE)
         await q.prepare_q.put(task)
         logger.info(
             "[Queue] enqueue_prepare rid=%s instance=%s prepare_len=%s injection=%s",
@@ -1191,6 +1226,23 @@ class QueueManager:
                 task.trace["forward_wait_end_ms"] = _now_ms()
                 task.trace["forward_start_ms"] = _now_ms()
 
+                self._finish_stage(task, task.ready_queue_stage_id, OutcomeCode.SUCCESS)
+                task.ready_queue_stage_id = None
+                task.completion_stage_id = self._start_stage(task, TraceStageName.COMPLETION)
+                if use_chunked:
+                    task.first_token_stage_id = self._start_stage(
+                        task, TraceStageName.FIRST_TOKEN, parent=task.completion_stage_id
+                    )
+                elif task.trace_collector is not None and task.trace_provenance is not None:
+                    task.trace_collector.skip_stage(
+                        TraceStageName.FIRST_TOKEN, task.trace_provenance,
+                        reason="non_streaming_request", parent_stage_id=task.completion_stage_id,
+                    )
+                    task.trace_collector.skip_stage(
+                        TraceStageName.DECODE, task.trace_provenance,
+                        reason="non_streaming_request", parent_stage_id=task.completion_stage_id,
+                    )
+
                 seen_first_chunk = False
                 async for chunk in forward_request(
                     url=target_url,
@@ -1203,6 +1255,11 @@ class QueueManager:
                             task.trace["first_token_ms"] = _now_ms()
                             task.trace["ttft_observable"] = 1 if use_chunked else 0
                             if use_chunked:
+                                self._finish_stage(task, task.first_token_stage_id, OutcomeCode.SUCCESS)
+                                task.first_token_stage_id = None
+                                task.decode_stage_id = self._start_stage(
+                                    task, TraceStageName.DECODE, parent=task.completion_stage_id
+                                )
                                 # Measured latency breakdown, starting from the proxy enqueue timestamp:
                                 # actual_total = proxy_enqueue -> first_token
                                 # actual_know_prepare = proxy_enqueue -> ready_enqueue
@@ -1306,6 +1363,18 @@ class QueueManager:
                         await task.response_queue.put(chunk)
 
                 task.trace["forward_end_ms"] = _now_ms()
+                if use_chunked and not seen_first_chunk:
+                    self._finish_stage(task, task.first_token_stage_id, OutcomeCode.FAILED, _EMPTY_STREAM)
+                    task.first_token_stage_id = None
+                    if task.trace_collector is not None and task.trace_provenance is not None:
+                        task.trace_collector.skip_stage(
+                            TraceStageName.DECODE, task.trace_provenance,
+                            reason="stream_ended_before_decode", parent_stage_id=task.completion_stage_id,
+                        )
+                else:
+                    self._finish_stage(task, task.decode_stage_id, OutcomeCode.SUCCESS)
+                self._finish_stage(task, task.completion_stage_id, OutcomeCode.SUCCESS)
+                self._finalize_trace(task, OutcomeCode.SUCCESS)
                 await self._mark_task_decode_end(task, instance_id)
 
                 # Terminator
@@ -1317,6 +1386,14 @@ class QueueManager:
                     q.active_ready,
                 )
 
+            except asyncio.CancelledError:
+                self._finish_stage(task, task.first_token_stage_id, OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+                self._finish_stage(task, task.decode_stage_id, OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+                self._finish_stage(task, task.completion_stage_id, OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+                self._finish_stage(task, task.ready_queue_stage_id, OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+                self._finalize_trace(task, OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+                await task.response_queue.put(None)
+                raise
             except Exception as e:
                 task.error = f"ready_failed: {e}"
                 if "forward_start_ms" not in task.trace:
@@ -1325,6 +1402,11 @@ class QueueManager:
                     task.trace["ttft_observable"] = 0
                     task.trace["first_token_missing_reason"] = "ready_failed_before_first_token"
                 task.trace["forward_end_ms"] = _now_ms()
+                self._finish_stage(task, task.first_token_stage_id, OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
+                self._finish_stage(task, task.decode_stage_id, OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
+                self._finish_stage(task, task.completion_stage_id, OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
+                self._finish_stage(task, task.ready_queue_stage_id, OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
+                self._finalize_trace(task, OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
                 await self._mark_task_decode_end(task, instance_id)
                 logger.exception("[Ready] worker=%s failed rid=%s", worker_idx, task.request_id)
                 # Notify the handler to finish even on error; otherwise the upstream side will hang.
@@ -1342,6 +1424,7 @@ class QueueManager:
         while True:
             task = await q.prepare_q.get()
             task.trace["prepare_dequeue_ms"] = _now_ms()
+            self._finish_stage(task, task.prepare_queue_stage_id, OutcomeCode.SUCCESS)
             asyncio.create_task(self._run_prepare_task(instance_id, task))
 
     async def _inject_ready_kv_via_instance(

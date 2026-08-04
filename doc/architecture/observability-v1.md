@@ -49,8 +49,40 @@ copied. Ambiguous or overwritten values are labeled `legacy_projected`, never
 upgraded to actual observations. The current `cacheroute_meta` has no
 `request_id`, and this foundation does not add one.
 
-Phase 4A does not instrument services, propagate trace context across
-processes, change requests or responses, export telemetry, perform I/O, or
-integrate with OpenTelemetry, Gateway implementations, LMCache, or vLLM.
-Later focused work may add propagation and adapters after their wire and
-failure semantics are reviewed.
+## Scheduler-to-Proxy propagation
+
+The Scheduler now creates the internal context and overwrites the complete
+reserved header set: `scheduler-request-id`, `x-cacheroute-trace-version`,
+`x-cacheroute-trace-id`, `x-cacheroute-runtime-profile`,
+`x-cacheroute-trace-sampled`, and `x-cacheroute-trace-created-at`. The request
+ID allocated by the Scheduler remains authoritative. Client values using these
+names are never trusted; Authorization forwarding and the serialized payload
+remain unchanged. Propagation stops at the Proxy and no trace header or model
+is sent to an Instance or returned to a client.
+
+Scheduler and Proxy each resolve `CACHEROUTE_RUNTIME_PROFILE` once at startup,
+with `legacy` as the compatibility default. `auto` is startup-only. A missing,
+malformed, stale, request-ID-mismatched, or profile-mismatched context causes a
+Proxy-local context to be created and never rejects an otherwise valid request.
+Profile metadata does not select runtime behavior.
+
+`CACHEROUTE_TRACE_SAMPLE_RATE` defaults to `0.0`. Invalid configuration fails
+closed to that value. Rates of zero and one disable or enable collection for
+every request; intermediate decisions are deterministically derived from the
+canonical trace ID. An accepted context retains the Scheduler decision.
+
+## Proxy-observed stages
+
+The Proxy prepare queue interval starts immediately before `prepare_q.put` and
+finishes at dequeue. The ready queue interval starts immediately before the
+current ready-queue insertion and finishes after the dispatch-turn wait,
+immediately before forwarding. Completion spans downstream handling. For
+streams, first-token spans forwarding to the first non-empty chunk and decode
+spans from that chunk until stream end. Non-streaming requests explicitly skip
+first-token and decode; empty streams explicitly fail first-token and skip
+decode. These are **Proxy-observed transport boundaries**, not authoritative
+vLLM execution, prefill, decode, Gateway, or LMCache timings.
+
+Collection remains process-local and immutable. The Legacy trace mapping and
+client metadata are unchanged and are not copied into `RequestTrace`. There is
+no client export, external exporter, registry, debug endpoint, or persistence.

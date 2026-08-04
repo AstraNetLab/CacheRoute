@@ -250,11 +250,12 @@ def test_canonical_service_contract_dependencies_are_allowed():
 
 def test_canonical_observability_dependencies_are_allowed():
     allowed = {
-        "__future__", "dataclasses", "datetime", "enum", "math", "re", "time",
+            "__future__", "collections.abc", "dataclasses", "datetime", "enum",
+            "hashlib", "math", "re", "time",
         "typing", "uuid", "pydantic", "cacheroute.runtime", "cacheroute.topology",
         "cacheroute.cache", "cacheroute.contracts.v1.common",
         "cacheroute.contracts.v1.errors", "clock", "collector", "legacy_proxy",
-        "enums", "models", "v1",
+            "enums", "models", "propagation", "v1", "v1.models",
     }
     for path in (ROOT / "src/cacheroute/observability").rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
