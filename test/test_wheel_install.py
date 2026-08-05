@@ -16,6 +16,7 @@ EXPECTED_TOP_LEVEL_PACKAGES = {
     "instance", "kdn_server", "model", "proxy", "scheduler", "store", "util",
 }
 FORBIDDEN_TOP_LEVEL_PACKAGES = {"doc", "env", "log", "scripts", "test"}
+FORBIDDEN_RUNTIME_MEMBERS = {"doc/developer-handbook/README.md"}
 REQUIRED_PACKAGE_DATA = {
     "UI/client_ui/static/app.js",
     "UI/client_ui/static/style.css",
@@ -109,6 +110,7 @@ def test_wheel_preserves_packages_and_runtime_data(built_wheel):
         }
     assert packaged == EXPECTED_TOP_LEVEL_PACKAGES
     assert packaged.isdisjoint(FORBIDDEN_TOP_LEVEL_PACKAGES)
+    assert not (FORBIDDEN_RUNTIME_MEMBERS & members)
     for prefix in FORBIDDEN_TOP_LEVEL_PACKAGES:
         assert not any(
             member == prefix or member.startswith(f"{prefix}/")
