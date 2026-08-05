@@ -122,6 +122,19 @@ class QueueManager:
                 logger.warning("[Trace] stage finalization failed reason=collector_state_invalid")
 
     @staticmethod
+    def _skip_stage(task: ProxyTask, name: TraceStageName, *, reason: str,
+                    parent: str | None = None) -> str | None:
+        if task.trace_collector is None or task.trace_provenance is None:
+            return None
+        try:
+            return task.trace_collector.skip_stage(
+                name, task.trace_provenance, reason=reason, parent_stage_id=parent
+            )
+        except (ValueError, TypeError):
+            logger.warning("[Trace] stage skip failed reason=collector_state_invalid")
+            return None
+
+    @staticmethod
     def _finalize_trace(task: ProxyTask, outcome: OutcomeCode,
                         error: ContractErrorDetail | None = None) -> None:
         if task.trace_collector is None or task.request_trace is not None:
@@ -1233,14 +1246,14 @@ class QueueManager:
                     task.first_token_stage_id = self._start_stage(
                         task, TraceStageName.FIRST_TOKEN, parent=task.completion_stage_id
                     )
-                elif task.trace_collector is not None and task.trace_provenance is not None:
-                    task.trace_collector.skip_stage(
-                        TraceStageName.FIRST_TOKEN, task.trace_provenance,
-                        reason="non_streaming_request", parent_stage_id=task.completion_stage_id,
+                else:
+                    self._skip_stage(
+                        task, TraceStageName.FIRST_TOKEN,
+                        reason="non_streaming_request", parent=task.completion_stage_id,
                     )
-                    task.trace_collector.skip_stage(
-                        TraceStageName.DECODE, task.trace_provenance,
-                        reason="non_streaming_request", parent_stage_id=task.completion_stage_id,
+                    self._skip_stage(
+                        task, TraceStageName.DECODE,
+                        reason="non_streaming_request", parent=task.completion_stage_id,
                     )
 
                 seen_first_chunk = False
@@ -1370,11 +1383,10 @@ class QueueManager:
                     terminal_error = _EMPTY_STREAM
                     self._finish_stage(task, task.first_token_stage_id, OutcomeCode.FAILED, _EMPTY_STREAM)
                     task.first_token_stage_id = None
-                    if task.trace_collector is not None and task.trace_provenance is not None:
-                        task.trace_collector.skip_stage(
-                            TraceStageName.DECODE, task.trace_provenance,
-                            reason="stream_ended_before_decode", parent_stage_id=task.completion_stage_id,
-                        )
+                    self._skip_stage(
+                        task, TraceStageName.DECODE,
+                        reason="stream_ended_before_decode", parent=task.completion_stage_id,
+                    )
                 else:
                     self._finish_stage(task, task.decode_stage_id, OutcomeCode.SUCCESS)
                 self._finish_stage(task, task.completion_stage_id, terminal_outcome, terminal_error)

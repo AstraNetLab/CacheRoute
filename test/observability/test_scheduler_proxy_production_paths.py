@@ -10,7 +10,7 @@ import pytest
 
 from core import Request as SchedulerRequest
 from cacheroute.contracts.v1 import OutcomeCode
-from cacheroute.observability import ManualTraceClock, TraceCollector, create_trace_context, encode_trace_headers
+from cacheroute.observability import ManualTraceClock, TraceCollector, create_trace_context, encode_trace_headers, is_trace_sampled
 from cacheroute.observability.propagation import RESERVED_TRACE_HEADERS, TRACE_ID_HEADER
 from cacheroute.observability.v1 import TraceComponent, TraceStageName
 from cacheroute.runtime import RuntimeProfile
@@ -124,6 +124,46 @@ async def _run_real_queue(monkeypatch, task, chunks=(), *, fail_at=None, cancel_
     return manager, output, calls
 
 
+async def _run_timed_real_queue(monkeypatch, task, clock):
+    calls = []
+    manager = QueueManager()
+    manager._READY_DEQUEUE_INTERVAL_S = 0.0
+
+    def start_without_workers(instance_id):
+        manager._ensure_instance_reservation_state(instance_id)
+    monkeypatch.setattr(manager, "_start_workers_for_instance", start_without_workers)
+
+    original_reserve = manager._reserve_ready_task
+    async def reserve_with_prediction_time(reserved_task, now_s=None):
+        clock.advance(nanoseconds=100_000_000)
+        await original_reserve(reserved_task, now_s=now_s)
+    monkeypatch.setattr(manager, "_reserve_ready_task", reserve_with_prediction_time)
+
+    async def dispatch_wait(wait_task, instance_id):
+        clock.advance(nanoseconds=7_000_000)
+        wait_task.has_started_forward = True
+    monkeypatch.setattr(manager, "_wait_dispatch_turn", dispatch_wait)
+
+    async def timed_forward_request(url, data, use_chunked=False):
+        calls.append({"url": url, "data": data.copy(), "use_chunked": use_chunked})
+        clock.advance(nanoseconds=11_000_000)
+        yield b"data: token\n\n"
+        clock.advance(nanoseconds=13_000_000)
+
+    monkeypatch.setattr("proxy.queue.manager.forward_request", timed_forward_request)
+    await manager.enqueue_prepare(task)
+    clock.advance(nanoseconds=5_000_000)
+    prepare_worker = asyncio.create_task(manager._prepare_dispatch_loop(task.instance_id))
+    ready_worker = asyncio.create_task(manager._ready_worker_loop(task.instance_id, 0))
+    try:
+        output = await _drain_until_done(task)
+    finally:
+        for worker in (prepare_worker, ready_worker):
+            worker.cancel()
+        await asyncio.gather(prepare_worker, ready_worker, return_exceptions=True)
+    return output, calls
+
+
 def _assert_no_running_and_valid_refs(request_trace):
     assert request_trace is not None
     assert all(stage.state.value != "running" for stage in request_trace.stages)
@@ -168,10 +208,21 @@ def test_proxy_acceptance_fallback_and_deterministic_local_sampling():
     assert provenance.source_component is TraceComponent.PROXY
     malformed = dict(headers)
     malformed[TRACE_ID_HEADER] = "bad"
-    first, _, _ = build_proxy_trace(_request(malformed), 42)
-    second, _, _ = build_proxy_trace(_request(malformed), 42)
-    assert first.request_id == "42" and first.trace_id != TRACE_ID
-    assert first.sampled == first.sampled
+    fallback_id = "trace_cccccccccccccccccccccccccccccccc"
+    proxy_module = importlib.import_module("proxy.proxy")
+    def fixed_fallback(request_id, runtime_profile, *, sample_rate=0.0, clock=None, trace_id=None):
+        return create_trace_context(request_id, runtime_profile, sample_rate=sample_rate, clock=clock, trace_id=fallback_id)
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(proxy_module, "create_trace_context", fixed_fallback)
+        app = _app(rate=0.5)
+        first, _, _ = build_proxy_trace(_request(malformed, app), 42)
+        second, _, _ = build_proxy_trace(_request(malformed, app), 42)
+    finally:
+        monkeypatch.undo()
+    assert first.request_id == "42" and first.trace_id == fallback_id
+    assert second.trace_id == fallback_id
+    assert first.sampled == second.sampled == is_trace_sampled(fallback_id, 0.5)
     mismatch, _, _ = build_proxy_trace(_request(headers, _app(RuntimeProfile.TEST_MOCK)), 42)
     assert mismatch.runtime_profile is RuntimeProfile.TEST_MOCK
 
@@ -299,4 +350,45 @@ def test_cpu_only_scheduler_to_proxy_integration_with_real_workers(monkeypatch):
         assert task.request_trace.context.trace_id == trace_id
         assert calls[0]["data"] == task.instance_body
         assert not (set(calls[0]["data"]) & set(RESERVED_TRACE_HEADERS))
+    asyncio.run(scenario())
+
+
+
+def test_skip_stage_failure_is_non_blocking_for_nonstream_and_empty(monkeypatch):
+    async def scenario():
+        for endpoint, chunks, expected_error in (
+            ("completions", [json.dumps({"choices": [{"text": "ok"}]}).encode()], None),
+            ("chat/completions", [], _EMPTY_STREAM),
+        ):
+            req = _scheduler_request(42, stream=endpoint == "chat/completions", endpoint=endpoint)
+            task = _task_from_request(req)
+            original_business_error = task.error
+            def broken_skip_stage(*args, **kwargs):
+                raise ValueError("unsafe model detail must not be logged")
+            monkeypatch.setattr(task.trace_collector, "skip_stage", broken_skip_stage)
+            _manager, output, calls = await _run_real_queue(monkeypatch, task, chunks=chunks)
+            assert output == chunks
+            assert calls
+            assert task.error == original_business_error
+            assert task.request_trace.error == expected_error
+            _assert_no_running_and_valid_refs(task.request_trace)
+    asyncio.run(scenario())
+
+
+def test_real_methods_have_deterministic_elapsed_boundaries(monkeypatch):
+    async def scenario():
+        clock = ManualTraceClock(NOW)
+        req = _scheduler_request(42)
+        task = _task_from_request(req, clock=clock)
+        output, calls = await _run_timed_real_queue(monkeypatch, task, clock)
+        assert output == [b"data: token\n\n"]
+        assert calls and calls[0]["use_chunked"] is True
+        stages = {stage.name: stage for stage in task.request_trace.stages}
+        assert stages[TraceStageName.PROXY_PREPARE_QUEUE].elapsed_ns == 5_000_000
+        assert stages[TraceStageName.PROXY_READY_QUEUE].elapsed_ns == 7_000_000
+        assert stages[TraceStageName.FIRST_TOKEN].elapsed_ns == 11_000_000
+        assert stages[TraceStageName.DECODE].elapsed_ns == 13_000_000
+        assert stages[TraceStageName.COMPLETION].elapsed_ns == 24_000_000
+        assert stages[TraceStageName.PROXY_READY_QUEUE].elapsed_ns != 107_000_000
+        _assert_no_running_and_valid_refs(task.request_trace)
     asyncio.run(scenario())
