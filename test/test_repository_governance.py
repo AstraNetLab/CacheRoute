@@ -24,6 +24,7 @@ LEGACY_REFERENCE_ALLOWLIST = {
     Path("test/test_repository_governance.py"),
     Path("test/test_runtime_compat.py"),
     Path("test/test_wheel_install.py"),
+    Path("test/test_documentation_governance.py"),
     Path("doc/developer-handbook/architecture-and-evolution.md"),
     Path("doc/developer-handbook/package-and-module-map.md"),
     Path("doc/developer-handbook/public-api-and-data-models.md"),

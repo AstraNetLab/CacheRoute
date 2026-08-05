@@ -68,16 +68,25 @@ def _assert_links_resolve(path: Path):
         assert resolved.exists(), f"{path.relative_to(ROOT)} links to missing target {raw} -> {resolved.relative_to(ROOT) if resolved.is_relative_to(ROOT) else resolved}"
 
 
-def test_repository_local_markdown_links_resolve_for_governed_files():
-    for path in [*HANDBOOK.glob("*.md"), ROOT / "README.md", ROOT / "AGENTS.md"]:
+def _tracked_markdown_files():
+    result = subprocess.run(["git", "ls-files", "*.md"], cwd=ROOT, check=True, text=True, capture_output=True)
+    return [ROOT / line for line in result.stdout.splitlines() if line]
+
+
+def test_repository_local_markdown_links_resolve_for_tracked_docs():
+    for path in _tracked_markdown_files():
         _assert_links_resolve(path)
 
 
 def test_configured_packages_are_represented_in_package_map():
     configured = tomllib.loads(_text("pyproject.toml"))["tool"]["setuptools"]["packages"]
     package_map = _text("doc/developer-handbook/package-and-module-map.md")
-    missing = [package for package in configured if f"`{package}`" not in package_map and package not in package_map]
-    assert not missing
+    table, inventory = package_map.split("## Explicitly configured package coverage", 1)
+    canonical = {package for package in configured if package.startswith("cacheroute.") or package == "cacheroute_compat"}
+    missing_canonical_rows = [package for package in canonical if re.search(rf"^\| [^\n]*`{re.escape(package)}`", table, re.MULTILINE) is None]
+    missing_inventory = [package for package in configured if f"`{package}`" not in inventory]
+    assert not missing_canonical_rows
+    assert not missing_inventory
 
 
 def _explicit_nonempty_all_modules():
@@ -94,9 +103,14 @@ def _explicit_nonempty_all_modules():
     return modules
 
 
-def test_explicit_public_all_modules_are_represented_in_api_catalog():
+def test_explicit_public_all_modules_have_dedicated_api_catalog_entry():
     catalog = _text("doc/developer-handbook/public-api-and-data-models.md")
-    missing = [module for module in _explicit_nonempty_all_modules() if f"`{module}`" not in catalog]
+    missing = []
+    for module in _explicit_nonempty_all_modules():
+        dedicated_header = f"### `{module}`" in catalog
+        dedicated_row = re.search(rf"^\| `{re.escape(module)}` \|", catalog, re.MULTILINE) is not None
+        if not (dedicated_header or dedicated_row):
+            missing.append(module)
     assert not missing
 
 
@@ -124,12 +138,26 @@ def test_handbook_docs_are_repository_only_not_runtime_packages():
 
 def test_root_readme_intro_unchanged_and_only_approved_additions():
     current = _text("README.md")
-    normalized_intro = _readme_intro(current).replace('  <a href="doc/developer-handbook/README.md">Developer Handbook</a> •\n', '')
+    target = "doc/developer-handbook/README.md"
+    nav_link = f'<a href="{target}">Developer Handbook</a>'
+    table_row = f'| [`{target}`]({target}) | Developer and maintenance handbook for public surfaces, architecture status, runtime flows, compatibility, and validation governance. |'
+
+    normalized_intro = _readme_intro(current).replace(f'  {nav_link} •\n', '')
     assert hashlib.sha256(normalized_intro.encode()).hexdigest() == BASE_README_INTRO_SHA256
-    base = subprocess.run(["git", "show", "HEAD:README.md"], cwd=ROOT, check=True, text=True, capture_output=True).stdout
-    diff = subprocess.run(["git", "diff", "--unified=0", "HEAD", "--", "README.md"], cwd=ROOT, check=True, text=True, capture_output=True).stdout
-    assert diff.count('+  <a href="doc/developer-handbook/README.md">Developer Handbook</a> •') == 1
-    assert diff.count('| [`doc/developer-handbook/README.md`](doc/developer-handbook/README.md) | Developer and maintenance handbook') == 1
-    removed = [line for line in diff.splitlines() if line.startswith('-') and not line.startswith('---')]
-    assert removed == []
-    assert "doc/developer-handbook/README.md" not in base
+
+    top_nav_match = re.search(r'<p align="center">\n(?P<nav>.*?<a href="#documentation">Docs</a>\n)</p>', current, re.DOTALL)
+    if top_nav_match is None:
+        top_nav_match = re.search(r'<p align="center">\n(?P<nav>.*?)</p>', current, re.DOTALL)
+    assert top_nav_match is not None
+    top_nav = top_nav_match.group("nav")
+    assert top_nav.count(nav_link) == 1
+    assert current.count(table_row) == 1
+    assert current.count(f'<a href="{target}">Developer Handbook</a>') == 1
+    assert current.count(f'[`{target}`]({target})') == 1
+
+    # The root README must stay a high-level overview. The handbook content
+    # itself lives under doc/developer-handbook, so the root README should not
+    # grow a prose section that duplicates governance details.
+    assert "## Developer Handbook" not in current
+    assert "# CacheRoute Developer and Maintenance Handbook" not in current
+    assert current.count("same PR") == 0

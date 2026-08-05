@@ -57,3 +57,108 @@ This catalog covers current canonical modules under `src/cacheroute` with non-em
 ## Current observability propagation and startup exports
 
 Status: Current. Scheduler-to-Proxy propagation is active; Proxy-local collection observes prepare queue, ready queue, first response, decode, and completion. Collection is process-local and does not return a canonical trace to clients or propagate context to Instance. Exporters, persistence, debug registries, Gateway, LMCache, vLLM, and Instance instrumentation are not Current.
+
+## Dedicated public-module sections
+
+### `cacheroute.runtime`
+
+| Public object | Purpose | Fields/defaults/rules | Example | Tests |
+|---|---|---|---|---|
+| `RuntimeProfile` | Canonical startup and persisted runtime profile enum. | Wire values: `v1`, `legacy`, `test/mock`, `auto`. `normalize()` accepts compatibility aliases such as `modern -> v1`. `resolve_startup("auto", v1_available=True)` returns `v1`; with `v1_available=False` returns `legacy`. `auto` must not be persisted in contract or snapshot models. | `from cacheroute.runtime import RuntimeProfile; assert RuntimeProfile.resolve_startup("auto", v1_available=False).value == "legacy"` | `test/test_runtime_compat.py`, `test/test_wheel_install.py` |
+
+### `cacheroute.runtime.state`
+
+| Public object | Purpose | Fields/defaults/rules | Example | Tests |
+|---|---|---|---|---|
+| `Snapshot` | Frozen Pydantic base for dependency-light state snapshots. | `extra="forbid"`; validates `runtime_profile` fields through `RuntimeProfile.normalize`; rejects `auto`; `model_copy()` revalidates updates; `to_json()` returns JSON serialization. | `from cacheroute.cache import CacheOperationState; assert CacheOperationState.PENDING.value == "pending"` | cache/routing/contract tests |
+| `StateTransitionError` | Structured invalid-state transition error. | `to_dict()` exposes `error`, `model`, `current_state`, `requested_state`, and sorted `allowed_states`. | `from cacheroute.runtime.state import StateTransitionError` | cache/routing tests |
+| `StrEnum` | String enum base for wire-safe enum values. | Enum values serialize as strings. | `from cacheroute.runtime.state import StrEnum` | namespace tests |
+
+### `cacheroute.topology`
+
+| Public object | Purpose | Important fields and rules | Example | Tests |
+|---|---|---|---|---|
+| `LMCacheGatewayProfile` | Gateway capability profile enum. | Wire values: `mp_http_api`, `mp_coordinator`, `mp_sdk`, `mp_metrics_events`, `legacy_gateway`, `mock`, `unknown_future`. | `from cacheroute.topology import LMCacheGatewayProfile; assert LMCacheGatewayProfile.MOCK.value == "mock"` | `test/test_namespace_layout.py` |
+| `LMCacheEndpoint` | Immutable endpoint identity. | Required: `name`, `gateway_profile`, `compatibility_profile_id`. Defaults: `runtime_profile=v1`, `generation=1`, optional `adapter`, `tier`. `endpoint_id` is canonical `endpoint_<32 hex>` from `name`; supplied mismatched IDs fail. `next_generation()` returns a validated copy with incremented generation. | `from cacheroute.topology import LMCacheEndpoint, LMCacheGatewayProfile; ep=LMCacheEndpoint(name="local", gateway_profile=LMCacheGatewayProfile.MOCK, compatibility_profile_id="mock")` | wheel/namespace tests |
+
+### `cacheroute.cache`
+
+| Public object/model family | Purpose | Required fields | Defaults and validation | State/ID/timestamp behavior | Example | Tests |
+|---|---|---|---|---|---|---|
+| Observation enums | Wire vocabulary for cache observations. | N/A | `ObservationSource`: `http_api`, `coordinator`, `sdk`, `metrics_event`, `legacy_projection`, `mock`; `ObservationConfidence`: `low`, `medium`, `high`; `ObservationState`: `pending`, `available`, `unavailable`, `unknown`, `partial`. | String enum serialization. | `from cacheroute.cache import ObservationState; assert ObservationState.AVAILABLE.value == "available"` | contract/cache tests |
+| Operation enums | Wire vocabulary for cache operations. | N/A | `CacheOperationType`: `lookup`, `prefetch`, `pin`, `unpin`, `clear`, `rebuild`, `observe`; `CacheOperationState`: `pending`, `running`, `retry_wait`, `succeeded`, `failed`, `cancelled`. | `terminal` true for succeeded/failed/cancelled; `retryable` true for retry_wait. | `from cacheroute.cache import CacheOperationState; assert CacheOperationState.FAILED.terminal` | contract/cache tests |
+| `CacheArtifact` | Canonical cache artifact identity. | `knowledge_id`, `model_profile`, `tokenizer_profile`, `cache_data_profile`, `compatibility_profile_id`. | `artifact_version="1"`, `adapters=()`, `runtime_profile=v1`, `schema_version="v1"`, `created_at=utc_now`. Non-empty identity fields; adapters must be non-empty strings and unique if present. | `artifact_id` canonicalizes to `artifact_<32 hex>` from identity; mismatched supplied ID fails; UTC timestamp required by Pydantic aware datetime. | `from cacheroute.cache import CacheArtifact; a=CacheArtifact(knowledge_id="k1", model_profile="m", tokenizer_profile="t", cache_data_profile="kv", compatibility_profile_id="c")` | `test/test_contract_foundation.py` |
+| `CacheReplicaObservation` | Observation of an artifact at an endpoint. | `artifact_id`, `state`, `source`, `endpoint_id`, `endpoint_generation`, `gateway_profile`, `compatibility_profile_id`. | `runtime_profile=v1`, `projected_at=utc_now`, `confidence=medium`, `legacy_projection=False`, `compatibility_uncertain=False`. | IDs: `observation_<32 hex>`, `artifact_<32 hex>`, `endpoint_<32 hex>`. Non-Legacy observations require `source_observed_at`; `expires_at` must follow source time; endpoint generation `0` is Legacy-only; Legacy projection requires legacy runtime/gateway/source/uncertainty and generation `0`. | `from cacheroute.cache import CacheReplicaObservation, ObservationState, ObservationSource` | contract/cache tests |
+| `CacheOperationTask` | Immutable cache operation lifecycle task. | `idempotency_key`, `operation`, `artifact_id`, `compatibility_profile_id`, `gateway_profile`. | `task_id=cacheop_<uuid32>`, `runtime_profile=v1`, `state=pending`, `attempt=0`, UTC `created_at`/`updated_at`. | Legal transitions: pending -> running/cancelled; running -> succeeded/retry_wait/failed/cancelled; retry_wait -> running/failed/cancelled; terminal states do not transition. `endpoint_id` and `endpoint_generation` must appear together and generation is `>=1`. | `from cacheroute.cache import CacheOperationTask, CacheOperationType` | cache/routing/contract tests |
+
+### `cacheroute.routing`
+
+| Public object | Purpose | Fields/defaults/rules | State behavior | Example | Tests |
+|---|---|---|---|---|---|
+| `QueueState` | Dependency-light queue lifecycle enum. | Values: `queued`, `claimed`, `executing`, `retry_wait`, `completed`, `failed`, `cancelled`; terminal and retryable properties. | Terminal: completed/failed/cancelled. Retryable: retry_wait. | `from cacheroute.routing import QueueState; assert QueueState.RETRY_WAIT.retryable` | namespace/routing tests |
+| `QueueWork` | Queue item mapped to a cache operation. | Required: `idempotency_key`, `cache_task_id`. Defaults: `work_id=queuework_<uuid32>`, `state=queued`, UTC `created_at` and `updated_at`. Validates non-empty idempotency key, UTC timestamps, and monotonic `updated_at`. | Legal transitions: queued -> claimed/cancelled; claimed -> executing/retry_wait/cancelled; executing -> completed/retry_wait/failed/cancelled; retry_wait -> queued/failed/cancelled. | `from cacheroute.routing import QueueWork; work=QueueWork(idempotency_key="k", cache_task_id="cacheop_" + "0"*32)` | namespace/routing tests |
+
+### `cacheroute.contracts.v1.common`
+
+| Public object | Purpose | Rules | Example | Tests |
+|---|---|---|---|---|
+| Constants | Version and endpoint wire constants. | `KDN_CONTRACT_VERSION="kdn.v1"`; `GATEWAY_CONTRACT_VERSION="lmcache-gateway.v1"`; `ENDPOINT_ID_PATTERN="^endpoint_[0-9a-f]{32}$"`. | `from cacheroute.contracts.v1.common import KDN_CONTRACT_VERSION` | contract tests |
+| `SupportState` | Tri-state support enum. | Values: `supported`, `unsupported`, `unknown`; only `supported` is truthy. | `from cacheroute.contracts.v1.common import SupportState; assert bool(SupportState.SUPPORTED)` | contract tests |
+| `ContractModel` | Frozen extra-forbid contract base. | `model_copy()` revalidates updates. | `from cacheroute.contracts.v1.common import ContractModel` | contract tests |
+| `VersionedMessage` | Base persisted/request envelope. | Defaults: `contract_version=kdn.v1`, `request_id=req_<uuid32>`, `timestamp=utc_now`; required `runtime_profile`; optional `correlation_id`. Rejects unsupported contract version, non-UTC timestamp, and startup-only `auto`. | `from cacheroute.contracts.v1 import VersionedMessage` | contract tests |
+| `GatewayTargetedRequest` | Request pinned to one endpoint incarnation. | Requires `compatibility_profile_id`, `endpoint_id`, `endpoint_generation`; generation `0` only valid for Legacy runtime. | `from cacheroute.contracts.v1 import GatewayTargetedRequest` | contract tests |
+| `TokenReference`, `TokenInput` | Storage-neutral token lookup input. | `TokenInput` requires exactly one of non-empty non-negative `token_ids` or `token_reference`. | `from cacheroute.contracts.v1 import TokenInput; TokenInput(token_ids=(1,2))` | contract tests |
+
+### `cacheroute.contracts.v1.errors`
+
+| Public object | Purpose | Fields/defaults/rules | Example | Tests |
+|---|---|---|---|---|
+| `OutcomeCode` | Contract outcome enum. | Values: `success`, `unsupported`, `incompatible`, `stale`, `partial`, `failed`, `cancelled`, `text_fallback`, `idempotency_conflict`. | `from cacheroute.contracts.v1 import OutcomeCode; assert OutcomeCode.SUCCESS.value == "success"` | contract tests |
+| `ContractErrorDetail` / `ContractError` | Sanitized structured error detail and compatibility alias. | Required `code`, non-empty `message`; default `contract_version=kdn.v1`, `retryable=False`, `fallback_eligible=False`; contract version must match. | `from cacheroute.contracts.v1 import ContractErrorDetail` | contract tests |
+
+### `cacheroute.contracts.v1.knowledge`
+
+| Model family | Purpose | Required fields | Defaults and rules | Example | Tests |
+|---|---|---|---|---|---|
+| Knowledge descriptor and mutation requests | `KnowledgeDescriptor`, `RegisterKnowledgeRequest`, `UpdateKnowledgeRequest`. | Versioned envelope fields plus `runtime_profile`, `knowledge_id`. | `revision="1"`; optional `content_reference`; `knowledge_id` and revision non-empty. | `from cacheroute.contracts.v1 import RegisterKnowledgeRequest` | `test/test_contract_service_migration.py` |
+| Lookup/compatibility requests | `ResolveKnowledgeRequest`, `ListCompatibleArtifactsRequest`, `QueryArtifactCompatibilityRequest`. | `knowledge_id` for resolve/list; `artifact` for compatibility query. | Inherit VersionedMessage UTC/runtime rules. | `from cacheroute.contracts.v1 import ResolveKnowledgeRequest` | contract tests |
+| Outcome reporting | `ReportRequestOutcomeRequest`. | `knowledge_id`, `outcome`. | Optional `operation_id`; inherits VersionedMessage rules. | `from cacheroute.contracts.v1 import ReportRequestOutcomeRequest` | contract tests |
+| Responses | `KnowledgeResponse` and typed aliases. | Versioned envelope and `runtime_profile`. | `outcome=success`; optional `knowledge_id`, `artifact`, `artifacts=()`, `compatible`, `error`. Cross-field rule: `error.code` must match non-success outcome; success cannot carry error. | `from cacheroute.contracts.v1 import RegisterKnowledgeResponse` | contract tests |
+
+### `cacheroute.contracts.v1.cache_service`
+
+| Model family | Purpose | Required fields | Defaults and rules | Example | Tests |
+|---|---|---|---|---|---|
+| Artifact and lookup requests | `ArtifactRequest`, `GetCacheObservationRequest`, `LookupArtifactRequest`, `LookupTokensRequest`. | Gateway target fields plus `artifact_id` or `tokens`. | `artifact_id` uses `artifact_<32 hex>`; token lookup requires valid `TokenInput`; endpoint generation `0` is Legacy-only. | `from cacheroute.contracts.v1 import LookupTokensRequest, TokenInput` | contract tests |
+| Operation intent/status requests | `OperationIntentRequest`, create prefetch/pin/unpin/clear/rebuild, `GetOperationStatusRequest`, `CancelOperationRequest`. | `artifact_id`, gateway target fields, `idempotency_key` for intents; `task_id` for status/cancel. | `task_id` uses `cacheop_<32 hex>`; `idempotency_key` non-empty. | `from cacheroute.contracts.v1 import CreatePrefetchIntentRequest` | contract tests |
+| Endpoint and summary requests | `GetLMCacheEndpointsRequest`, `GetTierAndAdapterSummaryRequest`, `GetMaintenanceStatusRequest`. | Runtime envelope or gateway target fields. | Inherit UTC/runtime/generation validation. | `from cacheroute.contracts.v1 import GetLMCacheEndpointsRequest` | contract tests |
+| Summary/coverage models | `TokenCoverage`, `SummaryBase`, `AdapterSummary`, `TierLevel`, `CapacityUsageObservation`, `TierSummary`, `MaintenanceSummary`. | Coverage requires `whole_request_hit`, `total_tokens`; summaries require `source`, `runtime_profile`, `compatibility_profile_id`, `endpoint_id`, `endpoint_generation`, `support`. | `TierLevel`: `l1`, `l2`; summary `observed_at=utc_now`; capacities non-negative when present; endpoint IDs validated. | `from cacheroute.contracts.v1 import TokenCoverage` | contract tests |
+| Responses | `CacheServiceResponse`, `GatewayTargetedResponse`, typed lookup/operation/summary responses. | Versioned envelope and runtime; targeted responses require compatibility/endpoint fields. | `outcome=success`; optional artifact, observation, operation, endpoints, token coverage, summaries, error. Typed create responses require operation type matching prefetch/pin/unpin/clear/rebuild. | `from cacheroute.contracts.v1 import OperationResponse` | contract tests |
+| `INTENT_OPERATION_TYPES` | Mapping from create-intent request class to operation type. | N/A | Internal mapping exported for compatibility with contract tests and service migration; do not treat as an extension registry. | `from cacheroute.contracts.v1.cache_service import INTENT_OPERATION_TYPES` | contract tests |
+
+### `cacheroute.observability`
+
+| Public object family | Purpose | Rules | Example | Tests |
+|---|---|---|---|---|
+| Clock classes | `TraceClock`, `SystemTraceClock`, `ManualTraceClock`. | Provide UTC trace timestamps; manual clock supports deterministic tests. | `from cacheroute.observability import SystemTraceClock` | `test/observability` |
+| `TraceCollector` and `project_legacy_proxy_trace` | Process-local trace collection and legacy Proxy projection. | Collection remains process-local; no exporter/persistence/debug registry is Current. | `from cacheroute.observability import TraceCollector` | `test/observability` |
+| Propagation helpers | Reserved trace headers, `TracePropagationError`, `parse_sample_rate`, `is_trace_sampled`, `new_trace_id`, `create_trace_context`, `encode_trace_headers`, `decode_trace_headers`. | Header target is Scheduler-to-Proxy only. Scheduler owns request ID and overwrites reserved headers. Unknown `x-cacheroute-trace-*` headers, conflicts, stale timestamps, invalid sample flag, `auto`, and malformed IDs fail with bounded reasons. `_MAX_AGE` and `_FUTURE_SKEW_TOLERANCE` are currently exported but are internal implementation boundaries with no stability promise. | `from cacheroute.observability import create_trace_context, encode_trace_headers` | `test/observability` |
+| Startup helpers | `ObservabilityStartupConfig`, `resolve_observability_startup`, `sample_rate_warning_reason`. | Defaults fail closed; malformed sample rate becomes `0.0` with warning reason. Current Scheduler/Proxy call with `v1_available=False`, so `auto` resolves to `legacy` unless explicit metadata is supplied. | `from cacheroute.observability import resolve_observability_startup` | `test/observability` |
+
+### `cacheroute.observability.v1`
+
+| Public object/model family | Purpose | Important fields/rules | Example | Tests |
+|---|---|---|---|---|
+| Enums | Stable trace vocabulary. | Components: `client`, `scheduler`, `proxy`, `kdn`, `gateway`, `instance`, `vllm`, `lmcache`, `legacy_adapter`, `test`; states: `pending`, `running`, `completed`, `skipped`; value kinds: `predicted`, `desired`, `observed`, `measured`, `actual`, `inferred`, `legacy_projected`; waiter states: `waiting`, `completed`, `cancelled`, `detached`, `expired`; stage names include knowledge, cache, gateway, Proxy queue, first token, decode, completion, fallback, and legacy stages. | `from cacheroute.observability.v1 import TraceComponent` | `test/observability` |
+| `TraceContext` | Trace identity envelope. | Required `trace_id`, `request_id`, `runtime_profile`, `created_at`; defaults `schema_version=observability.v1`, `sampled=True`; optional `correlation_id`, `expires_at`. UTC required; `expires_at` must follow `created_at`; `auto` forbidden; IDs are bounded safe labels. | `from cacheroute.observability.v1 import TraceContext` | `test/observability` |
+| `TraceProvenance` | Source and compatibility metadata for observations. | Required `source_component`, `runtime_profile`, `captured_at`; optional endpoint/compatibility/gateway/tier fields. Endpoint ID/generation must appear together; generation zero and `legacy_adapter` source are Legacy-only; fresh-until must follow capture time; safe label validation blocks sensitive/path-like data. | `from cacheroute.observability.v1 import TraceProvenance` | `test/observability` |
+| `TraceMeasurement` | One safe scalar/count/timing measurement. | Required `code`, `value_kind`; exactly one of duration/count/bytes/tokens/ratio/boolean/timestamp/scalar. Code is bounded machine identifier; ratio in `[0,1]`; timestamps UTC; string scalar allowlist covers logical values such as injection path and blocks physical paths/sensitive data. | `from cacheroute.observability.v1 import TraceMeasurement` | `test/observability` |
+| `TraceStage` | Lifecycle stage record. | Required `stage_id`, `sequence`, `name`, `state`, `provenance`. Pending cannot include lifecycle completion fields; running requires `started_at`; completed requires start/finish/elapsed/outcome; skipped requires only `skip_reason`; error outcome must match error code. Parent/fallback IDs must be acyclic at trace level. | `from cacheroute.observability.v1 import TraceStage` | `test/observability` |
+| Request/operation traces | `RequestTrace`, `CacheOperationTrace`, `OperationWaiterLink`. | Stage sequences unique and monotonically increasing; cache operation IDs use `cacheop_<32 hex>`; waiter links unique; waiter timestamps UTC and monotonic. | `from cacheroute.observability.v1 import RequestTrace` | `test/observability` |
+
+### `cacheroute.compat` and `cacheroute_compat`
+
+| Public object/module | Purpose | Rules | Example | Tests |
+|---|---|---|---|---|
+| `cacheroute.compat.runtime` | Transitional runtime compatibility helpers. | Exports `RUNTIME_PROFILE_AUTO`, `RUNTIME_PROFILE_LEGACY`, `RUNTIME_PROFILE_TEST_MOCK`, `RUNTIME_PROFILE_V1`, `SUPPORTED_RUNTIME_PROFILES`, `normalize_runtime_profile`, `resolve_scan_match`, `classify_lmcache_redis_key`, and `filter_supported_keys`. Preserve legacy wire values and Redis-key classification behavior. | `from cacheroute.compat.runtime import normalize_runtime_profile; assert normalize_runtime_profile("modern") == "v1"` | `test/test_runtime_compat.py` |
+| `cacheroute_compat` / `cacheroute_compat.runtime` | Legacy import namespace. | Forwards canonical compatibility objects and must preserve object identity for every exported name. | `from cacheroute_compat.runtime import normalize_runtime_profile` | `test/test_wheel_install.py` |
