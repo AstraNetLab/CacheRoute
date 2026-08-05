@@ -255,7 +255,7 @@ def test_canonical_observability_dependencies_are_allowed():
         "typing", "uuid", "pydantic", "cacheroute.runtime", "cacheroute.topology",
         "cacheroute.cache", "cacheroute.contracts.v1.common",
         "cacheroute.contracts.v1.errors", "clock", "collector", "legacy_proxy",
-            "enums", "models", "propagation", "v1", "v1.models",
+            "enums", "models", "propagation", "startup", "v1", "v1.models",
     }
     for path in (ROOT / "src/cacheroute/observability").rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -268,6 +268,26 @@ def test_canonical_observability_dependencies_are_allowed():
         }
         assert imports <= allowed, (path.relative_to(ROOT), imports - allowed)
         assert "sys.path" not in path.read_text(encoding="utf-8")
+
+
+def test_internal_trace_header_vocabulary_has_single_owner_and_services_import_it():
+    owner = ROOT / "src/cacheroute/observability/propagation.py"
+    header_literals = {
+        "scheduler-request-id",
+        "x-cacheroute-trace-version",
+        "x-cacheroute-trace-id",
+        "x-cacheroute-runtime-profile",
+        "x-cacheroute-trace-sampled",
+        "x-cacheroute-trace-created-at",
+    }
+    for literal in header_literals:
+        owners = {path.relative_to(ROOT) for path in _tracked_files() if path.suffix == ".py" and literal in path.read_text(encoding="utf-8")}
+        assert owners <= {owner.relative_to(ROOT), Path("test/observability/test_propagation.py"), Path("test/observability/test_scheduler_proxy_production_paths.py"), Path("test/test_repository_governance.py")}
+    for relative in (Path("scheduler/scheduler.py"), Path("proxy/proxy.py")):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert "cacheroute.observability" in text
+    assert "extra_headers=extra_headers" in (ROOT / "scheduler/scheduler.py").read_text(encoding="utf-8")
+    assert "extra_headers" not in (ROOT / "proxy/queue/manager.py").read_text(encoding="utf-8")
 
 
 def test_observability_does_not_duplicate_canonical_model_classes():

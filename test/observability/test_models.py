@@ -34,7 +34,28 @@ def context(**updates):
 
 def test_public_surfaces_and_canonical_identity():
     assert api.__all__ == ["TraceContext", "TraceComponent", "TraceStageName", "TraceStageState", "TraceValueKind", "TraceProvenance", "TraceMeasurement", "TraceStage", "RequestTrace", "CacheOperationTrace", "OperationWaiterLink", "OperationWaiterState"]
-    assert helpers.__all__ == ["TraceClock", "SystemTraceClock", "ManualTraceClock", "TraceCollector", "project_legacy_proxy_trace"]
+    assert helpers.__all__ == [
+        "TraceClock", "SystemTraceClock", "ManualTraceClock", "TraceCollector",
+        "project_legacy_proxy_trace",
+        "RESERVED_TRACE_HEADERS", "TracePropagationError", "create_trace_context",
+        "decode_trace_headers", "encode_trace_headers", "is_trace_sampled",
+        "new_trace_id", "parse_sample_rate",
+        "ObservabilityStartupConfig", "resolve_observability_startup",
+    ]
+    import cacheroute.observability.propagation as propagation
+    import cacheroute.observability.startup as startup
+    assert helpers.RESERVED_TRACE_HEADERS is propagation.RESERVED_TRACE_HEADERS
+    assert helpers.TracePropagationError is propagation.TracePropagationError
+    assert helpers.create_trace_context is propagation.create_trace_context
+    assert helpers.decode_trace_headers is propagation.decode_trace_headers
+    assert helpers.encode_trace_headers is propagation.encode_trace_headers
+    assert helpers.is_trace_sampled is propagation.is_trace_sampled
+    assert helpers.new_trace_id is propagation.new_trace_id
+    assert helpers.parse_sample_rate is propagation.parse_sample_rate
+    assert helpers.ObservabilityStartupConfig is startup.ObservabilityStartupConfig
+    assert helpers.resolve_observability_startup is startup.resolve_observability_startup
+    assert helpers.create_trace_context.__module__ == "cacheroute.observability.propagation"
+    assert helpers.resolve_observability_startup.__module__ == "cacheroute.observability.startup"
     assert ReusedRuntime is RuntimeProfile
     assert ReusedOutcome is OutcomeCode
     assert ReusedError is ContractErrorDetail

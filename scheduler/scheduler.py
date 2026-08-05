@@ -69,17 +69,19 @@ from .strategy import create_strategy
 
 from util import timing
 from cacheroute.observability import (
-    SystemTraceClock, create_trace_context, encode_trace_headers, parse_sample_rate,
+    SystemTraceClock, create_trace_context, encode_trace_headers,
+    resolve_observability_startup,
 )
 from cacheroute.runtime import RuntimeProfile
 
 # Use a fallback default when no external value is provided, making local runs easier
 from core.config import DEFAULT_MODEL, DEFAULT_EMBED_MODEL, SCHEDULER_CP_PORT
 
-_SCHEDULER_RUNTIME_PROFILE = RuntimeProfile.resolve_startup(
-    os.environ.get("CACHEROUTE_RUNTIME_PROFILE", "legacy")
-)
-_SCHEDULER_TRACE_SAMPLE_RATE = parse_sample_rate(os.environ.get("CACHEROUTE_TRACE_SAMPLE_RATE"))
+_DEFAULT_OBSERVABILITY_CONFIG = resolve_observability_startup(v1_available=False)
+
+
+def resolve_scheduler_observability_startup(runtime_profile: str | None = None, sample_rate: str | float | None = None):
+    return resolve_observability_startup(runtime_profile, sample_rate, v1_available=False)
 
 
 # ======================= Request ID allocator and other basic functions=======================
@@ -221,8 +223,12 @@ async def lifespan(app: FastAPI):
       - shutdown: no resources to clean up currently; interface reserved
     """
     log_path = init_logging()
-    app.state.runtime_profile = _SCHEDULER_RUNTIME_PROFILE
-    app.state.trace_sample_rate = _SCHEDULER_TRACE_SAMPLE_RATE
+    obs_config = resolve_scheduler_observability_startup(
+        os.environ.get("CACHEROUTE_RUNTIME_PROFILE"),
+        os.environ.get("CACHEROUTE_TRACE_SAMPLE_RATE"),
+    )
+    app.state.runtime_profile = obs_config.runtime_profile
+    app.state.trace_sample_rate = obs_config.trace_sample_rate
     app.state.trace_clock = SystemTraceClock()
     print(f"[Scheduler] started. log_file={log_path}")
     # ------------------------------------------
@@ -372,8 +378,8 @@ def build_proxy_headers(app: FastAPI, raw_headers: Dict[str, str], request_id: s
         outgoing["authorization"] = raw_headers["authorization"]
     context = create_trace_context(
         request_id,
-        getattr(app.state, "runtime_profile", _SCHEDULER_RUNTIME_PROFILE),
-        sample_rate=getattr(app.state, "trace_sample_rate", _SCHEDULER_TRACE_SAMPLE_RATE),
+        getattr(app.state, "runtime_profile", _DEFAULT_OBSERVABILITY_CONFIG.runtime_profile),
+        sample_rate=getattr(app.state, "trace_sample_rate", _DEFAULT_OBSERVABILITY_CONFIG.trace_sample_rate),
         clock=getattr(app.state, "trace_clock", None) or SystemTraceClock(),
     )
     outgoing.update(encode_trace_headers(context))

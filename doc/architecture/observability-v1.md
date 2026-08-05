@@ -60,11 +60,7 @@ names are never trusted; Authorization forwarding and the serialized payload
 remain unchanged. Propagation stops at the Proxy and no trace header or model
 is sent to an Instance or returned to a client.
 
-Scheduler and Proxy each resolve `CACHEROUTE_RUNTIME_PROFILE` once at startup,
-with `legacy` as the compatibility default. `auto` is startup-only. A missing,
-malformed, stale, request-ID-mismatched, or profile-mismatched context causes a
-Proxy-local context to be created and never rejects an otherwise valid request.
-Profile metadata does not select runtime behavior.
+Scheduler and Proxy each resolve `CACHEROUTE_RUNTIME_PROFILE` through an explicit lifespan startup helper, with `legacy` as the compatibility default. Because the current services do not have an implemented production v1 data path, `auto` resolves with `v1_available=False` and is stored as `legacy`; explicit `legacy`, `test/mock`, and `v1` remain valid metadata values, but no stored or propagated context can remain `auto`. A missing, malformed, stale, request-ID-mismatched, or profile-mismatched context causes a Proxy-local context to be created and never rejects an otherwise valid request. Profile metadata does not select runtime behavior. The propagation freshness rule retains the five-minute maximum age and also accepts only a bounded 30-second future clock skew between Scheduler and Proxy clocks.
 
 `CACHEROUTE_TRACE_SAMPLE_RATE` defaults to `0.0`. Invalid configuration fails
 closed to that value. Rates of zero and one disable or enable collection for
@@ -75,12 +71,13 @@ canonical trace ID. An accepted context retains the Scheduler decision.
 
 The Proxy prepare queue interval starts immediately before `prepare_q.put` and
 finishes at dequeue. The ready queue interval starts immediately before the
-current ready-queue insertion and finishes after the dispatch-turn wait,
-immediately before forwarding. Completion spans downstream handling. For
-streams, first-token spans forwarding to the first non-empty chunk and decode
-spans from that chunk until stream end. Non-streaming requests explicitly skip
-first-token and decode; empty streams explicitly fail first-token and skip
-decode. These are **Proxy-observed transport boundaries**, not authoritative
+current ready-queue insertion, after reservation and prediction work, and
+finishes after the dispatch-turn wait, immediately before forwarding. Completion
+spans downstream handling. For streams, first-token spans forwarding to the first
+non-empty chunk and decode spans from that chunk until stream end. Non-streaming
+requests explicitly skip first-token and decode; an empty successful stream fails
+first-token and completion with the bounded empty-stream error, skips decode, and
+exports a failed request trace. These are **Proxy-observed transport boundaries**, not authoritative
 vLLM execution, prefill, decode, Gateway, or LMCache timings.
 
 Collection remains process-local and immutable. The Legacy trace mapping and

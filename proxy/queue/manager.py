@@ -386,7 +386,6 @@ class QueueManager:
         task.trace["prepared_buffer_size"] = int(len(buf))
         ready_enqueue_ms = _now_ms()
         task.trace["ready_enqueue_ms"] = ready_enqueue_ms
-        task.ready_queue_stage_id = self._start_stage(task, TraceStageName.PROXY_READY_QUEUE)
         proxy_enqueue_ms = int(task.trace.get("proxy_enqueue_ms", ready_enqueue_ms) or ready_enqueue_ms)
         full_prepare_ms = max(0, ready_enqueue_ms - proxy_enqueue_ms)
         task.trace["predict_know_prepare_ms"] = int(full_prepare_ms)
@@ -396,6 +395,7 @@ class QueueManager:
         if prepare_self_done_ms > 0:
             task.trace["prepare_buffer_wait_ms"] = max(0, ready_enqueue_ms - prepare_self_done_ms)
         await self._reserve_ready_task(task, now_s=time.time())
+        task.ready_queue_stage_id = self._start_stage(task, TraceStageName.PROXY_READY_QUEUE)
         await q.ready_q.put(task)
         logger.info(
             "[Queue] enqueue_ready rid=%s instance=%s ready_len=%s prepare_seq=%s ready_release_seq=%s bypass=%s blocked_seq=%s",
@@ -1363,7 +1363,11 @@ class QueueManager:
                         await task.response_queue.put(chunk)
 
                 task.trace["forward_end_ms"] = _now_ms()
+                terminal_outcome = OutcomeCode.SUCCESS
+                terminal_error = None
                 if use_chunked and not seen_first_chunk:
+                    terminal_outcome = OutcomeCode.FAILED
+                    terminal_error = _EMPTY_STREAM
                     self._finish_stage(task, task.first_token_stage_id, OutcomeCode.FAILED, _EMPTY_STREAM)
                     task.first_token_stage_id = None
                     if task.trace_collector is not None and task.trace_provenance is not None:
@@ -1373,8 +1377,8 @@ class QueueManager:
                         )
                 else:
                     self._finish_stage(task, task.decode_stage_id, OutcomeCode.SUCCESS)
-                self._finish_stage(task, task.completion_stage_id, OutcomeCode.SUCCESS)
-                self._finalize_trace(task, OutcomeCode.SUCCESS)
+                self._finish_stage(task, task.completion_stage_id, terminal_outcome, terminal_error)
+                self._finalize_trace(task, terminal_outcome, terminal_error)
                 await self._mark_task_decode_end(task, instance_id)
 
                 # Terminator

@@ -42,7 +42,7 @@ from proxy.strategy.factory import build_instance_strategy
 from proxy.queue import QueueManager, ProxyTask
 from cacheroute.observability import (
     SystemTraceClock, TraceCollector, TracePropagationError,
-    create_trace_context, decode_trace_headers, parse_sample_rate,
+    create_trace_context, decode_trace_headers, resolve_observability_startup,
 )
 from cacheroute.observability.v1 import TraceComponent, TraceProvenance
 from cacheroute.runtime import RuntimeProfile
@@ -77,8 +77,11 @@ INSTANCE_PORT = int(os.environ.get("INSTANCE_PORT", "9001"))
 logger = logging.getLogger("proxy")
 logging.basicConfig(level=logging.INFO)
 
-_PROXY_RUNTIME_PROFILE = RuntimeProfile.resolve_startup(os.environ.get("CACHEROUTE_RUNTIME_PROFILE", "legacy"))
-_PROXY_TRACE_SAMPLE_RATE = parse_sample_rate(os.environ.get("CACHEROUTE_TRACE_SAMPLE_RATE"))
+_DEFAULT_OBSERVABILITY_CONFIG = resolve_observability_startup(v1_available=False)
+
+
+def resolve_proxy_observability_startup(runtime_profile: str | None = None, sample_rate: str | float | None = None):
+    return resolve_observability_startup(runtime_profile, sample_rate, v1_available=False)
 
 
 def _load_static_kdn_links() -> Dict[str, Any]:
@@ -136,8 +139,12 @@ async def lifespan(app: FastAPI):
       - shutdown: unregister gracefully (not required; TTL handles kill -9 cases)
     """
     _squelch_noisy_loggers()
-    app.state.runtime_profile = _PROXY_RUNTIME_PROFILE
-    app.state.trace_sample_rate = _PROXY_TRACE_SAMPLE_RATE
+    obs_config = resolve_proxy_observability_startup(
+        os.environ.get("CACHEROUTE_RUNTIME_PROFILE"),
+        os.environ.get("CACHEROUTE_TRACE_SAMPLE_RATE"),
+    )
+    app.state.runtime_profile = obs_config.runtime_profile
+    app.state.trace_sample_rate = obs_config.trace_sample_rate
     app.state.trace_clock = SystemTraceClock()
     app.state.injection_strategy_name = PROXY_INJECTION_STRATEGY  # type: ignore
     logger.info("[Proxy] injection strategy=%s", app.state.injection_strategy_name)
@@ -344,8 +351,8 @@ def recover_request_from_payload(payload: Dict[str, Any]) -> SchedulerRequest:
 
 def build_proxy_trace(request: FastAPIRequest, request_id: str | int):
     """Accept Scheduler context or create a bounded Proxy-local fallback."""
-    profile = getattr(request.app.state, "runtime_profile", _PROXY_RUNTIME_PROFILE)
-    rate = getattr(request.app.state, "trace_sample_rate", _PROXY_TRACE_SAMPLE_RATE)
+    profile = getattr(request.app.state, "runtime_profile", _DEFAULT_OBSERVABILITY_CONFIG.runtime_profile)
+    rate = getattr(request.app.state, "trace_sample_rate", _DEFAULT_OBSERVABILITY_CONFIG.trace_sample_rate)
     clock = getattr(request.app.state, "trace_clock", None) or SystemTraceClock()
     try:
         context = decode_trace_headers(request.headers, clock=clock)

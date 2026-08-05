@@ -34,6 +34,9 @@ RESERVED_TRACE_HEADERS = (
 )
 _TRACE_ID = re.compile(r"^trace_[0-9a-f]{32}$")
 _MAX_AGE = timedelta(minutes=5)
+# Scheduler and Proxy clocks may differ slightly during startup or host sync.
+# Accept only this bounded future skew and retain the maximum-age freshness rule.
+_FUTURE_SKEW_TOLERANCE = timedelta(seconds=30)
 
 
 class TracePropagationError(ValueError):
@@ -105,7 +108,8 @@ def encode_trace_headers(context: TraceContext) -> dict[str, str]:
 
 
 def decode_trace_headers(headers: Mapping[str, str], *, clock: TraceClock | None = None,
-                         max_age: timedelta = _MAX_AGE) -> TraceContext:
+                         max_age: timedelta = _MAX_AGE,
+                         future_skew_tolerance: timedelta = _FUTURE_SKEW_TOLERANCE) -> TraceContext:
     lowered: dict[str, str] = {}
     for key, value in headers.items():
         name = str(key).lower()
@@ -139,7 +143,7 @@ def decode_trace_headers(headers: Mapping[str, str], *, clock: TraceClock | None
     if created_at.utcoffset() != timedelta(0):
         raise TracePropagationError("created_at_invalid")
     now = (clock or SystemTraceClock()).utc_now()
-    if created_at > now or now - created_at > max_age:
+    if created_at - now > future_skew_tolerance or now - created_at > max_age:
         raise TracePropagationError("created_at_stale")
     try:
         return TraceContext(
@@ -155,6 +159,7 @@ __all__ = [
     "REQUEST_ID_HEADER", "TRACE_VERSION_HEADER", "TRACE_ID_HEADER",
     "RUNTIME_PROFILE_HEADER", "TRACE_SAMPLED_HEADER", "TRACE_CREATED_AT_HEADER",
     "RESERVED_TRACE_HEADERS", "TracePropagationError", "parse_sample_rate",
+    "_MAX_AGE", "_FUTURE_SKEW_TOLERANCE",
     "is_trace_sampled", "new_trace_id", "create_trace_context",
     "encode_trace_headers", "decode_trace_headers",
 ]

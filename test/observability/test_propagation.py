@@ -6,7 +6,9 @@ from cacheroute.observability import ManualTraceClock
 from cacheroute.observability.propagation import (
     RESERVED_TRACE_HEADERS, TracePropagationError, create_trace_context,
     decode_trace_headers, encode_trace_headers, is_trace_sampled, parse_sample_rate,
+    _FUTURE_SKEW_TOLERANCE, _MAX_AGE,
 )
+from cacheroute.observability.startup import resolve_observability_startup
 from cacheroute.runtime import RuntimeProfile
 
 NOW = datetime(2026, 8, 4, 12, tzinfo=timezone.utc)
@@ -45,10 +47,14 @@ def test_malformed_context_is_rejected(change):
         decode_trace_headers(headers, clock=ManualTraceClock(NOW))
 
 
-def test_stale_and_future_timestamps_are_rejected():
-    for now in (NOW - timedelta(seconds=1), NOW + timedelta(minutes=6)):
-        with pytest.raises(TracePropagationError):
-            decode_trace_headers(encode_trace_headers(context()), clock=ManualTraceClock(now))
+def test_timestamp_freshness_boundaries():
+    headers = encode_trace_headers(context())
+    decode_trace_headers(headers, clock=ManualTraceClock(NOW - _FUTURE_SKEW_TOLERANCE))
+    with pytest.raises(TracePropagationError):
+        decode_trace_headers(headers, clock=ManualTraceClock(NOW - _FUTURE_SKEW_TOLERANCE - timedelta(microseconds=1)))
+    decode_trace_headers(headers, clock=ManualTraceClock(NOW + _MAX_AGE))
+    with pytest.raises(TracePropagationError):
+        decode_trace_headers(headers, clock=ManualTraceClock(NOW + _MAX_AGE + timedelta(microseconds=1)))
 
 
 def test_sampling_boundaries_and_invalid_configuration():
@@ -57,3 +63,17 @@ def test_sampling_boundaries_and_invalid_configuration():
     assert is_trace_sampled(TRACE_ID, 0.5) == is_trace_sampled(TRACE_ID, 0.5)
     for value in (None, "bad", "nan", "inf", -1, 2):
         assert parse_sample_rate(value) == 0.0
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, RuntimeProfile.LEGACY),
+    ("legacy", RuntimeProfile.LEGACY),
+    ("test/mock", RuntimeProfile.TEST_MOCK),
+    ("v1", RuntimeProfile.V1),
+    ("auto", RuntimeProfile.LEGACY),
+])
+def test_current_service_startup_profile_resolution(value, expected):
+    config = resolve_observability_startup(value, "1.0", v1_available=False)
+    assert config.runtime_profile is expected
+    assert config.runtime_profile is not RuntimeProfile.AUTO
+    assert config.trace_sample_rate == 1.0
