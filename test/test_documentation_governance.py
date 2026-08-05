@@ -188,11 +188,15 @@ def test_corrected_configuration_and_contract_regressions():
     api_doc = _text("doc/developer-handbook/public-api-and-data-models.md")
     validation_doc = _text("doc/developer-handbook/development-and-validation.md")
 
-    assert "| `KDN_EMBEDDING_MODEL` | KDN | string/path | required/unset |" in config_doc
-    assert "unset creates the TextDatabase with no embedder" in config_doc
-    assert "KDN does not fall back to `core.config` embedding defaults" in config_doc
-    assert "| `SCHEDULER_CP_URL` for KDN | KDN | URL string | required/unset |" in config_doc
+    assert "| `KDN_EMBEDDING_MODEL` | KDN | string/path | unset |" in config_doc
+    assert "Optional KDN TextDatabase embedder" in config_doc
+    assert "unset starts TextDatabase without an embedder" in config_doc
+    assert "KDN does not fall back to a `core.config` embedding model" in config_doc
+    assert "| `SCHEDULER_CP_URL` for KDN | KDN | URL string | unset |" in config_doc
+    assert "Optional for KDN startup; required only when Scheduler registration is intended" in config_doc
     assert "registration is skipped when unset or empty" in config_doc
+    assert "`KDN_ADVERTISE_HOST` unset; `KDN_ADVERTISE_PORT` unset" in config_doc
+    assert "Advertise host and port are required only when Scheduler registration is enabled" in config_doc
     assert "| `USE_MOCK` | Core/Instance | bool constant | `False` |" in config_doc
 
     assert "cannot use `legacy_gateway`, regardless of whether endpoint metadata is supplied" in api_doc
