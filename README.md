@@ -651,6 +651,7 @@ curl -s http://127.0.0.1:7001/debug/strategy
 
 | Document | Description |
 |---|---|
+| [`doc/state-models.md`](doc/state-models.md) | Immutable cache lifecycle, task states, stable IDs, transitions, and Legacy mapping. |
 | [`core/README.md`](core/README.md) | Shared configuration, request model, and multi-machine deployment settings. |
 | [`scheduler/README.md`](scheduler/README.md) | Global routing, KDN / Proxy pool management, and Scheduler control plane. |
 | [`proxy/README.md`](proxy/README.md) | Local Instance pool, capability-aware registration, heartbeat recovery, prepare / ready queues, injection strategy, and Proxy resource APIs. |

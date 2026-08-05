@@ -2,6 +2,13 @@
 
 `test/` contains local entrypoints, smoke scripts, and historical utility tests for CacheRoute development. The main `demo_*.py` entrypoints add the repository root to Python's module search path, so the documented commands can be launched directly from the `test` directory without manually setting `PYTHONPATH`.
 
+Focused CPU-only lifecycle validation from the repository root:
+
+```bash
+pytest -q test/test_state_models.py
+pytest -q test/test_legacy_kv_state_mapping.py
+```
+
 Install the complete application and development dependency set from the repository root before running the commands in this document:
 
 ```bash
