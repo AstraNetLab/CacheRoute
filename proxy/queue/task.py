@@ -7,6 +7,9 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, List
 
+from cacheroute.observability import TraceCollector
+from cacheroute.observability.v1 import RequestTrace, TraceContext, TraceProvenance
+
 
 @dataclass
 class ProxyTask:
@@ -52,6 +55,18 @@ class ProxyTask:
 
     kv_ack: Dict[str, Any] = field(default_factory=dict)
     trace: Dict[str, int] = field(default_factory=dict)
+
+    # Canonical observability is process-local and independent of the Legacy
+    # free-form mapping above. Existing callers may omit every field.
+    trace_context: Optional[TraceContext] = None
+    trace_collector: Optional[TraceCollector] = None
+    request_trace: Optional[RequestTrace] = None
+    trace_provenance: Optional[TraceProvenance] = None
+    prepare_queue_stage_id: Optional[str] = None
+    ready_queue_stage_id: Optional[str] = None
+    completion_stage_id: Optional[str] = None
+    first_token_stage_id: Optional[str] = None
+    decode_stage_id: Optional[str] = None
 
     # reservation state for ready/prefill timeline
     # prediction stage: "prefill" (default) or "decode" (reserved for future modeling)

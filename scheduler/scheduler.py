@@ -68,9 +68,20 @@ from .strategy import create_strategy
 # )
 
 from util import timing
+from cacheroute.observability import (
+    SystemTraceClock, create_trace_context, encode_trace_headers,
+    resolve_observability_startup,
+)
+from cacheroute.runtime import RuntimeProfile
 
 # Use a fallback default when no external value is provided, making local runs easier
 from core.config import DEFAULT_MODEL, DEFAULT_EMBED_MODEL, SCHEDULER_CP_PORT
+
+_DEFAULT_OBSERVABILITY_CONFIG = resolve_observability_startup(v1_available=False)
+
+
+def resolve_scheduler_observability_startup(runtime_profile: str | None = None, sample_rate: str | float | None = None):
+    return resolve_observability_startup(runtime_profile, sample_rate, v1_available=False)
 
 
 # ======================= Request ID allocator and other basic functions=======================
@@ -212,6 +223,15 @@ async def lifespan(app: FastAPI):
       - shutdown: no resources to clean up currently; interface reserved
     """
     log_path = init_logging()
+    obs_config = resolve_scheduler_observability_startup(
+        os.environ.get("CACHEROUTE_RUNTIME_PROFILE"),
+        os.environ.get("CACHEROUTE_TRACE_SAMPLE_RATE"),
+    )
+    app.state.runtime_profile = obs_config.runtime_profile
+    app.state.trace_sample_rate = obs_config.trace_sample_rate
+    app.state.trace_clock = SystemTraceClock()
+    if obs_config.sample_rate_warning_reason is not None:
+        logger.warning("[Scheduler] observability startup warning reason=%s", obs_config.sample_rate_warning_reason)
     print(f"[Scheduler] started. log_file={log_path}")
     # ------------------------------------------
     # Try to warm up the tokenizer
@@ -351,6 +371,21 @@ scheduler = FastAPI(
     version="0.1.1",
     lifespan=lifespan,
 )
+
+
+def build_proxy_headers(app: FastAPI, raw_headers: Dict[str, str], request_id: str | int) -> Dict[str, str]:
+    """Create authoritative internal headers without trusting client trace fields."""
+    outgoing: Dict[str, str] = {}
+    if "authorization" in raw_headers:
+        outgoing["authorization"] = raw_headers["authorization"]
+    context = create_trace_context(
+        request_id,
+        getattr(app.state, "runtime_profile", _DEFAULT_OBSERVABILITY_CONFIG.runtime_profile),
+        sample_rate=getattr(app.state, "trace_sample_rate", _DEFAULT_OBSERVABILITY_CONFIG.trace_sample_rate),
+        clock=getattr(app.state, "trace_clock", None) or SystemTraceClock(),
+    )
+    outgoing.update(encode_trace_headers(context))
+    return outgoing
 
 
 
@@ -506,14 +541,7 @@ async def create_chat_completions(request: FastAPIRequest):
     data_for_downstream = req_obj.to_payload()
 
     # Handle headers that need to be passed through downstream, optionally filtering them
-    extra_headers = {}
-
-    # Pass the user Authorization downstream unchanged if Proxy should perform authentication
-    if "authorization" in raw_headers:
-        extra_headers["authorization"] = raw_headers["authorization"]
-
-    # Carry a Scheduler-assigned Request ID for traceability
-    extra_headers["scheduler-request-id"] = str(req_obj.Request_ID)
+    extra_headers = build_proxy_headers(request.app, raw_headers, req_obj.Request_ID)
 
     # Define an async generator that reads streaming data from downstream and returns it upstream
     async def iter_upstream():
@@ -630,14 +658,7 @@ async def create_completions(request: FastAPIRequest):
     data_for_downstream = req_obj.to_payload()
 
     # Handle headers that need to be passed through downstream, optionally filtering them
-    extra_headers = {}
-
-    # Pass the user Authorization downstream unchanged if Proxy should perform authentication
-    if "authorization" in raw_headers:
-        extra_headers["authorization"] = raw_headers["authorization"]
-
-    # Carry a Scheduler-assigned Request ID for traceability
-    extra_headers["scheduler-request-id"] = str(req_obj.Request_ID)
+    extra_headers = build_proxy_headers(request.app, raw_headers, req_obj.Request_ID)
 
     # Define an async generator that reads streaming data from downstream and returns it upstream
     async def iter_upstream():

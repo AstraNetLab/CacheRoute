@@ -55,6 +55,8 @@ REQUIRED_CANONICAL_FOUNDATION = {
     "cacheroute/observability/clock.py",
     "cacheroute/observability/collector.py",
     "cacheroute/observability/legacy_proxy.py",
+    "cacheroute/observability/propagation.py",
+    "cacheroute/observability/startup.py",
     "cacheroute/observability/v1/__init__.py",
     "cacheroute/observability/v1/enums.py",
     "cacheroute/observability/v1/models.py",
@@ -220,6 +222,8 @@ import cacheroute.cache.models as cache_models
 import cacheroute.routing
 import cacheroute.routing.queue as routing_queue
 import cacheroute.observability
+import cacheroute.observability.propagation as observability_propagation
+import cacheroute.observability.startup as observability_startup
 import cacheroute.observability.v1
 import cacheroute.observability.v1.models as observability_models
 import cacheroute.contracts
@@ -237,7 +241,8 @@ modules = (core, core_runtime, proxy, instance, kdn_server, kdn_server.domain,
            legacy_domain_models, runtime_state, cacheroute.topology,
            topology_lmcache, cacheroute.cache, cache_models,
            cacheroute.routing, routing_queue,
-           cacheroute.observability, cacheroute.observability.v1, observability_models,
+           cacheroute.observability, observability_propagation, observability_startup,
+           cacheroute.observability.v1, observability_models,
            cacheroute.runtime, cacheroute.contracts, cacheroute.contracts.v1,
            canonical_common, canonical_errors, canonical_knowledge,
            canonical_cache_service, legacy_common, legacy_errors,
@@ -284,6 +289,12 @@ observability_identity_pairs = (
     (observability_models.LMCacheGatewayProfile, topology_lmcache.LMCacheGatewayProfile),
 )
 assert all(observability is canonical for observability, canonical in observability_identity_pairs)
+assert cacheroute.observability.create_trace_context is observability_propagation.create_trace_context
+assert cacheroute.observability.RESERVED_TRACE_HEADERS is observability_propagation.RESERVED_TRACE_HEADERS
+assert cacheroute.observability.resolve_observability_startup is observability_startup.resolve_observability_startup
+assert cacheroute.observability.sample_rate_warning_reason is observability_startup.sample_rate_warning_reason
+for module in (cacheroute.observability, observability_propagation, observability_startup):
+    assert Path(module.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
 assert importlib.util.find_spec("cacheroute_observability") is None
 assert runtime_state.utc_now is legacy_domain_models.utc_now
 assert legacy_common.VersionedMessage is canonical_common.VersionedMessage
