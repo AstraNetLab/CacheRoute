@@ -684,3 +684,30 @@ Architecture-related changes should add or preserve checks for:
 - clean editable and wheel installation.
 
 A migration is not complete merely because imports work from the repository root. It must also work from an installed wheel outside the checkout.
+
+---
+
+## 19. Documentation Governance
+
+For non-trivial work, Agents must read the [Developer Handbook](doc/developer-handbook/README.md) landing page and the relevant chapter before editing. Determine whether the change affects a documented public or structural surface and update the relevant handbook chapter in the same PR when required.
+
+Agents must:
+
+1. read the handbook landing page and relevant chapter before non-trivial work;
+2. determine whether the change affects a documented public or structural surface;
+3. update the relevant chapter in the same PR when required;
+4. avoid rewriting the entire handbook;
+5. preserve one detailed source of truth and link to it;
+6. use the approved status vocabulary accurately: Historical, Current, Transitional, Target / Accepted, Proposed, Deprecated;
+7. never describe an unmerged feature as current;
+8. include handbook impact in the PR summary;
+9. explicitly state when no handbook update is necessary;
+10. keep root README changes minimal.
+
+Focused checklist for documentation governance:
+
+- Does the PR change public imports, public models, enum values, fields, defaults, validation, serialization, ID syntax, request/response/SSE fields, endpoints, CLI flags, environment variables, configuration keys, package ownership, dependency direction, compatibility paths, migration state, runtime flows, installation commands, or validation commands?
+- If yes, update the owning handbook chapter in the same PR and link to the detailed source of truth.
+- If no, state in the PR summary that no handbook update is necessary and why.
+- Do not copy large maintained documents into the handbook.
+- Do not weaken package-placement, migration, compatibility, or dependency-direction rules in this file.

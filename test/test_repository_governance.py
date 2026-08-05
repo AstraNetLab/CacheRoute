@@ -24,6 +24,11 @@ LEGACY_REFERENCE_ALLOWLIST = {
     Path("test/test_repository_governance.py"),
     Path("test/test_runtime_compat.py"),
     Path("test/test_wheel_install.py"),
+    Path("test/test_documentation_governance.py"),
+    Path("doc/developer-handbook/architecture-and-evolution.md"),
+    Path("doc/developer-handbook/package-and-module-map.md"),
+    Path("doc/developer-handbook/public-api-and-data-models.md"),
+    Path("doc/developer-handbook/compatibility-and-migrations.md"),
 }
 OBSERVABILITY_REFERENCE_ALLOWLIST = {
     Path("doc/package_migration_phase_a.md"),
@@ -31,6 +36,9 @@ OBSERVABILITY_REFERENCE_ALLOWLIST = {
     Path("test/observability/test_imports.py"),
     Path("test/test_repository_governance.py"),
     Path("test/test_wheel_install.py"),
+    Path("doc/developer-handbook/package-and-module-map.md"),
+    Path("doc/developer-handbook/public-api-and-data-models.md"),
+    Path("doc/developer-handbook/compatibility-and-migrations.md"),
 }
 KDN_CONTRACT_COMPATIBILITY_ALLOWLIST = {
     Path("kdn_server/contracts/__init__.py"),
@@ -40,6 +48,9 @@ KDN_CONTRACT_COMPATIBILITY_ALLOWLIST = {
     Path("test/test_contract_service_migration.py"),
     Path("test/test_repository_governance.py"),
     Path("test/test_wheel_install.py"),
+    Path("doc/developer-handbook/package-and-module-map.md"),
+    Path("doc/developer-handbook/public-api-and-data-models.md"),
+    Path("doc/developer-handbook/compatibility-and-migrations.md"),
 }
 CANONICAL_PACKAGES = {
     "cacheroute", "cacheroute.compat", "cacheroute.observability", "cacheroute.observability.v1",
@@ -81,6 +92,9 @@ SYS_PATH_ALLOWLIST = SOURCE_BOOTSTRAP_ENTRYPOINTS | {
     Path("test/test_namespace_layout.py"),
     Path("test/test_repository_governance.py"),
     Path("test/test_wheel_install.py"),
+    Path("doc/developer-handbook/package-and-module-map.md"),
+    Path("doc/developer-handbook/public-api-and-data-models.md"),
+    Path("doc/developer-handbook/compatibility-and-migrations.md"),
 }
 GENERATED_PACKAGE_EXCLUDES = [
     "src", "src.*", "build", "build.*", "dist", "dist.*", "wheelhouse",
