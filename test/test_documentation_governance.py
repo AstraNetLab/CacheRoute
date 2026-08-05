@@ -50,6 +50,19 @@ def test_root_readme_and_agents_link_handbook_and_same_pr_rule():
     assert "update the relevant handbook chapter in the same PR" in agents
 
 
+def _normalize_reference_label(value: str) -> str:
+    return " ".join(value.strip().casefold().split())
+
+
+def _target_without_title(raw: str) -> str:
+    value = raw.strip()
+    if value.startswith("<"):
+        end = value.find(">")
+        if end >= 0:
+            return value[1:end].strip()
+    return value.split(None, 1)[0] if value else ""
+
+
 def _is_local_markdown_target(target: str) -> bool:
     return bool(target) and not target.startswith(("#", "http://", "https://", "mailto:"))
 
@@ -57,26 +70,38 @@ def _is_local_markdown_target(target: str) -> bool:
 def _markdown_links(path: Path):
     text = path.read_text(encoding="utf-8")
     reference_targets: dict[str, str] = {}
-    for match in re.finditer(r"(?m)^\s{0,3}\[([^\]]+)\]:\s+(\S+)", text):
-        label = match.group(1).strip().casefold()
-        target = match.group(2).strip()
+    definition_spans: list[tuple[int, int]] = []
+    for match in re.finditer(r"(?m)^\s{0,3}\[([^\]]+)\]:\s+(\S+(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?)", text):
+        label = _normalize_reference_label(match.group(1))
+        target = _target_without_title(match.group(2))
         reference_targets[label] = target
+        definition_spans.append(match.span())
         if _is_local_markdown_target(target):
             yield target
 
-    # Inline links and image links: [text](target), ![alt](target).
+    # Inline links and image links: [text](target), ![alt](target). The first
+    # whitespace-delimited token is the target; optional Markdown titles are ignored.
     for match in re.finditer(r"!?\[[^\]]*\]\(([^)]+)\)", text):
-        target = (match.group(1) or "").strip()
+        target = _target_without_title(match.group(1) or "")
         if _is_local_markdown_target(target):
             yield target
 
-    # Reference-style links and images: [text][label], ![alt][label].
-    for match in re.finditer(r"!?\[[^\]]+\]\[([^\]]+)\]", text):
-        label = (match.group(1) or "").strip().casefold()
+    # Full and collapsed reference links/images: [text][label], [label][].
+    for match in re.finditer(r"!?\[([^\]]+)\]\[([^\]]*)\]", text):
+        label = _normalize_reference_label(match.group(2) or match.group(1))
         target = reference_targets.get(label)
         if target and _is_local_markdown_target(target):
             yield target
 
+    # Shortcut references: [label]. Avoid ordinary bracketed prose by requiring
+    # a matching reference definition and skipping definition lines/spans.
+    for match in re.finditer(r"(?<!!)(?<!\])\[([^\]]+)\](?![\[(])", text):
+        if any(start <= match.start() < end for start, end in definition_spans):
+            continue
+        label = _normalize_reference_label(match.group(1))
+        target = reference_targets.get(label)
+        if target and _is_local_markdown_target(target):
+            yield target
 
 def _assert_links_resolve(path: Path):
     for raw in _markdown_links(path):
@@ -155,6 +180,50 @@ def test_handbook_docs_are_repository_only_not_runtime_packages():
     assert '"doc"' not in pyproject
 
 
+
+
+
+def test_corrected_configuration_and_contract_regressions():
+    config_doc = _text("doc/developer-handbook/configuration-and-interfaces.md")
+    api_doc = _text("doc/developer-handbook/public-api-and-data-models.md")
+    validation_doc = _text("doc/developer-handbook/development-and-validation.md")
+
+    assert "| `KDN_EMBEDDING_MODEL` | KDN | string/path | required/unset |" in config_doc
+    assert "unset creates the TextDatabase with no embedder" in config_doc
+    assert "KDN does not fall back to `core.config` embedding defaults" in config_doc
+    assert "| `SCHEDULER_CP_URL` for KDN | KDN | URL string | required/unset |" in config_doc
+    assert "registration is skipped when unset or empty" in config_doc
+    assert "| `USE_MOCK` | Core/Instance | bool constant | `False` |" in config_doc
+
+    assert "cannot use `legacy_gateway`, regardless of whether endpoint metadata is supplied" in api_doc
+    assert "without an explicit endpoint" not in api_doc
+    assert "Endpoint-list validation currently checks endpoint `runtime_profile` only" in api_doc
+
+    assert "CACHEROUTE_TEST_WHEELHOUSE=\"$PWD/wheelhouse\"" in validation_doc
+    assert "<wheelhouse-dir>" not in validation_doc
+
+def test_markdown_parser_handles_reference_variants(tmp_path):
+    doc = tmp_path / "doc.md"
+    (tmp_path / "target.md").write_text("ok", encoding="utf-8")
+    (tmp_path / "image.png").write_text("ok", encoding="utf-8")
+    doc.write_text(
+        "[normal](target.md \"title\")\n"
+        "![image](<image.png> \"title\")\n"
+        "[full][ref]\n"
+        "![full image][img-ref]\n"
+        "[Collapsed][]\n"
+        "[Shortcut]\n"
+        "[ordinary prose]\n"
+        "[ref]: <target.md> \"title\"\n"
+        "[img-ref]: image.png 'title'\n"
+        "[collapsed]: target.md\n"
+        "[shortcut]: target.md\n",
+        encoding="utf-8",
+    )
+    links = list(_markdown_links(doc))
+    assert links.count("target.md") == 7
+    assert links.count("image.png") == 3
+    _assert_links_resolve(doc)
 
 def test_handbook_contains_no_repository_external_machine_paths():
     forbidden = ("/workspace/", "/llm-stack/", "/home/", "/Users/")
