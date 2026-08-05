@@ -50,13 +50,32 @@ def test_root_readme_and_agents_link_handbook_and_same_pr_rule():
     assert "update the relevant handbook chapter in the same PR" in agents
 
 
+def _is_local_markdown_target(target: str) -> bool:
+    return bool(target) and not target.startswith(("#", "http://", "https://", "mailto:"))
+
+
 def _markdown_links(path: Path):
     text = path.read_text(encoding="utf-8")
-    for match in re.finditer(r"(?<!!)\[[^\]]*\]\(([^)]+)\)", text):
+    reference_targets: dict[str, str] = {}
+    for match in re.finditer(r"(?m)^\s{0,3}\[([^\]]+)\]:\s+(\S+)", text):
+        label = match.group(1).strip().casefold()
+        target = match.group(2).strip()
+        reference_targets[label] = target
+        if _is_local_markdown_target(target):
+            yield target
+
+    # Inline links and image links: [text](target), ![alt](target).
+    for match in re.finditer(r"!?\[[^\]]*\]\(([^)]+)\)", text):
         target = (match.group(1) or "").strip()
-        if not target or target.startswith(('#', 'http://', 'https://', 'mailto:')):
-            continue
-        yield target
+        if _is_local_markdown_target(target):
+            yield target
+
+    # Reference-style links and images: [text][label], ![alt][label].
+    for match in re.finditer(r"!?\[[^\]]+\]\[([^\]]+)\]", text):
+        label = (match.group(1) or "").strip().casefold()
+        target = reference_targets.get(label)
+        if target and _is_local_markdown_target(target):
+            yield target
 
 
 def _assert_links_resolve(path: Path):
@@ -82,7 +101,7 @@ def test_configured_packages_are_represented_in_package_map():
     configured = tomllib.loads(_text("pyproject.toml"))["tool"]["setuptools"]["packages"]
     package_map = _text("doc/developer-handbook/package-and-module-map.md")
     table, inventory = package_map.split("## Explicitly configured package coverage", 1)
-    canonical = {package for package in configured if package.startswith("cacheroute.") or package == "cacheroute_compat"}
+    canonical = {package for package in configured if package == "cacheroute" or package.startswith("cacheroute.") or package == "cacheroute_compat"}
     missing_canonical_rows = [package for package in canonical if re.search(rf"^\| [^\n]*`{re.escape(package)}`", table, re.MULTILINE) is None]
     missing_inventory = [package for package in configured if f"`{package}`" not in inventory]
     assert not missing_canonical_rows
@@ -135,6 +154,17 @@ def test_handbook_docs_are_repository_only_not_runtime_packages():
     assert "doc.developer-handbook" not in pyproject
     assert '"doc"' not in pyproject
 
+
+
+def test_handbook_contains_no_repository_external_machine_paths():
+    forbidden = ("/workspace/", "/llm-stack/", "/home/", "/Users/")
+    offenders = {
+        path.relative_to(ROOT): token
+        for path in HANDBOOK.glob("*.md")
+        for token in forbidden
+        if token in path.read_text(encoding="utf-8")
+    }
+    assert not offenders
 
 def test_root_readme_intro_unchanged_and_only_approved_additions():
     current = _text("README.md")

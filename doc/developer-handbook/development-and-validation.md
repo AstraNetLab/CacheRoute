@@ -13,10 +13,10 @@ Use repository-relative commands. Do not put user-specific absolute paths in PR 
 | Wheel build | The project builds a wheel from the checked-out source without build isolation when `build` is installed. | `python3 -m build --no-isolation` |
 | Non-network clean wheel | Runtime packages install from the built wheel without dependency resolution or source checkout leakage. | `python3 -m pytest -q -s test/test_wheel_install.py -m "not network"` |
 | Full isolated wheel | Declared dependencies install in a clean venv when a package index or local wheelhouse is available. | `CACHEROUTE_RUN_NETWORK_TESTS=1 python3 -m pytest -q -s test/test_wheel_install.py` |
-| Offline full isolated wheel | The network-marked wheel test can use a local wheelhouse instead of indexes. | `CACHEROUTE_RUN_NETWORK_TESTS=1 CACHEROUTE_TEST_WHEELHOUSE=/path/to/wheelhouse python3 -m pytest -q -s test/test_wheel_install.py` |
+| Offline full isolated wheel | The network-marked wheel test can use a local wheelhouse instead of indexes. | `CACHEROUTE_RUN_NETWORK_TESTS=1 CACHEROUTE_TEST_WHEELHOUSE=<wheelhouse-dir> python3 -m pytest -q -s test/test_wheel_install.py` |
 | Observability contracts | Current trace models, propagation, startup, and Proxy projection behavior remain valid. | `python3 -m pytest -q test/observability` |
 | Contract foundations | KDN/Gateway v1 contracts and migration shims preserve object identity and validation. | `python3 -m pytest -q test/test_contract_foundation.py test/test_contract_service_migration.py` |
-| Diff hygiene | The final diff has no whitespace errors. | `git diff --check` |
+| Diff hygiene | The final diff has no whitespace errors. | `git diff --check "$(git merge-base origin/main HEAD)" HEAD` |
 
 ## Required final-head checklist
 
@@ -31,7 +31,7 @@ python3 -m pytest -q test/observability
 python3 -m pytest -q test/test_contract_foundation.py
 python3 -m pytest -q test/test_contract_service_migration.py
 python3 -m build --no-isolation
-git diff --check
+git diff --check "$(git merge-base origin/main HEAD)" HEAD
 ```
 
 When network or a complete local wheelhouse is available, also run:
@@ -43,7 +43,7 @@ CACHEROUTE_RUN_NETWORK_TESTS=1 python3 -m pytest -q -s test/test_wheel_install.p
 For an offline local wheelhouse, use:
 
 ```bash
-CACHEROUTE_RUN_NETWORK_TESTS=1 CACHEROUTE_TEST_WHEELHOUSE=/path/to/wheelhouse python3 -m pytest -q -s test/test_wheel_install.py
+CACHEROUTE_RUN_NETWORK_TESTS=1 CACHEROUTE_TEST_WHEELHOUSE=<wheelhouse-dir> python3 -m pytest -q -s test/test_wheel_install.py
 ```
 
 ## Result reporting vocabulary
