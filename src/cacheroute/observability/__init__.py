@@ -8,7 +8,7 @@ from .propagation import (
     decode_trace_headers, encode_trace_headers, is_trace_sampled,
     new_trace_id, parse_sample_rate,
 )
-from .startup import ObservabilityStartupConfig, resolve_observability_startup
+from .startup import ObservabilityStartupConfig, resolve_observability_startup, sample_rate_warning_reason
 
 __all__ = [
     "TraceClock", "SystemTraceClock", "ManualTraceClock", "TraceCollector",
@@ -16,5 +16,5 @@ __all__ = [
     "RESERVED_TRACE_HEADERS", "TracePropagationError", "create_trace_context",
     "decode_trace_headers", "encode_trace_headers", "is_trace_sampled",
     "new_trace_id", "parse_sample_rate",
-    "ObservabilityStartupConfig", "resolve_observability_startup",
+    "ObservabilityStartupConfig", "resolve_observability_startup", "sample_rate_warning_reason",
 ]

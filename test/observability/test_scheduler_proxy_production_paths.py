@@ -1,133 +1,302 @@
+from contextlib import suppress
 from datetime import datetime, timezone
 from types import SimpleNamespace
+import asyncio
+import json
+import logging
+import importlib
+
 import pytest
 
+from core import Request as SchedulerRequest
 from cacheroute.contracts.v1 import OutcomeCode
 from cacheroute.observability import ManualTraceClock, TraceCollector, create_trace_context, encode_trace_headers
 from cacheroute.observability.propagation import RESERVED_TRACE_HEADERS, TRACE_ID_HEADER
-from cacheroute.observability.v1 import TraceComponent, TraceProvenance, TraceStageName
+from cacheroute.observability.v1 import TraceComponent, TraceStageName
 from cacheroute.runtime import RuntimeProfile
 from proxy.queue.manager import QueueManager, _EMPTY_STREAM, _DOWNSTREAM_FAILED, _REQUEST_CANCELLED
 from proxy.queue.task import ProxyTask
-from proxy.proxy import build_cacheroute_meta, build_proxy_trace
+from proxy.proxy import build_body_for_instance, build_cacheroute_meta, build_proxy_trace, recover_request_from_payload, resolve_proxy_observability_startup
 from scheduler.scheduler import build_proxy_headers, resolve_scheduler_observability_startup
 
 NOW = datetime(2026, 8, 4, 12, tzinfo=timezone.utc)
 TRACE_ID = "trace_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 
-def _app(profile=RuntimeProfile.LEGACY, rate=1.0):
-    return SimpleNamespace(state=SimpleNamespace(runtime_profile=profile, trace_sample_rate=rate, trace_clock=ManualTraceClock(NOW)))
+class _CaseDone(Exception):
+    pass
+
+
+def _app(profile=RuntimeProfile.LEGACY, rate=1.0, clock=None):
+    return SimpleNamespace(state=SimpleNamespace(runtime_profile=profile, trace_sample_rate=rate, trace_clock=clock or ManualTraceClock(NOW)))
 
 
 def _request(headers, app=None):
     return SimpleNamespace(headers=headers, app=app or _app())
 
 
-def _req_obj(rid=42, injection="text"):
-    return SimpleNamespace(
-        Request_ID=rid,
-        Prompt=SimpleNamespace(token_length=1, model="m", user_prompt="prompt", stream=True),
-        Service=SimpleNamespace(Knowledge_length=0, Injection_type=injection, Enable_know_injection=False, Knowledge_List=[]),
-        Task=SimpleNamespace(KDN_server_addr="kdn"),
+def _scheduler_request(rid=42, *, stream=True, endpoint="chat/completions"):
+    payload = {
+        "model": "unit-model",
+        "max_tokens": 4,
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "stream": stream,
+    }
+    url = "/v1/chat/completions" if endpoint == "chat/completions" else "/v1/completions"
+    if endpoint == "chat/completions":
+        payload["messages"] = [{"role": "user", "content": "hello"}]
+    else:
+        payload["prompt"] = "hello"
+    req = SchedulerRequest.build_request(url, payload, "127.0.0.1", rid)
+    req.Task.KDN_server_addr = "kdn.local:7003"
+    req.Task.P_proxy_id = "proxy_a"
+    req.Task.P_proxy_addr = "127.0.0.1"
+    req.Task.P_proxy_port = 8002
+    return req
+
+
+def _task_from_request(req_obj, *, sampled=True, trace_id=TRACE_ID, clock=None):
+    clock = clock or ManualTraceClock(NOW)
+    ctx = create_trace_context(req_obj.Request_ID, RuntimeProfile.LEGACY, sample_rate=1.0 if sampled else 0.0, clock=clock, trace_id=trace_id)
+    collector = TraceCollector(
+        ctx,
+        clock=clock,
+        id_factory=iter(["stage_prepare", "stage_ready", "stage_completion", "stage_first", "stage_decode"]).__next__,
+    )
+    from cacheroute.observability.v1 import TraceProvenance
+    provenance = TraceProvenance(source_component=TraceComponent.PROXY, runtime_profile=ctx.runtime_profile, captured_at=clock.utc_now())
+    mode = "chat" if req_obj.Service.Endpoint_type == "chat/completions" else "completions"
+    return ProxyTask(
+        req_obj.Request_ID,
+        req_obj,
+        build_body_for_instance(req_obj, mode=mode),
+        "inst-a",
+        "127.0.0.1",
+        9001,
+        f"/v1/{req_obj.Service.Endpoint_type}",
+        kdn_addr=req_obj.Task.KDN_server_addr,
+        trace_context=ctx,
+        trace_collector=collector,
+        trace_provenance=provenance,
     )
 
 
-def _task(clock=None, sampled=True):
-    clock = clock or ManualTraceClock(NOW)
-    ctx = create_trace_context("42", RuntimeProfile.LEGACY, sample_rate=1.0 if sampled else 0.0, clock=clock, trace_id=TRACE_ID)
-    collector = TraceCollector(ctx, clock=clock, id_factory=iter(["stage_prepare", "stage_ready", "stage_completion", "stage_first", "stage_decode"]).__next__)
-    provenance = TraceProvenance(source_component=TraceComponent.PROXY, runtime_profile=ctx.runtime_profile, captured_at=clock.utc_now())
-    return ProxyTask(42, _req_obj(), {}, "inst", "127.0.0.1", 9001, "/v1/chat/completions", trace_context=ctx, trace_collector=collector, trace_provenance=provenance)
+async def _drain_until_done(task, timeout=2.0):
+    chunks = []
+    while True:
+        item = await asyncio.wait_for(task.response_queue.get(), timeout=timeout)
+        if item is None:
+            return chunks
+        chunks.append(item)
 
 
-def test_scheduler_headers_overwrite_authorization_and_payload_boundary():
-    app = _app()
-    raw = {"authorization": "Bearer kept", **{name: "client" for name in RESERVED_TRACE_HEADERS}}
-    headers = build_proxy_headers(app, raw, 99)
+async def _run_real_queue(monkeypatch, task, chunks=(), *, fail_at=None, cancel_after_first=False):
+    calls = []
+    manager = QueueManager()
+    manager._READY_DEQUEUE_INTERVAL_S = 0.0
+    task.trace["preexisting"] = 7
+
+    async def fake_forward_request(url, data, use_chunked=False):
+        calls.append({"url": url, "data": data.copy(), "use_chunked": use_chunked})
+        if fail_at == "before_first":
+            raise RuntimeError("raw downstream boom should not enter trace")
+        for index, chunk in enumerate(chunks):
+            yield chunk
+            if cancel_after_first and index == 0:
+                await asyncio.sleep(10)
+            if fail_at == "after_first" and index == 0:
+                raise RuntimeError("raw downstream boom should not enter trace")
+
+    monkeypatch.setattr("proxy.queue.manager.forward_request", fake_forward_request)
+    await manager.enqueue_prepare(task)
+    output_task = asyncio.create_task(_drain_until_done(task))
+    if cancel_after_first:
+        await asyncio.sleep(0.05)
+        for worker in manager._worker_tasks.values():
+            worker.cancel()
+    try:
+        output = await output_task
+    finally:
+        for worker in manager._worker_tasks.values():
+            worker.cancel()
+        await asyncio.gather(*manager._worker_tasks.values(), return_exceptions=True)
+    return manager, output, calls
+
+
+def _assert_no_running_and_valid_refs(request_trace):
+    assert request_trace is not None
+    assert all(stage.state.value != "running" for stage in request_trace.stages)
+    assert [stage.sequence for stage in request_trace.stages] == sorted(stage.sequence for stage in request_trace.stages)
+    ids = {stage.stage_id for stage in request_trace.stages}
+    assert all(stage.parent_stage_id is None or stage.parent_stage_id in ids for stage in request_trace.stages)
+    assert all(stage.provenance.source_component is TraceComponent.PROXY for stage in request_trace.stages)
+
+
+def test_startup_warning_reason_codes_are_bounded_and_non_blocking(caplog):
+    assert resolve_scheduler_observability_startup("legacy", "0.0").sample_rate_warning_reason is None
+    for value, reason in [("bad", "trace_sample_rate_malformed"), ("nan", "trace_sample_rate_non_finite"), ("-1", "trace_sample_rate_below_zero"), ("2", "trace_sample_rate_above_one")]:
+        config = resolve_proxy_observability_startup("auto", value)
+        assert config.trace_sample_rate == 0.0
+        assert config.runtime_profile is RuntimeProfile.LEGACY
+        assert config.sample_rate_warning_reason == reason
+    caplog.set_level(logging.WARNING)
+    config = resolve_scheduler_observability_startup("legacy", "bad")
+    logging.getLogger("scheduler").warning("[Scheduler] observability startup warning reason=%s", config.sample_rate_warning_reason)
+    assert caplog.text.count("trace_sample_rate_malformed") == 1
+    assert "bad" not in caplog.text
+    headers = build_proxy_headers(_app(rate=config.trace_sample_rate), {"authorization": "Bearer kept"}, 11)
+    assert headers["scheduler-request-id"] == "11"
+
+
+def test_scheduler_headers_overwrite_authorization_and_actual_payload_boundary():
+    req = _scheduler_request(99)
+    payload = req.to_payload()
+    headers = build_proxy_headers(_app(), {"authorization": "Bearer kept", **{name: "client" for name in RESERVED_TRACE_HEADERS}}, req.Request_ID)
     assert headers["authorization"] == "Bearer kept"
     assert headers["scheduler-request-id"] == "99"
     assert all(headers[name] != "client" for name in RESERVED_TRACE_HEADERS)
-    assert set(headers) == set(RESERVED_TRACE_HEADERS) | {"authorization"}
-    payload = {"Request_ID": 99, "Prompt": {"user_prompt": "secret"}}
     assert not (set(payload) & set(RESERVED_TRACE_HEADERS))
-    assert resolve_scheduler_observability_startup("auto", 1.0).runtime_profile is RuntimeProfile.LEGACY
+    assert recover_request_from_payload(payload).Request_ID == req.Request_ID
 
 
-def test_proxy_acceptance_and_fallback_reasons():
+def test_proxy_acceptance_fallback_and_deterministic_local_sampling():
     headers = encode_trace_headers(create_trace_context("42", RuntimeProfile.LEGACY, sample_rate=1.0, clock=ManualTraceClock(NOW), trace_id=TRACE_ID))
     ctx, collector, provenance = build_proxy_trace(_request(headers), 42)
-    assert ctx.trace_id == TRACE_ID
+    assert ctx.trace_id == TRACE_ID and ctx.sampled is True
     assert collector.context is ctx
     assert provenance.source_component is TraceComponent.PROXY
-    assert provenance.runtime_profile is RuntimeProfile.LEGACY
-
     malformed = dict(headers)
     malformed[TRACE_ID_HEADER] = "bad"
-    fallback, _, _ = build_proxy_trace(_request(malformed), 42)
-    assert fallback.request_id == "42" and fallback.trace_id != TRACE_ID
-
-    mismatch, _, _ = build_proxy_trace(_request(headers), 43)
-    assert mismatch.request_id == "43" and mismatch.trace_id != TRACE_ID
-
-    profile_mismatch, _, _ = build_proxy_trace(_request(headers, _app(RuntimeProfile.TEST_MOCK)), 42)
-    assert profile_mismatch.runtime_profile is RuntimeProfile.TEST_MOCK
-    assert profile_mismatch.trace_id != TRACE_ID
+    first, _, _ = build_proxy_trace(_request(malformed), 42)
+    second, _, _ = build_proxy_trace(_request(malformed), 42)
+    assert first.request_id == "42" and first.trace_id != TRACE_ID
+    assert first.sampled == first.sampled
+    mismatch, _, _ = build_proxy_trace(_request(headers, _app(RuntimeProfile.TEST_MOCK)), 42)
+    assert mismatch.runtime_profile is RuntimeProfile.TEST_MOCK
 
 
-def test_unsampled_context_produces_no_stages_and_legacy_meta_keys_unchanged():
-    task = _task(sampled=False)
-    manager = QueueManager()
-    task.prepare_queue_stage_id = manager._start_stage(task, TraceStageName.PROXY_PREPARE_QUEUE)
-    manager._finish_stage(task, task.prepare_queue_stage_id, OutcomeCode.SUCCESS)
-    manager._finalize_trace(task, OutcomeCode.SUCCESS)
-    assert task.request_trace is not None
-    assert task.request_trace.stages == ()
-    task.trace["proxy_enqueue_ms"] = 1
-    assert list(build_cacheroute_meta(task)) == ["trace", "kv_ack", "kv_ready_kids", "text_only_kids", "miss_kids", "error"]
-    assert build_cacheroute_meta(task)["trace"] == {"proxy_enqueue_ms": 1}
+@pytest.mark.parametrize(("endpoint", "chunks", "expected_outcome", "expected_error"), [
+    ("chat/completions", [b"data: token\\n\\n", b"data: [DONE]\\n\\n"], OutcomeCode.SUCCESS, None),
+    ("completions", [json.dumps({"choices": [{"text": "ok"}]}).encode()], OutcomeCode.SUCCESS, None),
+    ("chat/completions", [], OutcomeCode.FAILED, _EMPTY_STREAM),
+])
+def test_real_ready_worker_success_nonstream_and_empty_paths(monkeypatch, endpoint, chunks, expected_outcome, expected_error):
+    async def scenario():
+        req = _scheduler_request(42, stream=endpoint == "chat/completions", endpoint=endpoint)
+        task = _task_from_request(req)
+        original_body = task.instance_body.copy()
+        original_trace = dict(task.trace)
+        _manager, output, calls = await _run_real_queue(monkeypatch, task, chunks=chunks)
+        assert output == chunks
+        assert calls and calls[0]["url"] == f"http://{task.instance_host}:{task.instance_port}{task.url_path}"
+        assert calls[0]["data"] == original_body
+        assert calls[0]["use_chunked"] is (endpoint == "chat/completions")
+        assert not (set(calls[0].get("headers", {})) & set(RESERVED_TRACE_HEADERS))
+        assert task.request_trace.outcome is expected_outcome
+        assert task.request_trace.error == expected_error
+        _assert_no_running_and_valid_refs(task.request_trace)
+        assert task.trace["preexisting"] == 7
+        assert all(item in task.trace.items() for item in original_trace.items())
+        names = [stage.name for stage in task.request_trace.stages]
+        assert TraceStageName.PROXY_PREPARE_QUEUE in names
+        assert TraceStageName.PROXY_READY_QUEUE in names
+        assert TraceStageName.COMPLETION in names
+        if endpoint == "completions":
+            skipped = [stage for stage in task.request_trace.stages if stage.state.value == "skipped"]
+            assert {stage.name for stage in skipped} == {TraceStageName.FIRST_TOKEN, TraceStageName.DECODE}
+    asyncio.run(scenario())
 
 
-def test_ready_stage_excludes_reservation_time_and_prepare_is_monotonic():
-    clock = ManualTraceClock(NOW)
-    task = _task(clock)
-    manager = QueueManager()
-    task.prepare_queue_stage_id = manager._start_stage(task, TraceStageName.PROXY_PREPARE_QUEUE)
-    clock.advance(nanoseconds=5_000_000)
-    manager._finish_stage(task, task.prepare_queue_stage_id, OutcomeCode.SUCCESS)
-    clock.advance(nanoseconds=100_000_000)  # reservation/prediction time before canonical ready queue
-    task.ready_queue_stage_id = manager._start_stage(task, TraceStageName.PROXY_READY_QUEUE)
-    clock.advance(nanoseconds=7_000_000)
-    manager._finish_stage(task, task.ready_queue_stage_id, OutcomeCode.SUCCESS)
-    manager._finalize_trace(task, OutcomeCode.SUCCESS)
-    stages = {stage.name: stage for stage in task.request_trace.stages}
-    assert stages[TraceStageName.PROXY_PREPARE_QUEUE].elapsed_ns == 5_000_000
-    assert stages[TraceStageName.PROXY_READY_QUEUE].elapsed_ns == 7_000_000
+@pytest.mark.parametrize(("fail_at", "expected_error"), [
+    ("before_first", _DOWNSTREAM_FAILED),
+    ("after_first", _DOWNSTREAM_FAILED),
+])
+def test_real_ready_worker_failure_paths(monkeypatch, fail_at, expected_error):
+    async def scenario():
+        req = _scheduler_request(42)
+        task = _task_from_request(req)
+        _manager, output, calls = await _run_real_queue(monkeypatch, task, chunks=[b"data: token\\n\\n"], fail_at=fail_at)
+        assert output == ([] if fail_at == "before_first" else [b"data: token\\n\\n"])
+        assert calls
+        assert task.request_trace.outcome is OutcomeCode.FAILED
+        assert task.request_trace.error == expected_error
+        assert "raw downstream" not in task.request_trace.model_dump_json()
+        _assert_no_running_and_valid_refs(task.request_trace)
+    asyncio.run(scenario())
 
 
-def test_streaming_nonstreaming_empty_failure_and_safe_errors_have_valid_hierarchy():
-    clock = ManualTraceClock(NOW)
-    task = _task(clock)
-    manager = QueueManager()
-    task.completion_stage_id = manager._start_stage(task, TraceStageName.COMPLETION)
-    task.first_token_stage_id = manager._start_stage(task, TraceStageName.FIRST_TOKEN, parent=task.completion_stage_id)
-    clock.advance(nanoseconds=3)
-    manager._finish_stage(task, task.first_token_stage_id, OutcomeCode.FAILED, _EMPTY_STREAM)
-    task.trace_collector.skip_stage(TraceStageName.DECODE, task.trace_provenance, reason="stream_ended_before_decode", parent_stage_id=task.completion_stage_id)
-    manager._finish_stage(task, task.completion_stage_id, OutcomeCode.FAILED, _EMPTY_STREAM)
-    manager._finalize_trace(task, OutcomeCode.FAILED, _EMPTY_STREAM)
-    assert task.request_trace.outcome is OutcomeCode.FAILED
-    assert task.request_trace.error == _EMPTY_STREAM
-    assert all(stage.state.value != "running" for stage in task.request_trace.stages)
-    assert [stage.sequence for stage in task.request_trace.stages] == [0, 1, 2]
-    assert all("prompt" not in task.request_trace.model_dump_json().lower() for _ in [0])
+@pytest.mark.parametrize("cancel_after_first", [False, True])
+def test_real_ready_worker_cancellation_paths(monkeypatch, cancel_after_first):
+    async def scenario():
+        req = _scheduler_request(42)
+        task = _task_from_request(req)
+        chunks = [b"data: token\\n\\n"] if cancel_after_first else []
 
-    for error in (_EMPTY_STREAM, _DOWNSTREAM_FAILED, _REQUEST_CANCELLED):
-        assert "exception" not in error.message
-        assert "authorization" not in error.message
+        async def fake_forward_request(url, data, use_chunked=False):
+            if not cancel_after_first:
+                await asyncio.sleep(10)
+                yield b""
+            else:
+                yield chunks[0]
+                await asyncio.sleep(10)
+
+        monkeypatch.setattr("proxy.queue.manager.forward_request", fake_forward_request)
+        manager = QueueManager(); manager._READY_DEQUEUE_INTERVAL_S = 0.0
+        await manager.enqueue_prepare(task)
+        await asyncio.sleep(0.05)
+        for worker in manager._worker_tasks.values():
+            worker.cancel()
+        with suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(_drain_until_done(task), timeout=1.0)
+        await asyncio.gather(*manager._worker_tasks.values(), return_exceptions=True)
+        assert task.request_trace.outcome is OutcomeCode.CANCELLED
+        assert task.request_trace.error == _REQUEST_CANCELLED
+        _assert_no_running_and_valid_refs(task.request_trace)
+    asyncio.run(scenario())
 
 
-def test_no_reserved_header_sent_to_instance_contract():
-    task = _task()
-    task.instance_body = {"model": "m", "messages": [{"role": "user", "content": "prompt"}], "stream": True}
-    assert not (set(task.instance_body) & set(RESERVED_TRACE_HEADERS))
+def test_unsampled_real_queue_records_no_stages_and_metadata_shapes(monkeypatch):
+    async def scenario():
+        req = _scheduler_request(42)
+        task = _task_from_request(req, sampled=False)
+        _manager, output, _calls = await _run_real_queue(monkeypatch, task, chunks=[b"data: token\\n\\n"])
+        assert output == [b"data: token\\n\\n"]
+        assert task.request_trace.stages == ()
+        meta = build_cacheroute_meta(task)
+        assert list(meta) == ["trace", "kv_ack", "kv_ready_kids", "text_only_kids", "miss_kids", "error"]
+        sse = ("event: cacheroute_meta\n" f"data: {json.dumps(meta, ensure_ascii=False)}\n\n").encode()
+        assert sse.startswith(b"event: cacheroute_meta\n")
+        nonstream = {"choices": [], "_cacheroute_meta": meta}
+        assert list(nonstream) == ["choices", "_cacheroute_meta"]
+    asyncio.run(scenario())
+
+
+def test_cpu_only_scheduler_to_proxy_integration_with_real_workers(monkeypatch):
+    async def scenario():
+        scheduler_clock = ManualTraceClock(NOW)
+        req = _scheduler_request(123)
+        def fixed_context(request_id, runtime_profile, *, sample_rate=0.0, clock=None, trace_id=None):
+            return create_trace_context(request_id, runtime_profile, sample_rate=1.0, clock=clock, trace_id=TRACE_ID)
+        scheduler_module = importlib.import_module("scheduler.scheduler")
+        monkeypatch.setattr(scheduler_module, "create_trace_context", fixed_context)
+        headers = build_proxy_headers(_app(clock=scheduler_clock), {}, req.Request_ID)
+        trace_id = headers[TRACE_ID_HEADER]
+        recovered = recover_request_from_payload(req.to_payload())
+        proxy_clock = ManualTraceClock(NOW)
+        context, _collector, provenance = build_proxy_trace(_request(headers, _app(clock=proxy_clock)), recovered.Request_ID)
+        collector = TraceCollector(context, clock=proxy_clock, id_factory=iter(["stage_prepare", "stage_ready", "stage_completion", "stage_first", "stage_decode"]).__next__)
+        task = ProxyTask(
+            recovered.Request_ID, recovered, build_body_for_instance(recovered, mode="chat"),
+            "inst-a", "127.0.0.1", 9001, "/v1/chat/completions",
+            kdn_addr=recovered.Task.KDN_server_addr,
+            trace_context=context, trace_collector=collector, trace_provenance=provenance,
+        )
+        _manager, _output, calls = await _run_real_queue(monkeypatch, task, chunks=[b"data: token\\n\\n"])
+        assert task.trace_context.request_id == str(req.Request_ID)
+        assert task.trace_context.trace_id == trace_id
+        assert task.request_trace.context.request_id == str(req.Request_ID)
+        assert task.request_trace.context.trace_id == trace_id
+        assert calls[0]["data"] == task.instance_body
+        assert not (set(calls[0]["data"]) & set(RESERVED_TRACE_HEADERS))
+    asyncio.run(scenario())

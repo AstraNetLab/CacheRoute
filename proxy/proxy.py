@@ -146,6 +146,8 @@ async def lifespan(app: FastAPI):
     app.state.runtime_profile = obs_config.runtime_profile
     app.state.trace_sample_rate = obs_config.trace_sample_rate
     app.state.trace_clock = SystemTraceClock()
+    if obs_config.sample_rate_warning_reason is not None:
+        logger.warning("[Proxy] observability startup warning reason=%s", obs_config.sample_rate_warning_reason)
     app.state.injection_strategy_name = PROXY_INJECTION_STRATEGY  # type: ignore
     logger.info("[Proxy] injection strategy=%s", app.state.injection_strategy_name)
     # --- Initialize the instance pool and inject it into the proxy control plane ---

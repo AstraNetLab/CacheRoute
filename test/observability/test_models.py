@@ -40,7 +40,7 @@ def test_public_surfaces_and_canonical_identity():
         "RESERVED_TRACE_HEADERS", "TracePropagationError", "create_trace_context",
         "decode_trace_headers", "encode_trace_headers", "is_trace_sampled",
         "new_trace_id", "parse_sample_rate",
-        "ObservabilityStartupConfig", "resolve_observability_startup",
+        "ObservabilityStartupConfig", "resolve_observability_startup", "sample_rate_warning_reason",
     ]
     import cacheroute.observability.propagation as propagation
     import cacheroute.observability.startup as startup
@@ -54,6 +54,7 @@ def test_public_surfaces_and_canonical_identity():
     assert helpers.parse_sample_rate is propagation.parse_sample_rate
     assert helpers.ObservabilityStartupConfig is startup.ObservabilityStartupConfig
     assert helpers.resolve_observability_startup is startup.resolve_observability_startup
+    assert helpers.sample_rate_warning_reason is startup.sample_rate_warning_reason
     assert helpers.create_trace_context.__module__ == "cacheroute.observability.propagation"
     assert helpers.resolve_observability_startup.__module__ == "cacheroute.observability.startup"
     assert ReusedRuntime is RuntimeProfile

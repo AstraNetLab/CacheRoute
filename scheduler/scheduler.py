@@ -230,6 +230,8 @@ async def lifespan(app: FastAPI):
     app.state.runtime_profile = obs_config.runtime_profile
     app.state.trace_sample_rate = obs_config.trace_sample_rate
     app.state.trace_clock = SystemTraceClock()
+    if obs_config.sample_rate_warning_reason is not None:
+        logger.warning("[Scheduler] observability startup warning reason=%s", obs_config.sample_rate_warning_reason)
     print(f"[Scheduler] started. log_file={log_path}")
     # ------------------------------------------
     # Try to warm up the tokenizer
