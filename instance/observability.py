@@ -17,7 +17,7 @@ from typing import AsyncGenerator, Awaitable, Callable, Any
 from cacheroute.contracts.v1 import ContractErrorDetail, OutcomeCode
 from cacheroute.observability import TraceCollector, create_trace_context, decode_trace_headers
 from cacheroute.observability.clock import SystemTraceClock, TraceClock
-from cacheroute.observability.propagation import RESERVED_TRACE_HEADERS, REQUEST_ID_HEADER, TracePropagationError
+from cacheroute.observability.propagation import TracePropagationError
 from cacheroute.observability.startup import ObservabilityStartupConfig
 from cacheroute.observability.v1 import RequestTrace, TraceContext, TraceProvenance, TraceStageName
 from cacheroute.observability.v1.enums import TraceComponent
@@ -131,11 +131,12 @@ def resolve_instance_context(
     except TracePropagationError as exc:
         reason = exc.reason
         try:
+            # A second decode may relax freshness only.  It must still validate
+            # the complete canonical header set before its request ID is kept.
             complete = decode_trace_headers(headers, clock=active_clock, max_age=timedelta.max)
             fallback_request_id = complete.request_id
         except TracePropagationError:
-            raw = headers.get(REQUEST_ID_HEADER) if hasattr(headers, "get") else None
-            fallback_request_id = str(raw) if raw and len(str(raw)) <= 128 else None
+            fallback_request_id = None
     request_id = fallback_request_id or local_request_id()
     context = create_trace_context(
         request_id, RuntimeProfile.normalize(config.runtime_profile),
@@ -195,6 +196,14 @@ async def collect_streaming(session: InstanceTraceSession, stream: AsyncGenerato
                 session.finish_first_response_and_start_decode()
             yield chunk
     except asyncio.CancelledError:
+        session.finish_stage("first_token_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+        session.finish_stage("decode_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+        session.finish_stage("completion_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+        session.finalize(OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+        raise
+    except GeneratorExit:
+        # ``aclose()`` injects GeneratorExit at the current yield.  Finalize
+        # the request-local trace, then preserve normal generator closure.
         session.finish_stage("first_token_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
         session.finish_stage("decode_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
         session.finish_stage("completion_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)

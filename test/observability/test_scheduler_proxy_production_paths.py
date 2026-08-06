@@ -284,7 +284,10 @@ def test_real_ready_worker_cancellation_paths(monkeypatch, cancel_after_first):
         task = _task_from_request(req)
         chunks = [b"data: token\\n\\n"] if cancel_after_first else []
 
-        async def fake_forward_request(url, data, use_chunked=False):
+        forwarded_headers = []
+
+        async def fake_forward_request(url, data, use_chunked=False, extra_headers=None):
+            forwarded_headers.append(extra_headers)
             if not cancel_after_first:
                 await asyncio.sleep(10)
                 yield b""
@@ -303,6 +306,8 @@ def test_real_ready_worker_cancellation_paths(monkeypatch, cancel_after_first):
         await asyncio.gather(*manager._worker_tasks.values(), return_exceptions=True)
         assert task.request_trace.outcome is OutcomeCode.CANCELLED
         assert task.request_trace.error == _REQUEST_CANCELLED
+        assert len(forwarded_headers) == 1
+        assert set(forwarded_headers[0]) == set(RESERVED_TRACE_HEADERS)
         _assert_no_running_and_valid_refs(task.request_trace)
     asyncio.run(scenario())
 
@@ -325,6 +330,9 @@ def test_unsampled_real_queue_records_no_stages_and_metadata_shapes(monkeypatch)
 
 def test_cpu_only_scheduler_to_proxy_integration_with_real_workers(monkeypatch):
     async def scenario():
+        from instance.observability import collect_streaming, start_instance_trace_session
+        from cacheroute.observability.startup import resolve_observability_startup
+
         scheduler_clock = ManualTraceClock(NOW)
         req = _scheduler_request(123)
         def fixed_context(request_id, runtime_profile, *, sample_rate=0.0, clock=None, trace_id=None):
@@ -350,6 +358,40 @@ def test_cpu_only_scheduler_to_proxy_integration_with_real_workers(monkeypatch):
         assert task.request_trace.context.trace_id == trace_id
         assert calls[0]["data"] == task.instance_body
         assert not (set(calls[0]["data"]) & set(RESERVED_TRACE_HEADERS))
+        assert set(calls[0]["headers"]) == set(RESERVED_TRACE_HEADERS)
+        assert calls[0]["headers"] == encode_trace_headers(context)
+
+        instance_clock = ManualTraceClock(NOW)
+        instance_session = start_instance_trace_session(
+            calls[0]["headers"],
+            resolve_observability_startup("legacy", "1.0", v1_available=False),
+            clock=instance_clock,
+        )
+        response_chunks = [b"data: token\\n\\n"]
+
+        async def mocked_vllm():
+            for chunk in response_chunks:
+                yield chunk
+
+        assert [chunk async for chunk in collect_streaming(instance_session, mocked_vllm())] == response_chunks
+        assert instance_session.context.request_id == str(req.Request_ID)
+        assert instance_session.context.trace_id == trace_id
+        assert instance_session.request_trace is not task.request_trace
+        assert instance_session.request_trace.context == task.request_trace.context
+        assert all(stage.provenance.source_component is TraceComponent.PROXY for stage in task.request_trace.stages)
+        assert all(stage.provenance.source_component is TraceComponent.INSTANCE for stage in instance_session.request_trace.stages)
+        assert response_chunks == [b"data: token\\n\\n"]
+
+        replacement = create_trace_context(
+            "local-request", RuntimeProfile.LEGACY, sample_rate=1.0,
+            clock=proxy_clock, trace_id="trace_" + "b" * 32,
+        )
+        replacement_session = start_instance_trace_session(
+            encode_trace_headers(replacement),
+            resolve_observability_startup("legacy", "1.0", v1_available=False),
+            clock=instance_clock,
+        )
+        assert replacement_session.context.trace_id == replacement.trace_id
     asyncio.run(scenario())
 
 

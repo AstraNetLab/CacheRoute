@@ -403,11 +403,18 @@ async def _vllm_text_completion(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
+_NO_LIFESPAN_OBSERVABILITY_CONFIG = resolve_observability_startup(
+    None, None, v1_available=False
+)
+
+
 def _instance_observability_config(request: FastAPIRequest) -> ObservabilityStartupConfig:
+    # Production always reads the immutable lifespan-owned object.  The module
+    # constant keeps direct handler tests compatible without resolving per call.
     return getattr(
         request.app.state,
         "_observability_config",
-        resolve_observability_startup(None, None, v1_available=False),
+        _NO_LIFESPAN_OBSERVABILITY_CONFIG,
     )
 
 def _instance_trace_session(request: FastAPIRequest, endpoint_label: str):
