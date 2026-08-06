@@ -49,7 +49,7 @@ copied. Ambiguous or overwritten values are labeled `legacy_projected`, never
 upgraded to actual observations. The current `cacheroute_meta` has no
 `request_id`, and this foundation does not add one.
 
-## Scheduler-to-Proxy propagation
+## Internal propagation
 
 The Scheduler now creates the internal context and overwrites the complete
 reserved header set: `scheduler-request-id`, `x-cacheroute-trace-version`,
@@ -57,10 +57,9 @@ reserved header set: `scheduler-request-id`, `x-cacheroute-trace-version`,
 `x-cacheroute-trace-sampled`, and `x-cacheroute-trace-created-at`. The request
 ID allocated by the Scheduler remains authoritative. Client values using these
 names are never trusted; Authorization forwarding and the serialized payload
-remain unchanged. Propagation stops at the Proxy and no trace header or model
-is sent to an Instance or returned to a client.
+remain unchanged. Propagation now reaches the selected Instance through the same exact reserved header set. Proxy encodes its accepted Scheduler context, or its Proxy-local fallback context, immediately before forwarding to Instance and overwrites every reserved value for that internal call. No arbitrary client trace header becomes authoritative and no JSON/base64 trace payload is added to the request body. Instance validates the complete reserved set, accepts matching fresh context, or creates a request-local fallback context using its resolved startup profile and sample rate. The reserved headers stop at Instance: Instance-to-vLLM forwarding does not include CacheRoute trace headers, W3C Trace Context, or any canonical trace object, and no trace is returned to a client.
 
-Scheduler and Proxy each resolve `CACHEROUTE_RUNTIME_PROFILE` through an explicit lifespan startup helper, with `legacy` as the compatibility default. Because the current services do not have an implemented production v1 data path, `auto` resolves with `v1_available=False` and is stored as `legacy`; explicit `legacy`, `test/mock`, and `v1` remain valid metadata values, but no stored or propagated context can remain `auto`. A missing, malformed, stale, request-ID-mismatched, or profile-mismatched context causes a Proxy-local context to be created and never rejects an otherwise valid request. Profile metadata does not select runtime behavior. The propagation freshness rule retains the five-minute maximum age and also accepts only a bounded 30-second future clock skew between Scheduler and Proxy clocks.
+Scheduler and Proxy each resolve `CACHEROUTE_RUNTIME_PROFILE` through an explicit lifespan startup helper, with `legacy` as the compatibility default. Because the current services do not have an implemented production v1 data path, `auto` resolves with `v1_available=False` and is stored as `legacy`; explicit `legacy`, `test/mock`, and `v1` remain valid metadata values, but no stored or propagated context can remain `auto`. A missing, malformed, stale, request-ID-mismatched, or profile-mismatched context causes a Proxy-local context to be created and never rejects an otherwise valid request. Profile metadata does not select runtime behavior. The internal propagation freshness rule retains the five-minute maximum age and accepts only a bounded 30-second future clock skew among Scheduler, Proxy, and Instance clocks.
 
 `CACHEROUTE_TRACE_SAMPLE_RATE` defaults to `0.0`. Invalid configuration fails
 closed to that value. Rates of zero and one disable or enable collection for
@@ -83,3 +82,10 @@ vLLM execution, prefill, decode, Gateway, or LMCache timings.
 Collection remains process-local and immutable. The Legacy trace mapping and
 client metadata are unchanged and are not copied into `RequestTrace`. There is
 no client export, external exporter, registry, debug endpoint, or persistence.
+
+
+## Instance-observed stages
+
+Instance resolves `CACHEROUTE_RUNTIME_PROFILE` and `CACHEROUTE_TRACE_SAMPLE_RATE` once during FastAPI lifespan startup and stores the immutable result in application state. The compatibility default remains `legacy`; `auto` is resolved and never persisted; invalid sample rates fail closed to `0.0` with at most one bounded warning reason. These settings are correlation metadata only and do not select mock versus real vLLM mode, registration, heartbeat, topology discovery, routing, injection, fallback, retries, or timeouts.
+
+For sampled valid Instance requests, collection is request-local. Completion spans only the Instance-observed downstream boundary around the existing mock or real-vLLM helper. Streaming first response spans from downstream invocation to the first non-empty downstream chunk observed by Instance. Streaming decode spans from after that chunk until the downstream stream ends. Non-streaming requests skip first response and decode with `non_streaming_request`. Empty streams, failures, and cancellations finalize without running stages and use bounded static canonical errors. All Instance stages use `TraceComponent.INSTANCE`; this slice does not emit `VLLM_PREFILL`, does not claim vLLM or LMCache provenance, and does not provide authoritative internal vLLM prefill/decode timing, LMCache hit-token data, remote-read data, external export, persistence, registry, aggregation, or client-visible traces. Proxy and Instance may contain repeated stage names in separate process-local traces that share one `TraceContext`.

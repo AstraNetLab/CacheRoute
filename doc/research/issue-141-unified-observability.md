@@ -37,3 +37,6 @@ ready-queue, and downstream transport stages become a process-local immutable
 trace. The canonical trace still is not client metadata, Instance input, or an
 authoritative account of vLLM or LMCache execution. This increment therefore
 does not close the broader Issue #141 research program.
+
+
+Issue #185 extends the internal propagation boundary from Proxy to Instance for the exact reserved header vocabulary only. Instance now records sampled request-local, process-local transport stages for completion, first non-empty streaming response, and stream interval, while preserving public request/response/SSE shapes and keeping Instance-to-vLLM requests free of trace headers. Cross-process aggregation, Scheduler stage collection, vLLM/LMCache provenance, authoritative prefill/decode, external export, persistence, and debug trace retrieval remain future work under the umbrella.

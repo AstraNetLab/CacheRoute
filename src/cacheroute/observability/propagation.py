@@ -1,4 +1,4 @@
-"""Canonical Scheduler-to-Proxy trace-context propagation.
+"""Canonical internal CacheRoute trace-context propagation.
 
 This module deliberately contains no service configuration or I/O.  Services
 resolve startup settings and pass the resulting values into these helpers.
@@ -34,7 +34,7 @@ RESERVED_TRACE_HEADERS = (
 )
 _TRACE_ID = re.compile(r"^trace_[0-9a-f]{32}$")
 _MAX_AGE = timedelta(minutes=5)
-# Scheduler and Proxy clocks may differ slightly during startup or host sync.
+# Scheduler, Proxy, and Instance clocks may differ during startup or host sync.
 # Accept only this bounded future skew and retain the maximum-age freshness rule.
 _FUTURE_SKEW_TOLERANCE = timedelta(seconds=30)
 
