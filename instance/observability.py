@@ -190,40 +190,49 @@ async def collect_streaming(session: InstanceTraceSession, stream: AsyncGenerato
     session.start_first_response()
     seen_first = False
     try:
-        async for chunk in stream:
-            if chunk and not seen_first:
-                seen_first = True
-                session.finish_first_response_and_start_decode()
-            yield chunk
-    except asyncio.CancelledError:
-        session.finish_stage("first_token_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
-        session.finish_stage("decode_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
-        session.finish_stage("completion_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
-        session.finalize(OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
-        raise
-    except GeneratorExit:
-        # ``aclose()`` injects GeneratorExit at the current yield.  Finalize
-        # the request-local trace, then preserve normal generator closure.
-        session.finish_stage("first_token_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
-        session.finish_stage("decode_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
-        session.finish_stage("completion_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
-        session.finalize(OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
-        raise
-    except Exception:
-        session.finish_stage("first_token_stage_id", OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
-        session.finish_stage("decode_stage_id", OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
-        session.finish_stage("completion_stage_id", OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
-        session.finalize(OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
-        raise
-    if seen_first:
-        session.finish_stage("decode_stage_id", OutcomeCode.SUCCESS)
-        session.finish_stage("completion_stage_id", OutcomeCode.SUCCESS)
-        session.finalize(OutcomeCode.SUCCESS)
-    else:
-        session.finish_stage("first_token_stage_id", OutcomeCode.FAILED, _EMPTY_STREAM)
-        session.skip_empty_decode()
-        session.finish_stage("completion_stage_id", OutcomeCode.FAILED, _EMPTY_STREAM)
-        session.finalize(OutcomeCode.FAILED, _EMPTY_STREAM)
+        try:
+            async for chunk in stream:
+                if chunk and not seen_first:
+                    seen_first = True
+                    session.finish_first_response_and_start_decode()
+                yield chunk
+        except asyncio.CancelledError:
+            session.finish_stage("first_token_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+            session.finish_stage("decode_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+            session.finish_stage("completion_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+            session.finalize(OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+            raise
+        except GeneratorExit:
+            # ``aclose()`` injects GeneratorExit at the current yield.  Finalize
+            # the request-local trace, then preserve normal generator closure.
+            session.finish_stage("first_token_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+            session.finish_stage("decode_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+            session.finish_stage("completion_stage_id", OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+            session.finalize(OutcomeCode.CANCELLED, _REQUEST_CANCELLED)
+            raise
+        except Exception:
+            session.finish_stage("first_token_stage_id", OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
+            session.finish_stage("decode_stage_id", OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
+            session.finish_stage("completion_stage_id", OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
+            session.finalize(OutcomeCode.FAILED, _DOWNSTREAM_FAILED)
+            raise
+        if seen_first:
+            session.finish_stage("decode_stage_id", OutcomeCode.SUCCESS)
+            session.finish_stage("completion_stage_id", OutcomeCode.SUCCESS)
+            session.finalize(OutcomeCode.SUCCESS)
+        else:
+            session.finish_stage("first_token_stage_id", OutcomeCode.FAILED, _EMPTY_STREAM)
+            session.skip_empty_decode()
+            session.finish_stage("completion_stage_id", OutcomeCode.FAILED, _EMPTY_STREAM)
+            session.finalize(OutcomeCode.FAILED, _EMPTY_STREAM)
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except BaseException:
+                # Cleanup is subordinate to the existing response or exception.
+                logger.warning("[Trace] instance stream cleanup failed reason=downstream_close_failed")
 
 
 __all__ = ["InstanceTraceSession", "resolve_instance_context", "start_instance_trace_session", "collect_non_streaming", "collect_streaming", "local_request_id"]

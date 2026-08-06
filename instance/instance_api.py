@@ -39,6 +39,7 @@ from cacheroute.observability.startup import ObservabilityStartupConfig
 from instance.observability import collect_non_streaming, collect_streaming, start_instance_trace_session
 
 
+logger = logging.getLogger("instance")
 PROXY_CP_URL = os.environ.get("PROXY_CP_URL", config.PROXY_CP_URL).rstrip("/")
 INSTANCE_ADVERTISE_HOST = os.environ.get("INSTANCE_ADVERTISE_HOST", config.INSTANCE_HOST)
 INSTANCE_ADVERTISE_PORT = int(os.environ.get("INSTANCE_ADVERTISE_PORT", os.environ.get("INSTANCE_PORT", config.INSTANCE_PORT)))
@@ -355,11 +356,18 @@ async def _vllm_stream_chat(payload: Dict[str, Any]) -> AsyncGenerator[bytes, No
     url = f"{vllm_base_url}/v1/chat/completions"
     # Forward the OpenAI-style body from Proxy directly.
     upstream_stream = forward_request(url, data=payload, use_chunked=True)  # type: ignore
-
-    async for chunk in upstream_stream:
-        # Do not parse or rewrite; pass through directly.
-        if chunk:
-            yield chunk
+    try:
+        async for chunk in upstream_stream:
+            # Do not parse or rewrite; pass through directly.
+            if chunk:
+                yield chunk
+    finally:
+        close = getattr(upstream_stream, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except BaseException:
+                logger.warning("[Trace] instance stream cleanup failed reason=vllm_stream_close_failed")
 
 
 async def _vllm_chat_completion(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -451,11 +459,8 @@ async def instance_chat_completions(request: FastAPIRequest):
     session = _instance_trace_session(request, "instance_chat_completions")
 
     if stream:
-        async def event_stream():
-            async for chunk in collect_streaming(session, _vllm_stream_chat(payload)):
-                yield chunk
-
-        response = StreamingResponse(event_stream(), media_type="text/event-stream")
+        collected_stream = collect_streaming(session, _vllm_stream_chat(payload))
+        response = StreamingResponse(collected_stream, media_type="text/event-stream")
         request.state._cacheroute_trace_session = session
         return response
 

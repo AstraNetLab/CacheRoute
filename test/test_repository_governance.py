@@ -306,6 +306,63 @@ def test_internal_trace_header_vocabulary_has_single_owner_and_services_import_i
     assert "extra_headers=extra_headers" in manager_text
 
 
+def test_internal_trace_propagation_and_vllm_boundary_are_narrow():
+    manager_tree = ast.parse((ROOT / "proxy/queue/manager.py").read_text(encoding="utf-8"))
+    instance_tree = ast.parse((ROOT / "instance/observability.py").read_text(encoding="utf-8"))
+    manager_calls = {
+        node.func.id for node in ast.walk(manager_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    instance_calls = {
+        node.func.id for node in ast.walk(instance_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "encode_trace_headers" in manager_calls
+    assert "decode_trace_headers" in instance_calls
+
+    manager_forward_calls = [
+        node for node in ast.walk(manager_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "forward_request"
+    ]
+    assert len(manager_forward_calls) == 1
+    forwarded = next(
+        keyword.value for keyword in manager_forward_calls[0].keywords
+        if keyword.arg == "extra_headers"
+    )
+    assert isinstance(forwarded, ast.Name) and forwarded.id == "extra_headers"
+
+    instance_api = ROOT / "instance/instance_api.py"
+    instance_api_text = instance_api.read_text(encoding="utf-8")
+    instance_api_tree = ast.parse(instance_api_text)
+    vllm_forward_calls = [
+        node for node in ast.walk(instance_api_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "forward_request"
+    ]
+    assert len(vllm_forward_calls) == 3
+    assert all("extra_headers" not in {keyword.arg for keyword in call.keywords} for call in vllm_forward_calls)
+    instance_string_literals = {
+        node.value.casefold() for node in ast.walk(instance_api_tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "traceparent" not in instance_string_literals
+    assert "tracestate" not in instance_string_literals
+
+    canonical_classes = {"TraceContext": [], "RuntimeProfile": []}
+    for path in _tracked_files():
+        if path.suffix != ".py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name in {"TraceContext", "RuntimeProfile"}:
+                canonical_classes[node.name].append(path.relative_to(ROOT))
+    assert canonical_classes == {
+        "TraceContext": [Path("src/cacheroute/observability/v1/models.py")],
+        "RuntimeProfile": [Path("src/cacheroute/runtime/profiles.py")],
+    }
+
+
 def test_observability_does_not_duplicate_canonical_model_classes():
     prohibited = {
         "RuntimeProfile", "ContractModel", "OutcomeCode", "ContractErrorDetail",

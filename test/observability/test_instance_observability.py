@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -122,6 +123,10 @@ def test_streaming_timing_order_parent_provenance_and_shape(stream_chunks):
         assert stages[2].parent_stage_id == stages[0].stage_id
         assert all(s.provenance.source_component is TraceComponent.INSTANCE for s in stages)
         assert TraceStageName.VLLM_PREFILL not in {s.name for s in stages}
+        expected_first = 10 if stream_chunks[0] else 20
+        assert stages[1].elapsed_ns == expected_first
+        assert stages[2].elapsed_ns == 25 - expected_first
+        assert stages[0].elapsed_ns == 25
     asyncio.run(scenario())
 
 
@@ -256,20 +261,126 @@ def test_real_vllm_forwarding_preserves_payload_and_sends_no_trace_headers(monke
     from instance import instance_api
 
     async def scenario():
-        payload = {"model": "unit", "messages": [{"role": "user", "content": "secret"}], "stream": True}
+        stream_payload = {"model": "unit", "messages": [{"role": "user", "content": "secret"}], "stream": True}
+        chat_payload = {"model": "unit", "messages": [], "stream": False}
+        text_payload = {"model": "unit", "prompt": "secret", "stream": False}
         calls = []
 
         async def forwarded(url, data, use_chunked=False, **kwargs):
             calls.append((url, data, use_chunked, kwargs))
-            yield b"data: unchanged\n\n"
+            if use_chunked:
+                yield b"data: unchanged\n\n"
+            else:
+                yield json.dumps({"choices": []}).encode()
 
         monkeypatch.setattr(instance_api, "use_mock", False)
         monkeypatch.setattr(instance_api, "vllm_base_url", "http://vllm")
         monkeypatch.setattr(instance_api, "forward_request", forwarded)
-        assert [chunk async for chunk in instance_api._vllm_stream_chat(payload)] == [b"data: unchanged\n\n"]
-        assert calls == [("http://vllm/v1/chat/completions", payload, True, {})]
-        assert all(name not in calls[0][3] for name in RESERVED_TRACE_HEADERS)
-        assert "traceparent" not in calls[0][3] and "tracestate" not in calls[0][3]
+        stream_bytes = [chunk async for chunk in instance_api._vllm_stream_chat(stream_payload)]
+        chat_json = await instance_api._vllm_chat_completion(chat_payload)
+        text_json = await instance_api._vllm_text_completion(text_payload)
+        assert stream_bytes == [b"data: unchanged\n\n"]
+        assert chat_json == text_json == {"choices": []}
+        assert calls == [
+            ("http://vllm/v1/chat/completions", stream_payload, True, {}),
+            ("http://vllm/v1/chat/completions", chat_payload, False, {}),
+            ("http://vllm/v1/completions", text_payload, False, {}),
+        ]
+        public_values = stream_bytes + [json.dumps(chat_json).encode(), json.dumps(text_json).encode()]
+        for value in public_values:
+            assert TRACE_ID.encode() not in value
+            assert b"RequestTrace" not in value
+            assert b"trace_id" not in value
+            assert all(name.encode() not in value for name in RESERVED_TRACE_HEADERS)
+        for _url, _payload, _chunked, kwargs in calls:
+            assert kwargs == {}
+            assert all(name not in kwargs for name in RESERVED_TRACE_HEADERS)
+            assert "traceparent" not in kwargs and "tracestate" not in kwargs
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("after_first", [False, True])
+def test_streaming_response_body_close_finalizes_and_closes_downstream(monkeypatch, after_first):
+    from instance import instance_api
+
+    async def scenario():
+        clock = ManualTraceClock(NOW)
+        app = SimpleNamespace(state=SimpleNamespace(
+            _observability_config=cfg(),
+            _trace_clock=clock,
+        ))
+        request = SimpleNamespace(
+            app=app,
+            headers=headers(),
+            state=SimpleNamespace(),
+            json=lambda: asyncio.sleep(0, result={"stream": True, "messages": []}),
+        )
+        downstream_closed = False
+        emitted = b"data: first\n\n" if after_first else b""
+
+        async def downstream(_payload):
+            nonlocal downstream_closed
+            try:
+                yield emitted
+                yield b"data: never\n\n"
+            finally:
+                downstream_closed = True
+
+        monkeypatch.setattr(instance_api, "_vllm_stream_chat", downstream)
+        response = await instance_api.instance_chat_completions(request)
+        assert await anext(response.body_iterator) == emitted
+        await response.body_iterator.aclose()
+
+        trace = request.state._cacheroute_trace_session.request_trace
+        assert downstream_closed is True
+        assert trace.outcome is OutcomeCode.CANCELLED
+        assert trace.error.message == "instance request cancelled"
+        assert all(stage.state.value != "running" for stage in trace.stages)
+        terminal_name = TraceStageName.DECODE if after_first else TraceStageName.FIRST_TOKEN
+        assert next(stage for stage in trace.stages if stage.name is terminal_name).outcome is OutcomeCode.CANCELLED
+        assert next(stage for stage in trace.stages if stage.name is TraceStageName.COMPLETION).outcome is OutcomeCode.CANCELLED
+        assert emitted == (b"data: first\n\n" if after_first else b"")
+        assert TRACE_ID not in str(response.headers)
+        assert all(name not in response.headers for name in RESERVED_TRACE_HEADERS)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("terminal", ["success", "failure", "cancel", "close"])
+def test_collect_streaming_always_closes_wrapped_iterator(monkeypatch, terminal):
+    async def scenario():
+        session = start_instance_trace_session(headers(), cfg(), clock=ManualTraceClock(NOW))
+        closed = False
+
+        async def downstream():
+            nonlocal closed
+            try:
+                if terminal == "failure":
+                    raise RuntimeError("original failure")
+                yield b"data: first\n\n"
+                if terminal == "cancel":
+                    await asyncio.Event().wait()
+            finally:
+                closed = True
+
+        collected = collect_streaming(session, downstream())
+        if terminal == "failure":
+            with pytest.raises(RuntimeError, match="original failure"):
+                await anext(collected)
+        elif terminal == "close":
+            await anext(collected)
+            await collected.aclose()
+        elif terminal == "cancel":
+            await anext(collected)
+            pending = asyncio.create_task(anext(collected))
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        else:
+            assert [chunk async for chunk in collected] == [b"data: first\n\n"]
+        assert closed is True
 
     asyncio.run(scenario())
 
