@@ -97,8 +97,8 @@ async def _run_real_queue(monkeypatch, task, chunks=(), *, fail_at=None, cancel_
     manager._READY_DEQUEUE_INTERVAL_S = 0.0
     task.trace["preexisting"] = 7
 
-    async def fake_forward_request(url, data, use_chunked=False):
-        calls.append({"url": url, "data": data.copy(), "use_chunked": use_chunked})
+    async def fake_forward_request(url, data, use_chunked=False, extra_headers=None):
+        calls.append({"url": url, "data": data.copy(), "use_chunked": use_chunked, "headers": dict(extra_headers or {})})
         if fail_at == "before_first":
             raise RuntimeError("raw downstream boom should not enter trace")
         for index, chunk in enumerate(chunks):
@@ -144,8 +144,8 @@ async def _run_timed_real_queue(monkeypatch, task, clock):
         wait_task.has_started_forward = True
     monkeypatch.setattr(manager, "_wait_dispatch_turn", dispatch_wait)
 
-    async def timed_forward_request(url, data, use_chunked=False):
-        calls.append({"url": url, "data": data.copy(), "use_chunked": use_chunked})
+    async def timed_forward_request(url, data, use_chunked=False, extra_headers=None):
+        calls.append({"url": url, "data": data.copy(), "use_chunked": use_chunked, "headers": dict(extra_headers or {})})
         clock.advance(nanoseconds=11_000_000)
         yield b"data: token\n\n"
         clock.advance(nanoseconds=13_000_000)
@@ -243,7 +243,7 @@ def test_real_ready_worker_success_nonstream_and_empty_paths(monkeypatch, endpoi
         assert calls and calls[0]["url"] == f"http://{task.instance_host}:{task.instance_port}{task.url_path}"
         assert calls[0]["data"] == original_body
         assert calls[0]["use_chunked"] is (endpoint == "chat/completions")
-        assert not (set(calls[0].get("headers", {})) & set(RESERVED_TRACE_HEADERS))
+        assert set(calls[0].get("headers", {})) == set(RESERVED_TRACE_HEADERS)
         assert task.request_trace.outcome is expected_outcome
         assert task.request_trace.error == expected_error
         _assert_no_running_and_valid_refs(task.request_trace)

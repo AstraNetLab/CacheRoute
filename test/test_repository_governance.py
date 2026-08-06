@@ -296,12 +296,14 @@ def test_internal_trace_header_vocabulary_has_single_owner_and_services_import_i
     }
     for literal in header_literals:
         owners = {path.relative_to(ROOT) for path in _tracked_files() if path.suffix == ".py" and literal in path.read_text(encoding="utf-8")}
-        assert owners <= {owner.relative_to(ROOT), Path("test/observability/test_propagation.py"), Path("test/observability/test_scheduler_proxy_production_paths.py"), Path("test/test_repository_governance.py")}
+        assert owners <= {owner.relative_to(ROOT), Path("test/observability/test_propagation.py"), Path("test/observability/test_scheduler_proxy_production_paths.py"), Path("test/observability/test_instance_observability.py"), Path("test/test_repository_governance.py")}
     for relative in (Path("scheduler/scheduler.py"), Path("proxy/proxy.py")):
         text = (ROOT / relative).read_text(encoding="utf-8")
         assert "cacheroute.observability" in text
     assert "extra_headers=extra_headers" in (ROOT / "scheduler/scheduler.py").read_text(encoding="utf-8")
-    assert "extra_headers" not in (ROOT / "proxy/queue/manager.py").read_text(encoding="utf-8")
+    manager_text = (ROOT / "proxy/queue/manager.py").read_text(encoding="utf-8")
+    assert "encode_trace_headers" in manager_text
+    assert "extra_headers=extra_headers" in manager_text
 
 
 def test_observability_does_not_duplicate_canonical_model_classes():
