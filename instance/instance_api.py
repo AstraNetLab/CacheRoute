@@ -34,8 +34,12 @@ from instance import control_plane
 from instance.pclient.proxy_client import ProxyControlClient
 from instance.capability_builder import build_instance_capability
 from core.instance_capability import capability_fingerprint
+from cacheroute.observability import resolve_observability_startup
+from cacheroute.observability.startup import ObservabilityStartupConfig
+from instance.observability import collect_non_streaming, collect_streaming, start_instance_trace_session
 
 
+logger = logging.getLogger("instance")
 PROXY_CP_URL = os.environ.get("PROXY_CP_URL", config.PROXY_CP_URL).rstrip("/")
 INSTANCE_ADVERTISE_HOST = os.environ.get("INSTANCE_ADVERTISE_HOST", config.INSTANCE_HOST)
 INSTANCE_ADVERTISE_PORT = int(os.environ.get("INSTANCE_ADVERTISE_PORT", os.environ.get("INSTANCE_PORT", config.INSTANCE_PORT)))
@@ -169,6 +173,17 @@ async def lifespan(app: FastAPI):
     cp_host = os.environ.get("INSTANCE_CP_HOST", config.INSTANCE_CP_HOST)
     cp_port = int(os.environ.get("INSTANCE_CP_PORT", config.INSTANCE_CP_PORT))
     logger = logging.getLogger("instance")
+    observability_config = resolve_observability_startup(
+        os.environ.get("CACHEROUTE_RUNTIME_PROFILE"),
+        os.environ.get("CACHEROUTE_TRACE_SAMPLE_RATE"),
+        v1_available=False,
+    )
+    app.state._observability_config = observability_config  # type: ignore
+    if observability_config.sample_rate_warning_reason is not None:
+        logger.warning(
+            "[Trace] instance startup warning reason=%s",
+            observability_config.sample_rate_warning_reason,
+        )
     capabilities = build_instance_capability()
     local_capability_fingerprint = capability_fingerprint(capabilities)
 
@@ -341,11 +356,18 @@ async def _vllm_stream_chat(payload: Dict[str, Any]) -> AsyncGenerator[bytes, No
     url = f"{vllm_base_url}/v1/chat/completions"
     # Forward the OpenAI-style body from Proxy directly.
     upstream_stream = forward_request(url, data=payload, use_chunked=True)  # type: ignore
-
-    async for chunk in upstream_stream:
-        # Do not parse or rewrite; pass through directly.
-        if chunk:
-            yield chunk
+    try:
+        async for chunk in upstream_stream:
+            # Do not parse or rewrite; pass through directly.
+            if chunk:
+                yield chunk
+    finally:
+        close = getattr(upstream_stream, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except BaseException:
+                logger.warning("[Trace] instance stream cleanup failed reason=vllm_stream_close_failed")
 
 
 async def _vllm_chat_completion(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -388,6 +410,30 @@ async def _vllm_text_completion(payload: Dict[str, Any]) -> Dict[str, Any]:
     return _safe_json_from_bytes(content_bytes)
 
 
+
+_NO_LIFESPAN_OBSERVABILITY_CONFIG = resolve_observability_startup(
+    None, None, v1_available=False
+)
+
+
+def _instance_observability_config(request: FastAPIRequest) -> ObservabilityStartupConfig:
+    # Production always reads the immutable lifespan-owned object.  The module
+    # constant keeps direct handler tests compatible without resolving per call.
+    return getattr(
+        request.app.state,
+        "_observability_config",
+        _NO_LIFESPAN_OBSERVABILITY_CONFIG,
+    )
+
+def _instance_trace_session(request: FastAPIRequest, endpoint_label: str):
+    clock = getattr(request.app.state, "_trace_clock", None)
+    return start_instance_trace_session(
+        request.headers,
+        _instance_observability_config(request),
+        clock=clock,
+        endpoint_label=endpoint_label,
+    )
+
 # ======================= Scheduler method routes =======================
 @instance.post("/v1/chat/completions")
 async def instance_chat_completions(request: FastAPIRequest):
@@ -410,14 +456,16 @@ async def instance_chat_completions(request: FastAPIRequest):
     print(f"[Instance] stream={stream}")
 
     # Streaming: always use SSE byte streams.
+    session = _instance_trace_session(request, "instance_chat_completions")
+
     if stream:
-        async def event_stream():
-            async for chunk in _vllm_stream_chat(payload):
-                yield chunk
+        collected_stream = collect_streaming(session, _vllm_stream_chat(payload))
+        response = StreamingResponse(collected_stream, media_type="text/event-stream")
+        request.state._cacheroute_trace_session = session
+        return response
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-    resp_json = await _vllm_chat_completion(payload)
+    resp_json = await collect_non_streaming(session, lambda: _vllm_chat_completion(payload))
+    request.state._cacheroute_trace_session = session
     return JSONResponse(content=resp_json)
 
 
@@ -436,5 +484,7 @@ async def instance_completions(request: FastAPIRequest):
             content={"error": "invalid_json", "detail": str(e)},
         )
 
-    resp_json = await _vllm_text_completion(payload)
+    session = _instance_trace_session(request, "instance_completions")
+    resp_json = await collect_non_streaming(session, lambda: _vllm_text_completion(payload))
+    request.state._cacheroute_trace_session = session
     return JSONResponse(content=resp_json)

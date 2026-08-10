@@ -13,6 +13,8 @@ from core import forward_request,config
 from proxy.metrics.queue_predictor import queue_predictor, decode_tpot_predictor, predict_redis_pull_ms
 from proxy.resource import p_control_plane
 from cacheroute.contracts.v1 import ContractErrorDetail, OutcomeCode
+from cacheroute.observability import encode_trace_headers
+from cacheroute.observability.propagation import RESERVED_TRACE_HEADERS
 from cacheroute.observability.v1 import TraceStageName
 
 from .task import ProxyTask
@@ -1257,10 +1259,19 @@ class QueueManager:
                     )
 
                 seen_first_chunk = False
+                extra_headers = None
+                if task.trace_context is not None:
+                    try:
+                        encoded_headers = encode_trace_headers(task.trace_context)
+                        extra_headers = {name: encoded_headers[name] for name in RESERVED_TRACE_HEADERS}
+                    except (ValueError, TypeError):
+                        logger.warning("[Trace] propagation encode failed reason=context_invalid")
+
                 async for chunk in forward_request(
                     url=target_url,
                     data=task.instance_body,
                     use_chunked=use_chunked,
+                    extra_headers=extra_headers,
                 ):
                     if chunk:
                         if not seen_first_chunk:
