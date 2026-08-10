@@ -2,7 +2,6 @@
 
 import ast
 from fnmatch import fnmatchcase
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -134,18 +133,46 @@ def test_transitional_explicit_packages_match_root_discovery():
 
 def _discover_root_namespace_packages():
     packages = set()
-    for directory, child_directories, _files in os.walk(ROOT):
-        relative = Path(directory).relative_to(ROOT)
-        if relative == Path("."):
-            child_directories[:] = [name for name in child_directories if not name.startswith(".")]
+    for path in _tracked_files():
+        relative = path.relative_to(ROOT)
+        if path.suffix != ".py" or relative.name == "__init__.py" and len(relative.parts) == 1:
             continue
-        package = ".".join(relative.parts)
-        if any(fnmatchcase(package, pattern) for pattern in GENERATED_PACKAGE_EXCLUDES):
-            child_directories[:] = []
-            continue
-        if not any(part.startswith(".") for part in relative.parts):
+        package = ".".join(relative.parent.parts)
+        if package and not any(
+            fnmatchcase(package, pattern) for pattern in GENERATED_PACKAGE_EXCLUDES
+        ):
             packages.add(package)
     return packages
+
+
+def _configured_package_path(package, package_directories):
+    mapped = [
+        prefix for prefix in package_directories
+        if package == prefix or package.startswith(f"{prefix}.")
+    ]
+    if not mapped:
+        return Path(*package.split("."))
+    prefix = max(mapped, key=len)
+    suffix = package.removeprefix(prefix).lstrip(".")
+    return Path(package_directories[prefix], *suffix.split(".")) if suffix else Path(package_directories[prefix])
+
+
+def test_explicit_packages_have_reviewed_tracked_python_sources():
+    configuration = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    setuptools = configuration["tool"]["setuptools"]
+    tracked = {path.relative_to(ROOT) for path in _tracked_files()}
+    invalid = []
+    for package in setuptools["packages"]:
+        directory = _configured_package_path(package, setuptools.get("package-dir", {}))
+        if not any(
+            path.parent == directory and path.suffix == ".py"
+            for path in tracked
+        ):
+            invalid.append(package)
+    assert not invalid, (
+        "explicit setuptools packages without tracked Python source: "
+        + ", ".join(sorted(invalid))
+    )
 
 
 def test_legacy_compatibility_references_are_narrowly_allowlisted():

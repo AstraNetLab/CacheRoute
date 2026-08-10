@@ -1,6 +1,6 @@
 # Package and module map
 
-Installed package set is derived from the explicit `[tool.setuptools].packages` list in [pyproject.toml](../../pyproject.toml); package discovery must not change in this handbook PR.
+Installed package set is derived from the explicit `[tool.setuptools].packages` list in [pyproject.toml](../../pyproject.toml); package discovery remains explicit; each configured entry must map to reviewed, Git-tracked Python source.
 
 | Concept / responsibility | Canonical package/module | Current transitional implementation | Dependency direction | Public/internal | Design link | Relevant tests | Migration status | Status |
 |---|---|---|---|---|---|---|---|---|
@@ -33,4 +33,13 @@ Installed package set is derived from the explicit `[tool.setuptools].packages` 
 
 ## Explicitly configured package coverage
 
-`cacheroute`, `cacheroute.compat`, `cacheroute.observability`, `cacheroute.observability.v1`, `cacheroute.runtime`, `cacheroute.topology`, `cacheroute.cache`, `cacheroute.routing`, `cacheroute.contracts`, `cacheroute.contracts.v1`, `cacheroute_compat`, `UI`, `UI.client_ui`, `UI.client_ui.static`, `UI.client_ui.templates`, `UI.kdn_ui`, `UI.proxy_ui`, `UI.proxy_ui.static`, `client`, `client.taskset`, `core`, `data`, `data.CacheRoute_dataset`, `data.CacheRoute_dataset.knowledge_document`, `instance`, `instance.TPOT_predictor`, `instance.TTFT_predictor`, `instance.TTFT_predictor.data`, `instance.pclient`, `instance.resource_agent`, `instance.resource_agent.src`, `instance.resource_dashboard`, `instance.resource_dashboard.static`, `kdn_server`, `kdn_server.KV_database`, `kdn_server.contracts`, `kdn_server.domain`, `kdn_server.gateway`, `kdn_server.sclient`, `kdn_server.text_database`, `kdn_server.text_database.blocks`, `kdn_server.util`, `model`, `proxy`, `proxy.metrics`, `proxy.metrics.data`, `proxy.queue`, `proxy.resource`, `proxy.sclient`, `proxy.strategy`, `scheduler`, `scheduler.knowledge`, `scheduler.resource`, `scheduler.strategy`, `store`, `util`.
+`cacheroute`, `cacheroute.compat`, `cacheroute.observability`, `cacheroute.observability.v1`, `cacheroute.runtime`, `cacheroute.topology`, `cacheroute.cache`, `cacheroute.routing`, `cacheroute.contracts`, `cacheroute.contracts.v1`, `cacheroute_compat`, `UI`, `UI.client_ui`, `UI.kdn_ui`, `UI.proxy_ui`, `client`, `client.taskset`, `core`, `data`, `instance`, `instance.TPOT_predictor`, `instance.TTFT_predictor`, `instance.pclient`, `instance.resource_agent`, `instance.resource_dashboard`, `kdn_server`, `kdn_server.contracts`, `kdn_server.domain`, `kdn_server.gateway`, `kdn_server.sclient`, `kdn_server.util`, `model`, `proxy`, `proxy.metrics`, `proxy.queue`, `proxy.resource`, `proxy.sclient`, `proxy.strategy`, `scheduler`, `scheduler.knowledge`, `scheduler.resource`, `scheduler.strategy`, `store`, `util`.
+
+
+Tracked datasets, runtime state, browser assets, calibration tables, native-source
+directories, and other package data are not Python packages merely because they
+are nested below an installed package. Package-data patterns retain the reviewed
+runtime assets; the explicit package list contains only directories with tracked
+Python source. In particular, repository datasets under `data/CacheRoute_dataset`
+and KDN state under `kdn_server/{KV_database,text_database}` remain outside the
+wheel and are not package declarations.

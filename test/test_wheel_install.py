@@ -1,10 +1,11 @@
 """Verify wheel contents and imports without using the source checkout."""
 
 from pathlib import Path
+import io
 import os
-import shutil
 import subprocess
 import sys
+import tarfile
 import venv
 import zipfile
 
@@ -64,24 +65,87 @@ REQUIRED_CANONICAL_FOUNDATION = {
 }
 
 
-@pytest.fixture(scope="module")
-def built_wheel(tmp_path_factory):
-    repo = Path(__file__).resolve().parents[1]
-    wheelhouse = tmp_path_factory.mktemp("wheelhouse")
-    source = tmp_path_factory.mktemp("wheel-source") / "CacheRoute"
-    shutil.copytree(
-        repo,
-        source,
-        ignore=shutil.ignore_patterns(
-            ".git", "build", "dist", "*.egg-info", "__pycache__",
-            ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "wheelhouse",
-        ),
+def _tracked_paths(repo: Path) -> set[Path]:
+    result = subprocess.run(
+        ["git", "ls-tree", "-rz", "--name-only", "HEAD"],
+        cwd=repo, check=True, capture_output=True,
     )
+    return {
+        Path(os.fsdecode(name))
+        for name in result.stdout.split(b"\0") if name
+    }
+
+
+def _export_tracked_source(repo: Path, destination: Path) -> None:
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", "HEAD"],
+        cwd=repo, check=True, capture_output=True,
+    ).stdout
+    destination.mkdir()
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
+        source.extractall(destination, filter="data")
+
+
+def _pip_wheel(source: Path, wheelhouse: Path) -> Path:
     subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", str(source), "--no-deps", "--no-build-isolation", "-w", str(wheelhouse)],
+        [sys.executable, "-m", "pip", "wheel", str(source), "--no-deps",
+         "--no-build-isolation", "-w", str(wheelhouse)],
         check=True,
     )
     return next(wheelhouse.glob("cacheroute-*.whl"))
+
+
+@pytest.fixture(scope="module")
+def release_artifacts(tmp_path_factory):
+    repo = Path(__file__).resolve().parents[1]
+    source = tmp_path_factory.mktemp("tracked-source") / "CacheRoute"
+    _export_tracked_source(repo, source)
+    exported = {
+        path.relative_to(source) for path in source.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    assert exported == _tracked_paths(repo)
+    assert not (source / ".git").exists()
+
+    direct_wheelhouse = tmp_path_factory.mktemp("direct-wheelhouse")
+    direct_wheel = _pip_wheel(source, direct_wheelhouse)
+
+    sdist_dir = tmp_path_factory.mktemp("sdist")
+    backend_script = (
+        "import setuptools.build_meta as backend, sys; "
+        "print(backend.build_sdist(sys.argv[1]))"
+    )
+    subprocess.run(
+        [sys.executable, "-c", backend_script, str(sdist_dir)],
+        cwd=source, check=True,
+    )
+    sdist = next(sdist_dir.glob("cacheroute-*.tar.gz"))
+
+    sdist_source_root = tmp_path_factory.mktemp("sdist-source")
+    with tarfile.open(sdist, mode="r:gz") as archive:
+        archive.extractall(sdist_source_root, filter="data")
+    sdist_source = next(path for path in sdist_source_root.iterdir() if path.is_dir())
+    assert not (sdist_source / ".git").exists()
+    final_wheelhouse = tmp_path_factory.mktemp("sdist-wheelhouse")
+    final_wheel = _pip_wheel(sdist_source, final_wheelhouse)
+    return {
+        "source": source,
+        "direct_wheel": direct_wheel,
+        "sdist": sdist,
+        "wheel": final_wheel,
+    }
+
+
+@pytest.fixture(scope="module")
+def built_wheel(release_artifacts):
+    return release_artifacts["wheel"]
+
+
+def test_release_artifacts_use_tracked_source_and_both_build_paths(release_artifacts):
+    assert release_artifacts["direct_wheel"].is_file()
+    assert release_artifacts["sdist"].is_file()
+    assert release_artifacts["wheel"].is_file()
+    assert not (release_artifacts["source"] / ".git").exists()
 
 
 def _create_isolated_environment(path: Path) -> Path:
