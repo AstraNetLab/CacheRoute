@@ -52,7 +52,9 @@ def test_instance_context_accepts_valid_and_falls_back_for_missing_malformed_sta
     assert stale.context.request_id == "scheduler-1"
     assert stale.accepted_propagated is False
 
-    mismatch = resolve_instance_context(headers(), cfg(profile="test_mock"), clock=clock)
+    mismatch = resolve_instance_context(
+        headers(), cfg(profile=RuntimeProfile.TEST_MOCK.value), clock=clock
+    )
     assert mismatch.fallback_reason == "profile_mismatch"
     assert mismatch.context.request_id == "scheduler-1"
 
@@ -96,9 +98,50 @@ def test_startup_resolution_defaults_and_invalid_sample_rate():
     assert invalid.sample_rate_warning_reason == "trace_sample_rate_malformed"
 
 
-def test_unsampled_session_collects_no_trace():
-    session = start_instance_trace_session(headers(), cfg(rate="0.0"), clock=ManualTraceClock(NOW))
+def test_valid_propagated_unsampled_context_ignores_local_full_sample_rate():
+    clock = ManualTraceClock(NOW)
+    propagated = create_trace_context(
+        "scheduler-1",
+        RuntimeProfile.LEGACY,
+        sample_rate=0.0,
+        clock=clock,
+        trace_id=TRACE_ID,
+    )
+    session = start_instance_trace_session(
+        encode_trace_headers(propagated), cfg(rate="1.0"), clock=clock
+    )
+
+    assert session.context.sampled is False
     assert session.collector is None
+
+
+@pytest.mark.parametrize("incoming_headers", [{}, {REQUEST_ID_HEADER: "incomplete"}])
+def test_fallback_context_uses_local_zero_sample_rate(incoming_headers):
+    session = start_instance_trace_session(
+        incoming_headers, cfg(rate="0.0"), clock=ManualTraceClock(NOW)
+    )
+
+    assert re.fullmatch(r"req_[0-9a-f]{32}", session.context.request_id)
+    assert session.context.sampled is False
+    assert session.collector is None
+
+
+def test_valid_propagated_sampled_context_ignores_local_zero_sample_rate():
+    clock = ManualTraceClock(NOW)
+    propagated = create_trace_context(
+        "scheduler-1",
+        RuntimeProfile.LEGACY,
+        sample_rate=1.0,
+        clock=clock,
+        trace_id=TRACE_ID,
+    )
+    session = start_instance_trace_session(
+        encode_trace_headers(propagated), cfg(rate="0.0"), clock=clock
+    )
+
+    assert session.context.request_id == "scheduler-1"
+    assert session.context.sampled is True
+    assert session.collector is not None
 
 
 @pytest.mark.parametrize("stream_chunks", [[b"data: one\n\n", b"data: [DONE]\n\n"], [b"", b"data: one\n\n"]])
