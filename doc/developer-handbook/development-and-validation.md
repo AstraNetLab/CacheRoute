@@ -27,6 +27,9 @@ active worktree is not release evidence because ignored or untracked files can
 mask a stale explicit package declaration. The non-network wheel test also
 builds a direct tracked-source wheel as a separate check, but uses the
 sdist-derived wheel for content and isolated-install assertions.
+When the same test module runs from an unpacked sdist, it skips only the
+checkout-specific tracked-export assertion and builds the validation wheel
+directly from that Git-free sdist tree; it must not attempt to resolve `HEAD`.
 
 For a manual release check, create a clean tracked-file export without `.git`,
 run `python3 -m build --sdist --no-isolation` there, unpack the generated sdist
